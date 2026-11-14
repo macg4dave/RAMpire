@@ -294,7 +294,7 @@ fn socket_groups() -> Finding {
         Finding::problem(
             check,
             "rampire.service adds no group for libvirt's channel sockets",
-            "set SupplementaryGroups= to the group that owns them: qemu on the RHEL family, libvirt-qemu on Debian and Ubuntu",
+            "set SupplementaryGroups= to the group that owns them: qemu on the RHEL family, libvirt-qemu on Debian",
         )
     } else if missing.is_empty() {
         Finding::ok(check, format!("rampire.service adds {}", groups.join(" ")))
@@ -302,7 +302,7 @@ fn socket_groups() -> Finding {
         Finding::problem(
             check,
             format!("rampire.service adds {missing:?}, which this host doesn't have"),
-            "override SupplementaryGroups= in a drop-in (systemctl edit rampire): qemu on the RHEL family, libvirt-qemu on Debian and Ubuntu",
+            "override SupplementaryGroups= in a drop-in (systemctl edit rampire): qemu on the RHEL family, libvirt-qemu on Debian",
         )
     }
 }

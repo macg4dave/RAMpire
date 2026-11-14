@@ -14,7 +14,7 @@ dnf copr enable macg4dave/rampire
 dnf install rampire
 ```
 
-Debian and Ubuntu:
+Debian:
 
 ```bash
 curl -fsSL https://macg4dave.github.io/RAMpire/apt/rampire.asc \
@@ -52,7 +52,7 @@ Add the same repository in the VM as on the host in step 1, then:
 dnf install rampire-guest      # or: apt install rampire-guest
 ```
 
-It needs systemd 253 or later: Debian 13, Ubuntu 24.04, RHEL 10, current
+It needs systemd 253 or later: Debian 13, RHEL 10, current
 Fedora. It also installs the QEMU guest agent, so the host can read the
 VM's kernel release in the next step.
 

@@ -1,11 +1,11 @@
 # Names
 
-The names table for the clean break ([roadmap](roadmap.md) R1). R2 and R3
+The names table for the clean break (R1 in the previous roadmap). R2 and R3
 rename everything to the right-hand column, once. Nothing is kept under an
 old name (decision D9).
 
 Reviewed by the owner on 2026-11-14 (decisions D20 to D22 in the
-[roadmap](roadmap.md#decisions)).
+roadmap, `git show 71f1de7~1:docs/roadmap.md`).
 
 ## Rule
 

@@ -1,322 +1,307 @@
 # Roadmap
 
-Written 2026-11-14, when the previous roadmap closed. That roadmap built the
-`rampire` command, the packages and the fleet features. This one makes the
-product clean to use before it is shown working on real hosts and VMs.
+For the owner and contributors: what is being built next, in what order,
+and what stands in the way. Written 2026-11-14. The previous roadmap (clean
+pc101, review the tooling, the hobbyist deployment) is finished and is in
+Git history (`git show ab447c2:docs/roadmap.md`); the one before it is at
+`git show 71f1de7~1:docs/roadmap.md`.
 
-The order matters. Each phase starts only when the one before it is done:
+Three milestones, in order. Each starts when the one before it is done:
 
-1. **S0** Clean pc101, so nothing from older versions is left on the test host.
-2. **S1** Review the tooling and the deployment path as an end user sees
-   them, and merge whatever has piled up twice.
-3. **S2** One deployment as a hobbyist would do it, from the docs alone.
-4. **S3** The remaining deployments, as a system administrator would do them.
+1. **T** A TUI on the KVM host, used locally or over SSH: the pool, one
+   VM, adding and removing VMs, and diagnosing them.
+2. **U** A real user installs RAMpire on their own host from the package
+   files, guided by us, using the TUI.
+3. **M** Man pages, and the split between commands for people and the
+   interface for scripts.
+
+Work that is not scheduled is under [Parked](#parked).
 
 ## Rules for every task
 
 - Everything is done with the product: the packages and the `rampire`
   commands ([AGENTS.md](../AGENTS.md)). There is no test tooling beside
-  it. A step the product can't do is a finding, fixed by adding it to
-  the product.
+  it. A step the product can't do is a finding, fixed by adding it to the
+  product.
 - Deployments stay in place and are improved as findings are fixed; they
   are not torn down after a run.
-- After each deployment, look back at what it took: anything done twice
+- After each milestone, look back at what it took: anything done twice
   gets combined, anything that was awkward gets fixed in the product.
 
-## S0: Clean pc101
+## T: The TUI
 
-Remove everything left on pc101 from `virt-mem-pool` and the older RAMpire
-names, so later phases start from a known host. The removal is done with the
-project's tools; if no tool covers a piece, add the tool first.
+One full-screen program on the KVM host. A person reaches it on the host's
+console or with `ssh -t host sudo rampire` from any terminal. It needs
+nothing on the person's own computer but an SSH client.
 
-- [x] **S0.1** Inventory what is left: old binaries, systemd units, config
-  and state directories, parked files, and libvirt domains and disks from
-  earlier test runs.
+`rampire` with no command opens the TUI when stdin and stdout are
+terminals. Piped, or with `--help`, it prints the help as now. Like every
+other command, it runs as root; read-only screens without root would need
+their own way of reading, and aren't part of T.
 
-  Done 2026-11-14 with a one-time tool, `tools/linux/legacy.sh` (removed
-  once pc101 was clean; it is in Git history).
+| Screen | What it shows and does | Built on |
+|---|---|---|
+| Dashboard | Every managed VM and the pool: each VM's charge, the free pool, host memory against the floor, resizes under way, pool history, events | `rampire top` |
+| VM details | One VM: boot RAM, device size, requested and plugged memory, a resize under way and its progress, the guest's own figures, the last grant and what held it back, its events. Change its settings, attest it again, open its doctor | `rampire watch`, `rampire set`, `rampire vm attest` |
+| Add a VM | The host's VMs that RAMpire doesn't manage; for one, the guided add | `rampire vm add --fix-xml` |
+| Remove a VM | Stop managing a VM, keeping its settings or forgetting them; bring back a parked VM | `rampire vm remove` |
+| Doctor | The host's checks and each VM's, problems first, each with its fix | `rampire doctor` |
+| Logs | The controller's journal, filtered by VM | `rampire logs` |
 
-- [x] **S0.2** Run the removal. Afterwards pc101 has only the current
-  `rampire` build.
+### Where it starts from
 
-  Done 2026-11-14 with `legacy.sh remove --apply --clear-scratch`.
-  `~/github/rampire` is a fresh clone; `~/scratch` is empty; `rampire.service` is still active.
+- `top` and `watch` are live views drawn by our own renderer
+  (`crates/rampire-ops/src/dashboard.rs`, ANSI escapes). They take no
+  input except Ctrl+C.
+- `vm add`, `vm remove` and `apply` ask their questions by reading stdin,
+  in the `rampire` binary (`rampire/src/vm_lifecycle.rs` and `confirm` in
+  `rampire/src/main.rs`). A TUI can't reuse them as they are.
+- `doctor` checks only the host. What is wrong with one VM is spread over
+  `status`, `check`, `watch` and the journal.
+- No command lists the host's VMs that aren't managed, which the add
+  screen needs.
 
-## S1: Tooling and the end-user path
+The TUI is built with [Ratatui](https://ratatui.rs) and `crossterm`,
+which give input, resizing, layout and a test backend for T6.1. `top` and
+`watch` move onto them too, so there is one renderer and the dashboard's
+own ANSI code goes. Both crates are checked against the rule for
+importing third-party code (`git show 71f1de7~1:docs/roadmap.md`).
 
-Before any deployment, read the product the way a new user meets it: the
-README, [quick start](quick-start.md), [administration](administration.md),
-`rampire --help`, the packages and the scripts. Look for anything that was
-added on top of something else instead of replacing it.
+### T1: Groundwork in the commands
 
-- [x] **S1.1** Walk the [quick start](quick-start.md) on paper, command by
-  command. Note every step that needs a second command, a manual edit, a
-  file copied by hand or knowledge the page doesn't give.
+Done first, so the commands and the TUI share one owner for each job.
 
-  Walked 2026-11-14. Findings, each fixed the same day (owner: fix all
-  six before S2):
+- [ ] **T1.1** One owner for the guided flows. Move the steps of `vm
+  add`, `vm remove` and `apply` (show a change, ask yes or no, ask one of
+  several answers, report progress) into `rampire-ops` behind an
+  interface for asking questions. The terminal answers it as today; the
+  TUI answers it in a dialog. Done when the commands' questions and output
+  are unchanged (tests show it) and nothing in the flows reads stdin.
+- [ ] **T1.2** `rampire vm list`: every VM on the libvirt connection,
+  marked managed, parked or not managed. For one that isn't managed, what
+  `vm add --fix-xml` would change and whether its guest service has
+  published. For a managed one, its state as `status` gives it. With
+  `--json` ([json](json.md)).
+- [ ] **T1.3** `rampire doctor VM`: everything that can be checked about
+  one VM, each problem with its fix, as the host checks do:
+  - its definition: the device, the control channel, the balloon, free
+    `maxMemory` slots (what `vm add` inspects);
+  - its attestation against the live VM (`check`);
+  - a latch, and the `recover` command that clears it;
+  - the guest's publication: present, and how old it is;
+  - the guest's readiness report: driver bound, how hot-plugged memory
+    is onlined, the movable zone, `max_ram` against the auto-movable
+    limit ([administration](administration.md#linux-guests));
+  - the last refused or partial request, and what held it back.
 
-  | # | Step | Finding | Fix |
-  |---|---|---|---|
-  | Q1 | 1. Install | The apt repository's setup is in [releasing](releasing.md#installing-from-the-repositories), a maintainer's page; the quick start only says "after adding the repository" | Done: the quick start has the apt lines |
-  | Q2 | 4. Guest | Says `dnf install ./rampire-guest-VERSION...` with no word on getting the file into the VM, though both repositories carry `rampire-guest` | Done: `dnf/apt install rampire-guest` from the same repository |
-  | Q3 | 2. Check | `doctor` is run expecting it to fail ("the only problem should be that nothing is applied yet") | Done: `init` runs `doctor`'s host checks first and stops on a problem, so the quick start no longer runs `doctor` first |
-  | Q4 | 3. Set up | `rampire init` is always followed by `systemctl enable --now rampire`: two commands that always go together | Done: `init` enables and starts `rampire.service` once something is applied |
-  | Q5 | 5. Add | `vm add` asks the guest's kernel release, so the user has to log into the VM for `uname -r` | Done another way: the publication only exists after the restart, so `vm add` reads `guest-get-osinfo` from the QEMU guest agent ("detected") and asks only when the agent doesn't answer. The guest packages now recommend `qemu-guest-agent` |
-  | Q6 | 5. Add | A VM with no NUMA cell or `maxMemory` needs `virsh edit` by hand, then `vm add` again | Done: `--fix-xml` adds a NUMA cell (every vCPU, the boot RAM) and `<maxMemory>` in the same shown change. Too few slots in an existing `<maxMemory>` is still left to a person |
+  `rampire doctor` with no VM keeps the host checks and adds one line per
+  managed VM.
+- [ ] **T1.4** Split `top` and `watch` into what they read and how they
+  draw it, so the TUI draws the same figures from the same reading.
 
-- [x] **S1.2** Inventory every entry point: `rampire` subcommands and
-  options, `cargo xtask` commands, `tools/`, `deploy/`, `packaging/`. For
-  each, who uses it (end user, administrator, developer) and what it
-  overlaps with. Merge, rename or remove the overlaps.
+### T2: The screens
 
-  Inventoried 2026-11-14. The `rampire` commands have no overlaps. The
-  overlaps are in the development tooling, most of it from before
-  `rampire` existed:
+- [ ] **T2.1** The frame: a header with the host, the controller's state
+  and the build; keys or a tab bar between screens; `?` lists the keys;
+  `q` quits; a status line. Keys are plain letters, arrows, Enter, Esc
+  and Tab, so they work in Windows Terminal, PuTTY, macOS Terminal, tmux
+  and screen. Nothing needs a function key, Ctrl with an arrow, or a
+  mouse.
+- [ ] **T2.2** Dashboard (the table above). Enter on a VM opens its
+  details.
+- [ ] **T2.3** VM details, with its actions: change `priority`,
+  `min_ram`, `max_ram` and `free_ram` (`set`, then apply), attest again,
+  remove, doctor.
+- [ ] **T2.4** Add a VM, from `vm list`'s unmanaged VMs, through T1.1:
+  the definition change, the one review question, the files it will
+  write, the restart, the apply, then the guest's first publication as it
+  arrives. A VM whose guest service hasn't published says so, with the
+  install command for the VM's system
+  ([quick start](quick-start.md#3-install-the-guest-service-in-the-vm)).
+- [ ] **T2.5** Remove a VM: keep its settings (parked) or forget them,
+  saying what each one leaves behind. Parked VMs are listed, to bring
+  back.
+- [ ] **T2.6** Doctor (T1.3), host and VMs. Where a fix is a `rampire`
+  command, offer to run it.
+- [ ] **T2.7** Logs, scrolling, filtered by VM.
+- [ ] **T2.8** Every action shows the command line it ran, for example
+  `rampire vm add webserver --fix-xml`, so a person learns the commands
+  and can script what they did.
 
-  Owner: remove them, losing no function, and combine where it fits.
-  Done 2026-11-14:
+### T3: Over SSH, at any size
 
-  | Entry point | Overlaps with | Done |
-  |---|---|---|
-  | `xtask doctor host` | `rampire doctor` (it only checked `virsh` is on `PATH`) | Removed |
-  | `xtask controller-status` | `rampire status --json` | Removed. The one thing it added, the unit's state, is now in `rampire status` (a line first) and its JSON (`controller`, [json](json.md)) |
-  | `xtask attestation` | `rampire vm attest` | Removed |
-  | `xtask host-deploy` (950 lines) | The host package, plus `rampire check` and `apply` (which check attestations and keep the previous copy) | Removed. A development host installs packages from the new `cargo xtask package` ([development](development.md#installing-a-development-build)) |
-  | `xtask linux package` (`debian.rs`) | `packaging/build.sh` (nfpm) | Removed; merged into `cargo xtask package`, which stamps both binaries and runs `build.sh` |
-  | `xtask watch`, `xtask pool` | `rampire watch`, `rampire top` (the same code) | Removed. `tools/windows/Watch-Pool.ps1` now runs the host's `rampire top`, with no checkout, as [names](names.md) already said it should |
-  | `deploy/scripts/clone-vm.sh` | `xtask testvm` (image, seed, boot RAM, `device_mib`) | Removed |
-  | `xtask host-run` | Nothing: the daemon in the foreground with a deadline and a host memory floor | Kept; its help now says `--config` is a directory |
-  | `xtask preflight` | Windows-only, and Windows is parked | Kept with Windows. It reads `host-deploy`'s evidence, which is gone: when Windows comes back it reads `apply`'s evidence in `/var/lib/rampire/evidence/` instead |
-  | `xtask linux deploy/status/uninstall` | The guest package | Kept: it installs a guest build with the workload over SSH, for live tests |
-  | `tools/gate.sh` and `xtask gate` | Each other | Kept: `gate.sh` runs `xtask gate` on a Linux build host from Windows |
-  | `xtask qualification`, `metrics` | Nothing | Kept: live-test evidence |
-  | `tools/linux/legacy.sh` | Nothing | Removed 2026-11-14 (owner): pc101 was the last host with old leftovers, and the rest were cleaned by hand |
+- [ ] **T3.1** Sizes: usable from 80×24 up. Smaller than that, it says
+  the size it needs. Narrow screens drop columns, as `top` does below
+  110. It redraws when the terminal is resized.
+- [ ] **T3.2** Colour: 256 colours where the terminal has them, 16
+  otherwise, none with `NO_COLOR` or `TERM=dumb`. Nothing is shown by
+  colour alone: steady, growing and shrinking also have words or
+  symbols. ASCII lines and bars when the locale isn't UTF-8 (the
+  dashboard's `Glyphs` already do this).
+- [ ] **T3.3** Slow links: it sends only what changed. Keys still answer
+  at once over a link with 200 ms of latency.
+- [ ] **T3.4** Leaving: Ctrl+C, `q`, a dropped SSH connection (SIGHUP)
+  and a crash all give the terminal back as it was. An action under way
+  either finishes or stops where a rerun finishes it (`vm add` already
+  resumes).
+- [ ] **T3.5** Run without root, it says how to start it (`sudo
+  rampire`) instead of failing on the first file it reads.
 
-- [x] **S1.3** The overlaps already known:
-  - `deploy/scripts/clone-vm.sh` and `xtask testvm` both make VMs from a
-    cloud image and a cloud-init seed. Done: removed (S1.2).
-  - `cargo xtask linux package` builds its own guest `.deb`, and
-    `packaging/build.sh` builds another with nfpm. Done: one, `cargo xtask
-    package` (S1.2).
-  - Getting packages from a CI run to pc101 is done by hand
-    (`gh run download`, then `scp`). Done another way (owner: a container
-    build in the repository that everyone can build and test in):
-    `tools/build.sh` runs the gate, `package` or any `cargo xtask` command
-    in the build container (`tools/container/Containerfile`, Docker or
-    Podman), and copies packages back to `dist/`, so every workstation and
-    pc101 build one way. It replaces `tools/gate.sh`; its SSH build host
-    mode stays as `--host`. CI is removed (owner, 2026-11-14: too hard to
-    manage); see [After this roadmap](#after-this-roadmap) for what it
-    published. `tools/build.sh install-check` installs the packages on
-    clean Debian 13, Rocky Linux 10 and Fedora 45 containers.
+### T4: Logging and errors
 
-    Built on each system on 2026-11-14:
+- [ ] **T4.1** Every change made from the TUI is logged to the journal as
+  the command logs it, with the person (`SUDO_USER`) and that it came from
+  the TUI.
+- [ ] **T4.2** An error is shown in full beside the action that caused
+  it, with its fix, and kept in an errors list. It doesn't disappear on
+  the next refresh.
+- [ ] **T4.3** If the TUI itself fails, the terminal is restored and the
+  error printed, with where the journal entry is.
 
-    | System | Gate | Packages | Notes |
-    |---|---|---|---|
-    | Windows 11, Docker 29.9 | Passed (35 s warm; the first run, with the image, about 13 min) | Built, `install-check` passed on all three | The Windows guest's native checks pass too |
-    | pc101, rootless Podman 5.8 | Passed (7 min 21 s cold) | Built, owned by the user | |
-    | pc101 over SSH (`--host`) | Passed | Stops at "nfpm is required", as documented | pc101 has no nfpm; use the container there |
+### T5: Looking great
 
-    Gaps found and fixed: Git for Windows broke the gate's temporary
-    index once `MSYS_NO_PATHCONV` was set for the whole script;
-    `package --print-version` printed nothing to stdout; a link for
-    `target/` on the SSH host counted as an untracked file and broke the
-    build identity. Not a gap: `xtask` doesn't link on Windows, as before
-    this roadmap; the container is the way to run it there.
-- [x] **S1.4** The docs: one place for each fact. Check that the README,
-  quick start, administration and usage pages don't repeat each other or
-  disagree, and that each page says who it is for.
+Done once T1 to T4 work: the screens work first, then they are polished.
+The TUI should look like a finished product: one colour theme, aligned
+panels, gauges and sparklines from Ratatui, and icons where they help a
+person read the screen at a glance. Nothing depends on what is installed
+on the person's own computer, such as a special font.
 
-  Found 2026-11-14: the settings are explained in four places (README,
-  usage, administration, reference), and adding a VM in four (README,
-  quick start, administration, reference). Proposed split:
+- [ ] **T5.1** Unicode icons, the default: symbols such as ⚙ (settings),
+  ● (running), ✓ (ok), ⚠ (problem), ▣ (device) and ◆ (VM), plus block
+  and braille characters for bars and history. One table maps each
+  meaning to its Unicode and ASCII icon, so a screen names "ok", never
+  "✓".
+- [ ] **T5.2** Plain ASCII, the fallback: `[ok]`, `[!!]`, `#` and `.`
+  bars, used when the locale isn't UTF-8, with `TERM=dumb`, or when asked
+  for (T3.2).
+- [ ] **T5.3** Themes: the current navy palette as the default, a light
+  one, and one that uses only the terminal's own 16 colours, so it
+  matches a person's terminal theme.
+- [ ] **T5.4** Unicode, ASCII and each theme are drawn in the T6.1
+  tests, and checked by eye on pc101 over SSH from Windows Terminal and
+  PuTTY.
 
-  | Page | Reader | Holds |
-  |---|---|---|
-  | README | Anyone deciding | What it is, and a link to the quick start, not its commands |
-  | Quick start | Hobbyist, first hour | Install to one managed VM |
-  | Usage | Hobbyist, after that | Day-to-day changes in plain words, linking to reference for each setting |
-  | Administration | Sysadmin | Layout, attestation, recovery, upgrades. No setting tables |
-  | Fleet | Sysadmin, many hosts | Configuration management, metrics, JSON |
-  | Reference | Both | The one definition of every command and setting |
+### T6: Checking it
 
-  Done 2026-11-14. The quick start, README flow, reference and
-  administration follow S1.1, and the links to the deleted
-  `roadmap_next.md` and old roadmap sections are fixed. Reference is now
-  the one definition of every setting and of how sizes are written; it
-  took the facts only administration had (file names, the freshness
-  bound, the Linux removal time, the alignment rules, corrected against
-  the code: 1 MiB and 8 MiB in the file, the device block when running).
-  Administration lost its two setting tables and keeps how the settings
-  act together. Usage keeps its plain-words "how to choose" guide, which
-  nothing else has, and links to reference for the rest. Releasing no
-  longer repeats the quick start's repository lines. Every page now
-  opens by saying who it is for.
+- [ ] **T6.1** Each screen is drawn in tests at 80×24, 120×40 and
+  200×60, in the gate.
+- [ ] **T6.2** On pc101, over SSH from Windows Terminal and from PuTTY,
+  with the kept deployments (`deb13_rampire`, `rhel10_rampire`): add a
+  new VM, change its settings, run its doctor, remove it and bring it
+  back, all from the TUI. Fix the findings and run it again until
+  nothing needs a second terminal.
+- [ ] **T6.3** Docs: the quick start and [usage](usage.md) open the TUI
+  where they now run `top`; [reference](reference.md) lists the TUI and
+  its keys.
 
-- [x] **S1.5** Check the `testvm` scenarios cover the deployments in S2 and
-  S3, and that their first-boot commands are the same commands the docs
-  tell a user to type. A scenario that does something the docs don't say
-  is a gap in the docs or in the tool.
+**Done when** a person with only SSH to the host can add a VM (quick
+start steps 4 and 5), change its settings, diagnose it and remove it from
+the TUI, at 80×24.
 
-  Done 2026-11-14. The `host-*` scenarios (then `clean-host-*`) run the quick start's
-  `rampire init --yes` with no `doctor` beforehand and no `systemctl
-  enable`, then check the unit is active and enabled. They install from
-  `--file`, built by `tools/build.sh package`, since no repository is
-  published. `guest-debian13` (then `linux-guest-debian13`) has the guest agent's channel and its
-  `.deb` pulls in `qemu-guest-agent`, so `vm add` can read the kernel
-  release. One gap, for S2.2: the test command used `--review
-  linux-standard --yes`, which skips the questions the quick start asks.
-  Those questions need a person on a terminal by design, so S2.2 now runs
-  the quick start's own command.
+## U: A real user installs it, guided
 
-- [x] **S1.6** Remove every script and tool outside the product that did
-  a product task (owner, 2026-11-14: "if it's not part of the end product
-  then don't use it"). Removed: `cargo xtask testvm` and its scenarios,
-  `xtask linux deploy/status/uninstall/build`, `host-run`,
-  `qualification`, `preflight`, `metrics`, `windows` and the `Makefile`'s
-  Windows targets, `rampire-workload` in both guests,
-  `tools/windows/Set-PortAccess.ps1`, the example Ansible role and their
-  site examples. `cargo xtask` keeps `gate` and `package`, which build the
-  product. The guest RAM view ships as `rampire-watch-ram` in the guest
-  package; `rampire top` is the pool view.
+Someone who isn't the owner installs RAMpire on their own KVM host and
+puts one of their own Linux VMs under it. They type every command; we
+guide and take notes. The packages are the files from `dist/`, since no
+repository is published yet ([Parked](#parked)).
 
-## S2: The hobbyist deployment (Debian 13)
+RAMpire runs entirely on the host and talks to the guest over a virtio
+channel. It needs no SSH keys and no network setup between host and
+guest. The only SSH in this milestone is the user's own, into their host,
+to use the TUI.
 
-One person, one host, following only the [quick start](quick-start.md). No
-knowledge of the repository, no Ansible. The goal is the experience, not
-just a working controller: anything that would stop or confuse a hobbyist
-is a finding, fixed in the product or the docs.
+### U1: Before the session
 
-- [x] **S2.1** A clean Debian 13 host (`host-debian13`) goes from
-  nothing to a running controller, managing no VMs, with the host `.deb`
-  and `rampire init`.
+- [ ] **U1.1** Their systems meet the requirements: a host with
+  libvirt 10.1 and QEMU 8.2 or later, a guest with systemd 253 or later
+  (Debian 12 and RHEL 9 guests don't qualify).
+- [ ] **U1.2** The [quick start](quick-start.md) gets a route from
+  package files: where the files come from, `dnf install
+  ./rampire-VERSION.x86_64.rpm` or `apt install ./rampire_VERSION_amd64.deb`,
+  and how the guest package gets into the VM. Today step 1 sends them to
+  `dnf copr` and apt lines with nothing behind them, a dead end on the
+  first command.
+- [ ] **U1.3** `vm remove` takes out of the definition what `vm add
+  --fix-xml` put in: the virtio-mem device, the control channel, and the
+  `maxMemory` and NUMA cell if it added them, leaving the VM on its boot
+  RAM with libvirt's defaults. It takes effect at the VM's next cold
+  start. Anything else in the definition is the user's to manage.
+- [ ] **U1.4** One build for the session: both packages and their
+  checksums from `tools/build.sh package` at one commit. The user keeps
+  it for the whole session and upgrades with the same route if a fix
+  comes in.
 
-  Done 2026-11-14 with `cargo xtask testvm up
-  tools/testvm/clean-host-debian13.toml --name clean-debian13 --packages
-  --apply`: all seven steps passed, `doctor` passed every check (libvirt
-  11.3.0, QEMU 10.0.13). Evidence on pc101:
-  `.artifacts/testvm/clean-debian13-1794669872923.json`. Found on the way:
+### U2: The session
 
-  | Finding | Fixed |
-  |---|---|
-  | `init` stopped on Debian: `doctor` read `rampire.service` but not the `.deb`'s drop-in that swaps `qemu` for `libvirt-qemu`, so every Debian and Ubuntu host failed its socket-group check | `doctor` reads the unit's drop-ins in systemd's order |
-  | Running a scenario took four commands and sourcing a site file, and was done once with a scratch script | `testvm` elevates itself, reads `site/testvm.env`, and `--packages` builds the packages first |
-  | `init` said "an eighth of its 1 GiB" on a 1.9 GiB host | Shown to a tenth of a GiB |
-  | During `init`, apply said the controller "will use the new copy when it starts" just before `init` started it | Reworded: nothing was restarted |
-  | `status` with no VMs said "Add one to /etc/rampire/vms.d", pointing a hobbyist at editing files | It names `rampire vm add VM --fix-xml` |
+- [ ] **U2.1** Install: the host package and `rampire init`; we watch
+  for anything they have to ask about.
+- [ ] **U2.2** Guest service in their VM, then add it from the TUI. They
+  answer the review question about their own programs: we never answer
+  it for a real VM.
+- [ ] **U2.3** Use: the dashboard and the VM's details while it works;
+  change one setting; the doctor.
+- [ ] **U2.4** Trouble: they work it out from the doctor and the docs;
+  we step in only when they are stuck. Note what they tried.
 
-- [x] **S2.2** A VM with no virtio-mem device goes from `vm add` to managed
-  in one guided command. Make the guest with `cargo xtask testvm up
-  guest-debian13`, then run the quick start's `sudo rampire vm add
-  guest-debian13 --fix-xml` on a
-  terminal on pc101 and answer its questions as a hobbyist would (a
-  person, or the owner watching). Check `rampire status guest-debian13`,
-  then remove it with `cargo xtask testvm down guest-debian13`. The packages come from
-  `tools/build.sh package` until a repository is published.
+### U3: Afterwards
 
-  Done 2026-11-14. `testvm up guest-debian13` made and kept the guest
-  and printed the `vm add` to run next. `vm add --fix-xml` added the
-  device and control channel, read the kernel release from the guest
-  agent (`linux 6.12.116+deb13-amd64`, detected), wrote the review and
-  settings, restarted the VM and applied; the owner gave the answers.
-  The controller managed it: the guest published over the channel, asked
-  for 122 MiB, was held back by the host reserve, and was grown by
-  16 MiB when room came. `testvm down` removed it. Evidence on pc101:
-  `.artifacts/testvm/guest-debian13-1794671826209.json`. Fixed on the
-  way: an interrupted `vm add` left the VM on its old definition and
-  couldn't be finished (now a rerun finishes it, restarting the VM when
-  the live definition lacks the device or channel), and removing a test
-  VM left six files behind (now `vm remove --forget`, which `testvm down`
-  uses).
-- [x] **S2.3** Write up what the hobbyist path got wrong, fix it, and run
-  S2.1 and S2.2 again until they go through with nothing done by hand.
+- [ ] **U3.1** A findings table: every question they asked, every place
+  they stopped, every command they had to be told. Each finding is fixed
+  in the product or the docs.
+- [ ] **U3.2** Their deployment stays in place, if they want it, and is
+  upgraded as fixes come.
 
-  Found in S2.1 and S2.2, and fixed 2026-11-14:
+**Done when** the user went from nothing to a managed VM with no command
+outside the product and the quick start, and the findings are fixed.
 
-  | Finding | Proposed |
-  |---|---|
-  | `vm add` asks "Do the programs in this VM cope with memory being added and taken away?"; the owner, answering as a hobbyist, wants the text changed | Done: plain words, with examples of programs that don't cope |
-  | `vm add` asks "Is the VM never live-migrated with RDMA?"; the owner had no idea what it means | Done: detected on a host with no RDMA hardware (`/sys/class/infiniband` empty), since RDMA migration needs it; a host with it is asked, with the reason |
-  | `vm add` asks "Is the VM's memory balloon never used to resize it?": libvirt gives every VM a virtio balloon unless told otherwise, so most VMs hit it | Done: `--fix-xml` turns the balloon off in the shown change, and the answer is detected |
-  | `watch` shows a refused grant as `PoolEmpty` beside "15 GiB free"; the journal says `limiting_factors=host_headroom` | Done: "held back" and what held it (host reserve, pool, `max_ram`, the device), from the request's `grant_limits` |
-  | `top` cuts long VM names (`guest-debian1`) | Done: as wide as the longest name, up to 31 |
-  | The two-answer `vm add` can't be scripted for tests, by design; feeding answers through a terminal works but is clumsy | Kept a person's step by design. For test VMs Claude answers it (owner, 2026-11-14) |
+## M: Man pages and the script interface
 
-  Ran again on pc101 at `778dbee`: `testvm up host-debian13` passed all
-  seven steps, with the new messages
-  (`.artifacts/testvm/host-debian13-1794679244725.json`); `testvm up
-  guest-debian13`, then `vm add guest-debian13 --fix-xml` asked one
-  question (answered yes: a fresh test VM running only the guest service)
-  and detected the rest, including RDMA, the balloon (now `none` on the
-  VM) and the kernel release. The controller granted the guest's 122 MiB
-  request in full; `top` showed its whole name; `testvm down` left
-  nothing behind. Nothing was done by hand apart from that answer.
-- [x] **S2.4** A second deployment with the hobbyist path, using only the
-  product from `install` on, kept in place and changed as the findings
-  are fixed.
+Commands for people are short and act by default; scripts get explicit
+flags, `--json` and stable exit codes. This milestone writes that split
+down and ships it. It comes after U, but M1 and M4 are small and move
+before U if T finishes early, so the real user has man pages.
 
-  Done 2026-11-14 (owner: "you do this one"). The host is pc101 (RHEL
-  10.2), upgraded with `tools/build.sh install`. The guest is
-  `deb13_rampire`, the owner's empty VM: Claude wrote the Debian 13 cloud
-  image to its disk, gave it a cloud-init seed with an SSH key and a NIC
-  on `br-lan`, then installed the guest `.deb` (quick start step 3).
-  `sudo rampire vm add deb13_rampire --fix-xml` went through in one
-  command: it asked one question (yes: a fresh VM running only the guest
-  service) and detected the rest, then restarted and applied. The
-  controller granted the guest's first request in full. A first attempt
-  on a nested Debian host (`hobby-debian13`) was dropped. Nothing in the
-  run needed a feature the product lacks.
+- [ ] **M1** Man pages generated from the same command definitions as
+  `--help` (`clap_mangen`), when the packages are built: `rampire(8)`, a
+  page per subcommand (`rampire-vm-add(8)` and so on),
+  `rampire-guest(8)` and `rampire-watch-ram(1)`. Both packages install
+  theirs.
+- [ ] **M2** `rampire.toml(5)`: `global.toml`, `vms.d/VM.toml` and the
+  review profiles, generated from the settings' definitions in
+  `rampire-core`. The gate checks [reference](reference.md)'s settings
+  tables against them, so there is still one definition of each setting.
+- [ ] **M3** The script interface: list every option and command that is
+  for scripts (`--json`, `--yes`, `--detailed-exitcode`, `--no-apply`,
+  `--interval-seconds`, `vm add`'s explicit flags, and the rest), put them
+  under a "For scripts" heading in `--help` and the man pages, and write
+  one page that says what stays stable from the first release: the JSON
+  documents and their versions ([json](json.md)), exit codes, journal
+  event names ([journal](journal.md)).
+- [ ] **M4** Shell completion for bash, zsh and fish (`clap_complete`),
+  installed by the host package.
+- [ ] **M5** Code comments that cite old roadmap task IDs (`O3.5`,
+  `O4.2`, `P1` and others) name the docs page or the behaviour instead,
+  since those roadmaps are gone.
 
-  Found and fixed at `7b2f7a8` and the commit after it; pc101 and the
-  guest were then upgraded in place (packages only, not the VM):
+**Done when** `man rampire` and `man rampire.toml` work on a host from
+the packages, and a script writer can tell from them which interfaces
+won't change.
 
-  | # | Where | Finding | Fixed |
-  |---|---|---|---|
-  | I1 | `init` | "an eighth of its 3.8 GiB, between 2 and 8 GiB" above `host_reserve = "2GB"`, which is the least, not an eighth | Says which: the least, the most, or an eighth |
-  | I2 | `init` | "less what each VM below needs whatever happens:" ended in a colon on a host with no VMs | Says the host has no VMs yet |
-  | I3 | `apply` | Asked to "restart rampire.service" when it wasn't running, and said "restart" when it would reload | The question is worked out first: reload, restart, or neither |
-  | I4 | daemon | With no VMs it said to add one to the *applied* copy's `vms.d` | Names `rampire vm add VM --fix-xml` |
-  | I5 | `top`, `watch` | Events were the oldest of the last 600 under "newest first": `journalctl --grep -n` prints newest first on this systemd | The journal reader sorts by microsecond timestamps |
-  | I6 | daemon | Every start logged `guest_input_invalid` and a libvirt error: it read the agent's control files before the guest had published on the new channel | A fresh channel with nothing yet is waited for |
-  | I7 | guest | Grew by 176 MiB with nothing running: `min_ram` = boot RAM is compared with what the guest sees, which the kernel keeps lower | Not a bug (owner: min_ram is what the user sets; growing above it is fine). The note `vm add` writes and reference say so |
-  | I8 | `apply` | Showed the 70-line attestation JSON | Names it: new, changed or removed |
-  | I9 | `vm add` | Turning off the balloon gave the VM back the 1 GiB its balloon held, unsaid | The shown change says so |
-  | I10 | `top`, `watch` | `rampire: event=libvirt_connected` printed above the screen | Only the daemon logs it |
-  | I11 | `top` | The events list cut names at 13 characters | As wide as the longest name, up to 31 |
+## Parked
 
-  Outside the product, for whoever repeats it: Debian's libvirt leaves
-  the `default` network inactive, and Debian's virt-install 5.0 stops a
-  `--cloud-init` guest when it exits; a NoCloud seed ISO avoids that.
+Not scheduled. Each needs an owner decision or an outside fix first.
 
-## S3: Administrator deployments
-
-The other supported families, as a system administrator would deploy them:
-package manager and the product's own commands, kept in place.
-
-- [ ] **S3.1** Rocky Linux 10.
-- [ ] **S3.2** AlmaLinux 10.
-- [ ] **S3.3** Fedora 45.
-- [ ] **S3.4** Ubuntu 24.04. Ubuntu 24.04 ships
-  libvirt 10.0, but `rampire doctor` requires 10.1, the first with
-  `dynamicMemslots`. Expect `doctor` to fail there. The owner then decides
-  whether to raise the supported Ubuntu release or to lower the minimum.
-- [x] **S3.5** The Ansible role. Removed 2026-11-14 with the rest of the
-  tooling outside the product (S1.6).
-
-## After this roadmap
-
-The first release. CI used to build, sign and publish it on a tag; with
-CI removed, [releasing](releasing.md) builds it with `tools/build.sh` and
-the publishing is the owner's to decide:
-
-- signing the RPMs and `SHA256SUMS`;
-- the GitHub release itself;
-- the apt repository (`packaging/apt-repo.sh` builds it; it was served
-  from GitHub Pages);
-- COPR (`packaging/srpm.sh` makes the source RPM it builds from).
-
-Until the repositories exist, the [quick start](quick-start.md)'s
-`dnf copr` and apt lines have nothing behind them, and a host installs
-the package files from `dist/` or the release page.
+- **W: Windows guests.** Moving to Hyper-V Dynamic Memory. Work on
+  virtio-mem for Windows is paused until the `viomem` driver's removal
+  defect is fixed ([administration](administration.md#windows-guests)).
+- **The first release.** Signing the RPMs and `SHA256SUMS`, the GitHub
+  release, the apt repository and COPR; undecided since CI was removed
+  ([releasing](releasing.md)). Until it exists, the quick start's
+  repository lines have nothing behind them (U1.2).
+- **Administrator deployments.** Rocky Linux 10, AlmaLinux 10 and
+  Fedora 45, as a system administrator would deploy them, kept in place.
+  Not started.
+- **Images in the TUI.** Real pictures through the Kitty graphics
+  protocol and Sixel (for example the mascot in the header), where the
+  terminal supports them, falling back to the icons (T5). After the
+  TUI works and looks right without them.

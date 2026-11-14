@@ -15,7 +15,7 @@ install -m 0644 systemd/rampire.sysusers /etc/sysusers.d/rampire.conf
 systemd-sysusers /etc/sysusers.d/rampire.conf
 ```
 
-On Debian and Ubuntu, libvirt's channel sockets belong to `libvirt-qemu`
+On Debian, libvirt's channel sockets belong to `libvirt-qemu`
 rather than `qemu`:
 
 ```bash

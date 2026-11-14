@@ -32,7 +32,7 @@ development build.
 ## Publishing
 
 Not decided since CI was removed; see the
-[roadmap](roadmap.md#after-this-roadmap). The pieces that exist:
+[roadmap](roadmap.md#parked). The pieces that exist:
 
 | Piece | Tool |
 |---|---|

@@ -359,7 +359,7 @@ usable region and extending a stalled shrink) are archived in
 [archive/viomem](../archive/viomem/) and no longer run: a Windows removal
 that stops moving for the convergence timeout settles at what the guest
 kept. Windows guests are moving to Hyper-V Dynamic Memory;
-see [the roadmap](roadmap.md), milestone W.
+see [the roadmap](roadmap.md#parked), milestone W.
 
 ## The `rampire` command
 
@@ -452,7 +452,8 @@ and every one is at version 1. A reader refuses a schema or version it
 doesn't know, so it never guesses. Until the first release, install the
 controller and the guests from the same build; from release 0.1.0 a
 controller serves guests from its own minor release and the one before it
-(see [the roadmap](roadmap.md#versions-and-releases)).
+(see "Versions and releases" in the previous roadmap,
+`git show 71f1de7~1:docs/roadmap.md`).
 
 1. If the release notes say the attestation format changed, attest every
    VM again first.

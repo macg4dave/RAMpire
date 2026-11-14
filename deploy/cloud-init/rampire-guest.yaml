@@ -7,7 +7,7 @@
 # docs/administration.md, Linux guests).
 #
 # Until there are package repositories, set the URL of the rampire-guest
-# .deb (Debian and Ubuntu) or RPM (RHEL family and Fedora) below.
+# .deb (Debian) or RPM (RHEL family and Fedora) below.
 runcmd:
   - |
     set -e
