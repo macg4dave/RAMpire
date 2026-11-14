@@ -767,13 +767,34 @@ fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String> {
     use rampire_ops::vm;
     let name = options.vm;
     let directory = draft(cli);
-    let settings_path = directory
-        .join(VMS_DIRECTORY)
-        .join(settings::vm_filename(name)?);
-    if settings_path.exists() {
-        return Err(format!(
-            "{name} is already managed; change it with rampire set {name} KEY=VALUE"
-        ));
+    let filename = settings::vm_filename(name)?;
+    let settings_path = directory.join(VMS_DIRECTORY).join(&filename);
+    // Settings in the draft but not in the applied copy are an earlier
+    // `vm add` that stopped before applying: this run finishes it.
+    let resuming = settings_path.exists();
+    if resuming {
+        let applied = rampire_ops::applied::current(applied_root())?
+            .map(|current| current.join(VMS_DIRECTORY).join(&filename));
+        if applied.is_some_and(|path| path.exists()) {
+            return Err(format!(
+                "{name} is already managed; change it with rampire set {name} KEY=VALUE"
+            ));
+        }
+        if options.review.is_some()
+            || options.kernel.is_some()
+            || options.min_ram.is_some()
+            || options.max_ram.is_some()
+            || options.free_ram.is_some()
+        {
+            return Err(format!(
+                "{name} has settings from an earlier vm add in {}: run vm add {name} without settings to finish it, or change them with rampire set",
+                settings_path.display()
+            ));
+        }
+        println!(
+            "{name} has settings from an earlier vm add that didn't finish ({}); finishing it",
+            settings_path.display()
+        );
     }
     let libvirt = libvirt(cli)?;
     let xml = libvirt.virsh(&["dumpxml", "--inactive", name])?;
@@ -837,7 +858,9 @@ fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String> {
     let parked = directory
         .join(PARKED_DIRECTORY)
         .join(settings::vm_filename(name)?);
-    if parked.exists() {
+    if resuming {
+        // Written by the earlier run; kept as it is.
+    } else if parked.exists() {
         restore_parked(&directory, &parked, &settings_path, &alias, options)?;
     } else {
         write_vm_settings(
@@ -853,6 +876,13 @@ fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String> {
     // A VM is attested while it runs, on the definition it was started
     // with: a changed definition needs a cold restart first.
     let running = libvirt.state(name)? == "running";
+    // The definition may have been fixed by an earlier run that stopped
+    // before the restart: a running VM without the device or the channel
+    // its saved definition has still needs one.
+    if running && !restart_needed {
+        let live = vm::inspect(&libvirt.virsh(&["dumpxml", name])?)?;
+        restart_needed = live.device().is_none() || !live.control_channel;
+    }
     let question = match (running, restart_needed) {
         (true, false) => None,
         (true, true) => Some(format!(
