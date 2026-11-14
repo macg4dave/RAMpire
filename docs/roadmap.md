@@ -242,19 +242,29 @@ is a finding, fixed in the product or the docs.
   the live definition lacks the device or channel), and removing a test
   VM left six files behind (now `vm remove --forget`, which `testvm down`
   uses).
-- [ ] **S2.3** Write up what the hobbyist path got wrong, fix it, and run
+- [x] **S2.3** Write up what the hobbyist path got wrong, fix it, and run
   S2.1 and S2.2 again until they go through with nothing done by hand.
 
-  Found in S2.1 and S2.2, still to fix:
+  Found in S2.1 and S2.2, and fixed 2026-11-14:
 
   | Finding | Proposed |
   |---|---|
-  | `vm add` asks "Do the programs in this VM cope with memory being added and taken away?"; the owner, answering as a hobbyist, wants the text changed | Plainer words, with an example of what doesn't cope |
-  | `vm add` asks "Is the VM never live-migrated with RDMA?"; the owner had no idea what it means | Detect it, or don't ask on a host with no migration set up; at least explain it |
-  | `vm add` asks "Is the VM's memory balloon never used to resize it?": libvirt gives every VM a virtio balloon unless told otherwise, so most VMs hit it | `--fix-xml` sets the balloon to `none` in the shown change, so nothing is asked |
-  | `watch` shows a refused grant as `PoolEmpty` beside "15 GiB free"; the journal says `limiting_factors=host_headroom` | Name what held it back: the host reserve, the pool, the VM's limit |
-  | `top` cuts long VM names (`guest-debian1`) | Widen the column to the longest name |
-  | The two-answer `vm add` can't be scripted for tests, by design; feeding answers through a terminal works but is clumsy | Keep it a person's step; S2 is run with the owner |
+  | `vm add` asks "Do the programs in this VM cope with memory being added and taken away?"; the owner, answering as a hobbyist, wants the text changed | Done: plain words, with examples of programs that don't cope |
+  | `vm add` asks "Is the VM never live-migrated with RDMA?"; the owner had no idea what it means | Done: detected on a host with no RDMA hardware (`/sys/class/infiniband` empty), since RDMA migration needs it; a host with it is asked, with the reason |
+  | `vm add` asks "Is the VM's memory balloon never used to resize it?": libvirt gives every VM a virtio balloon unless told otherwise, so most VMs hit it | Done: `--fix-xml` turns the balloon off in the shown change, and the answer is detected |
+  | `watch` shows a refused grant as `PoolEmpty` beside "15 GiB free"; the journal says `limiting_factors=host_headroom` | Done: "held back" and what held it (host reserve, pool, `max_ram`, the device), from the request's `grant_limits` |
+  | `top` cuts long VM names (`guest-debian1`) | Done: as wide as the longest name, up to 31 |
+  | The two-answer `vm add` can't be scripted for tests, by design; feeding answers through a terminal works but is clumsy | Kept a person's step by design. For test VMs Claude answers it (owner, 2026-11-14) |
+
+  Ran again on pc101 at `778dbee`: `testvm up host-debian13` passed all
+  seven steps, with the new messages
+  (`.artifacts/testvm/host-debian13-1794679244725.json`); `testvm up
+  guest-debian13`, then `vm add guest-debian13 --fix-xml` asked one
+  question (answered yes: a fresh test VM running only the guest service)
+  and detected the rest, including RDMA, the balloon (now `none` on the
+  VM) and the kernel release. The controller granted the guest's 122 MiB
+  request in full; `top` showed its whole name; `testvm down` left
+  nothing behind. Nothing was done by hand apart from that answer.
 
 ## S3: Administrator deployments
 
