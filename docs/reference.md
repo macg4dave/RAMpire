@@ -39,7 +39,7 @@ a problem found, 2 a wrong command line.
 
 | Command | What it does |
 |---|---|
-| `rampire vm add VM [--fix-xml] [--review PROFILE] [--kernel RELEASE] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE]` | Starts managing a VM: checks its definition (fixing it with `--fix-xml`, keeping the old one: a NUMA cell, `maxMemory`, the device and the control channel), fills in its review from the definition and the guest agent and asks the rest, writes its settings, restarts it if its definition changed, and applies. A VM with a file in `parked/` gets that file back instead |
+| `rampire vm add VM [--fix-xml] [--review PROFILE] [--kernel RELEASE] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE]` | Starts managing a VM: checks its definition (fixing it with `--fix-xml`, keeping the old one: a NUMA cell, `maxMemory`, the device and the control channel, and the memory balloon turned off), fills in its review from the definition and the guest agent and asks the rest, writes its settings, restarts it if its definition changed, and applies. A VM with a file in `parked/` gets that file back instead |
 | `rampire vm attest VM [--restart] [--no-apply]` | Attests a running VM again from its review profile, then applies. `--restart` cold-restarts it first |
 | `rampire vm attest --drifted` | Lists every running VM whose live evidence no longer matches its attestation, asks, and attests them again |
 | `rampire vm remove VM [--forget]` | Stops managing a VM at once. It keeps its memory until its next cold start, which begins on boot RAM alone. Its file is kept in `parked/`, for `vm add` to bring it back; `--forget`, for a VM being deleted, removes its settings, attestation, request state, definition backups and the review profile `vm add` wrote for it |
@@ -138,7 +138,7 @@ can only be confirmed by a person. See the
 | `version` | 1 |
 | `guest_os` | `"linux"` or `"windows"`, matching the VM |
 | `workload_reviewed` | The VM's programs cope with memory being added and taken away |
-| `no_vdpa`, `no_rdma_migration`, `no_vfio_nvme`, `no_mlock`, `no_secure_virtualization`, `no_unsupported_vhost_user` | None of these, each of which can hold on to guest memory, is used |
-| `balloon_resize_inactive` | The memory balloon isn't used to resize the VM |
+| `no_vdpa`, `no_rdma_migration`, `no_vfio_nvme`, `no_mlock`, `no_secure_virtualization`, `no_unsupported_vhost_user` | None of these, each of which can hold on to guest memory, is used. `no_rdma_migration` is detected on a host with no RDMA hardware |
+| `balloon_resize_inactive` | The memory balloon isn't used to resize the VM; detected when there is none (`--fix-xml` turns it off) |
 | `memory_slot_budget`, `vfio_mapping_budget` | The budgets reviewed for the device |
 | `guest_driver_version` | The kernel release on Linux (`"linux 6.12.0"`), the `viomem` driver version on Windows |

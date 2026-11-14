@@ -846,7 +846,9 @@ fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String> {
                 backup.display()
             );
             inspection = vm::inspect(&libvirt.virsh(&["dumpxml", "--inactive", name])?)?;
-            restart_needed = fixable.iter().any(|change| change.starts_with("add"));
+            // Every change but saving the requested size takes effect when
+            // the VM next starts.
+            restart_needed = fixable.iter().any(|change| !change.starts_with("save"));
         }
     }
     let problems = inspection.problems();
@@ -887,7 +889,9 @@ fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String> {
     // its saved definition has still needs one.
     if running && !restart_needed {
         let live = vm::inspect(&libvirt.virsh(&["dumpxml", name])?)?;
-        restart_needed = live.device().is_none() || !live.control_channel;
+        restart_needed = live.device().is_none()
+            || !live.control_channel
+            || live.balloon.as_deref() != inspection.balloon.as_deref();
     }
     let question = match (running, restart_needed) {
         (true, false) => None,
@@ -987,7 +991,7 @@ fn write_vm_settings(
         None => {
             use rampire_host::attestation::AnswerSource;
             let mut answers = Vec::new();
-            for detected in vm::review_answers(inspection) {
+            for detected in vm::review_answers(inspection, vm::host_has_rdma()) {
                 let (value, source) = match detected.answer {
                     Some(answer) => answer,
                     None => {

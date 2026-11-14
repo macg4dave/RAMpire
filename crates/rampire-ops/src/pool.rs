@@ -641,8 +641,17 @@ fn vm_panel(frame: &mut Frame, command: &Command, sample: &Sample) {
     let wide = frame.width >= 110;
     frame.top("VMS", "host-list order; higher priority is served first");
     frame.row();
+    // As wide as the longest name, so a name is shown whole (up to 31).
+    let width = command
+        .vms
+        .iter()
+        .map(|vm| vm.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(13, 31)
+        + 1;
     let mut header = format!(
-        "  {:<14}{:>4}  {:>8}  {:<17}",
+        "  {:<width$}{:>4}  {:>8}  {:<17}",
         "VM", "PRI", "PLUGGED", "DEVICE"
     );
     if wide {
@@ -654,8 +663,8 @@ fn vm_panel(frame: &mut Frame, command: &Command, sample: &Sample) {
     for (index, (vm, state)) in command.vms.iter().zip(&sample.vms).enumerate() {
         frame.row();
         frame.add(format!("{} ", g.full), vm_colour(index));
-        let name: String = vm.name.chars().take(13).collect();
-        frame.add(format!("{name:<14}"), VALUE);
+        let name: String = vm.name.chars().take(width - 1).collect();
+        frame.add(format!("{name:<width$}"), VALUE);
         frame.add(format!("{:>4}  ", vm.priority), LABEL);
         match state.device {
             None => {

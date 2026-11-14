@@ -312,32 +312,67 @@ fn read_journal(command: &Command, cwd: &Path) -> Journal {
 }
 
 fn parse_last_result(journal: &str) -> Option<LastResult> {
-    let line = journal
-        .lines()
-        .rev()
-        .find(|line| line.contains("event=request_completed"))?;
-    let field = |name: &str| {
+    let lines: Vec<&str> = journal.lines().collect();
+    let at = lines
+        .iter()
+        .rposition(|line| line.contains("event=request_completed"))?;
+    let line = lines[at];
+    let field_of = |line: &str, name: &str| -> Option<String> {
         line.split(' ')
             .find_map(|word| word.strip_prefix(name)?.strip_prefix('='))
+            .map(str::to_owned)
     };
+    let field = |name: &str| field_of(line, name);
     let bytes = |name: &str| field(name)?.parse::<u64>().ok().map(mib);
-    let outcome = field("outcome")?.to_owned();
+    let outcome = field("outcome")?;
     let colour = match outcome.as_str() {
         "Completed" => GREEN,
         "Partial" | "PoolEmpty" => YELLOW,
         _ => RED,
     };
+    let mut detail = format!(
+        "{} {}M -> {}M at {}",
+        field("operation")?,
+        bytes("bytes")?,
+        bytes("actual_bytes")?,
+        line.get(11..19)?
+    );
+    // A grant held back says by what: the same request's grant_limits.
+    let mut shown = outcome.clone();
+    if matches!(outcome.as_str(), "Partial" | "PoolEmpty") {
+        let sequence = field("sequence");
+        let limits = lines[..at].iter().rev().find(|earlier| {
+            earlier.contains("event=grant_limits") && field_of(earlier, "sequence") == sequence
+        });
+        if let Some(by) = limits
+            .and_then(|limits| field_of(limits, "limiting_factors"))
+            .and_then(|factors| held_back_by(&factors))
+        {
+            shown = "held back".to_owned();
+            detail = format!("{detail}: {by}");
+        }
+    }
     Some(LastResult {
-        detail: format!(
-            "{} {}M -> {}M at {}",
-            field("operation")?,
-            bytes("bytes")?,
-            bytes("actual_bytes")?,
-            line.get(11..19)?
-        ),
-        outcome,
+        detail,
+        outcome: shown,
         colour,
     })
+}
+
+/// What a grant's `limiting_factors` mean to a person; `None` when the
+/// request itself was the limit (nothing held it back).
+fn held_back_by(factors: &str) -> Option<String> {
+    let words: Vec<&str> = factors
+        .split(',')
+        .filter_map(|factor| match factor {
+            "host_headroom" => Some("the host reserve (host_reserve)"),
+            "pool" => Some("the pool is fully used (pool)"),
+            "guest_maximum" => Some("the VM's limit (max_ram)"),
+            "device_capacity" => Some("the size of its virtio-mem device"),
+            _ => None,
+        })
+        .collect();
+    (!words.is_empty()).then(|| words.join(" and "))
 }
 
 /// The recent events with their full journal text, for copying.
@@ -804,6 +839,27 @@ mod tests {
             })
         );
         assert_eq!(parse_last_result("no completions"), None);
+    }
+
+    #[test]
+    fn a_held_back_grant_says_what_held_it_back() {
+        let journal = "\
+2026-11-14T16:12:59+00:00 h rampire[1]: rampire: vm=g event=grant_limits session_id=s sequence=4 operation=Add bytes=127926272 limiting_factors=host_headroom alignment_remainder_bytes=0
+2026-11-14T16:12:59+00:00 h rampire[1]: rampire: vm=g event=request_completed operation_id=none session_id=s sequence=4 operation=Add bytes=127926272 outcome=PoolEmpty actual_bytes=0 reason=no free pool, device or host-reserve bytes remain
+";
+        assert_eq!(
+            parse_last_result(journal),
+            Some(LastResult {
+                outcome: "held back".to_owned(),
+                detail: "Add 122M -> 0M at 16:12:59: the host reserve (host_reserve)".to_owned(),
+                colour: YELLOW,
+            })
+        );
+        assert_eq!(
+            held_back_by("pool,guest_maximum").as_deref(),
+            Some("the pool is fully used (pool) and the VM's limit (max_ram)")
+        );
+        assert_eq!(held_back_by("request"), None);
     }
 
     #[test]

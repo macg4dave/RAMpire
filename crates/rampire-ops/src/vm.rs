@@ -125,7 +125,18 @@ impl Inspection {
             }
             _ => {}
         }
+        if self.balloon_active() {
+            changes.push(format!(
+                "turn off the memory balloon (model '{}'): RAMpire resizes the VM with virtio-mem, and a balloon resizing it too would work against it",
+                self.balloon.as_deref().unwrap_or_default()
+            ));
+        }
         changes
+    }
+
+    /// A memory balloon that could resize the VM: any model but `none`.
+    fn balloon_active(&self) -> bool {
+        self.balloon.as_deref().is_some_and(|model| model != "none")
     }
 
     /// Boot RAM: the NUMA cells' memory, or the domain's `<memory>` when a
@@ -397,6 +408,9 @@ pub fn fix_xml(xml: &str, inspection: &Inspection) -> Result<Option<String>, Str
         }
         _ => {}
     }
+    if inspection.balloon_active() {
+        turn_off_balloon(&mut text)?;
+    }
     if !inspection.control_channel {
         insert_device(
             &mut text,
@@ -466,6 +480,29 @@ fn insert_max_memory(text: &mut String, slots: usize, total: u64) -> Result<(), 
     Ok(())
 }
 
+/// The `<memballoon>` element, with whatever it holds, becomes
+/// `<memballoon model='none'/>`.
+fn turn_off_balloon(text: &mut String) -> Result<(), String> {
+    let start = text
+        .find("<memballoon")
+        .ok_or("can't find the memory balloon's text")?;
+    let tag_end = start
+        + text[start..]
+            .find('>')
+            .ok_or("the memory balloon has no end")?;
+    let end = if text[..tag_end].ends_with('/') {
+        tag_end + 1
+    } else {
+        start
+            + text[start..]
+                .find("</memballoon>")
+                .ok_or("the memory balloon has no end")?
+            + "</memballoon>".len()
+    };
+    text.replace_range(start..end, "<memballoon model='none'/>");
+    Ok(())
+}
+
 fn insert_device(text: &mut String, device: &str) -> Result<(), String> {
     let end = text
         .rfind("</devices>")
@@ -512,7 +549,7 @@ pub struct Detected {
 
 /// The yes-or-no review answers (O3.2): detected where the definition shows
 /// them, left to a person otherwise.
-pub fn review_answers(inspection: &Inspection) -> Vec<Detected> {
+pub fn review_answers(inspection: &Inspection, host_has_rdma: bool) -> Vec<Detected> {
     let seen = |clear: bool| clear.then_some((true, AnswerSource::Detected));
     vec![
         Detected {
@@ -525,7 +562,8 @@ pub fn review_answers(inspection: &Inspection) -> Vec<Detected> {
         },
         Detected {
             question: "no_rdma_migration",
-            answer: None,
+            // RDMA migration needs RDMA hardware: a host with none can't do it.
+            answer: seen(!host_has_rdma),
         },
         Detected {
             question: "no_vfio_nvme",
@@ -559,18 +597,28 @@ pub fn review_answers(inspection: &Inspection) -> Vec<Detected> {
 pub fn question_text(question: &str) -> &'static str {
     match question {
         "workload_reviewed" => {
-            "Do the programs in this VM cope with memory being added and taken away?"
+            "RAMpire will add memory to this VM while it runs, and take back memory it isn't using. Most programs are fine with that; ones that grab a fixed amount at start-up or lock memory in place (a database or Java service tuned to a set size, some game servers) may not be. Are the programs in this VM fine with it?"
         }
-        "no_rdma_migration" => "Is the VM never live-migrated with RDMA?",
+        "no_rdma_migration" => {
+            "This host has RDMA network hardware. Live migration over RDMA can't move a VM whose memory RAMpire resizes. Is this VM never live-migrated over RDMA?"
+        }
         "no_vfio_nvme" => {
             "None of the VM's passed-through devices is an NVMe drive, and none pins its memory?"
         }
         "no_unsupported_vhost_user" => {
             "Do the VM's vhost-user devices all support memory being added and removed?"
         }
-        "balloon_resize_inactive" => "Is the VM's memory balloon never used to resize it?",
+        "balloon_resize_inactive" => {
+            "The VM has a memory balloon, which would fight RAMpire over its size. Is the balloon never used to resize it? (--fix-xml turns it off instead.)"
+        }
         _ => "Is this true for the VM?",
     }
+}
+
+/// Whether the host has RDMA hardware, which RDMA live migration needs:
+/// any device under `/sys/class/infiniband`.
+pub fn host_has_rdma() -> bool {
+    std::fs::read_dir("/sys/class/infiniband").is_ok_and(|mut entries| entries.next().is_some())
 }
 
 /// The guest's kernel release from the QEMU guest agent's
@@ -701,9 +749,14 @@ mod tests {
         );
 
         let desk = inspect(PLAIN).unwrap();
-        assert_eq!(desk.fixable().len(), 2);
+        assert_eq!(desk.fixable().len(), 3, "{:?}", desk.fixable());
         let fixed = inspect(&fix_xml(PLAIN, &desk).unwrap().unwrap()).unwrap();
         assert!(fixed.control_channel);
+        // The balloon is off, so its review question answers itself.
+        assert_eq!(fixed.balloon.as_deref(), Some("none"));
+        assert!(review_answers(&fixed, false)
+            .iter()
+            .any(|a| a.question == "balloon_resize_inactive" && a.answer.is_some()));
         let device = fixed.device().expect("a device was added");
         assert_eq!(device.size_bytes, 6 * GIB);
         assert_eq!(device.requested_bytes, 0);
@@ -757,6 +810,17 @@ mod tests {
     }
 
     #[test]
+    fn a_balloon_with_children_is_turned_off_whole() {
+        let live = "<domain>\n  <devices>\n    <memballoon model='virtio'>\n      <stats period='5'/>\n      <alias name='balloon0'/>\n    </memballoon>\n  </devices>\n</domain>\n";
+        let mut text = live.to_owned();
+        turn_off_balloon(&mut text).unwrap();
+        assert_eq!(
+            text,
+            "<domain>\n  <devices>\n    <memballoon model='none'/>\n  </devices>\n</domain>\n"
+        );
+    }
+
+    #[test]
     fn a_domain_with_no_cpu_element_gets_one() {
         let bare = "<domain>\n  <memory unit='KiB'>1048576</memory>\n  <vcpu>1</vcpu>\n  <devices>\n  </devices>\n</domain>\n";
         let inspection = inspect(bare).unwrap();
@@ -783,14 +847,24 @@ mod tests {
             (GIB, 4 * GIB, 512 * MIB)
         );
         assert_eq!(suggest(&web, false).unwrap().max_ram, 9 * GIB);
-        let answers = review_answers(&web);
-        let unanswered: Vec<_> = answers
-            .iter()
-            .filter(|answer| answer.answer.is_none())
-            .map(|answer| answer.question)
-            .collect();
-        assert_eq!(unanswered, ["workload_reviewed", "no_rdma_migration"]);
-        let desk = review_answers(&inspect(PLAIN).unwrap());
+        let unanswered = |answers: Vec<Detected>| -> Vec<&'static str> {
+            answers
+                .iter()
+                .filter(|answer| answer.answer.is_none())
+                .map(|answer| answer.question)
+                .collect()
+        };
+        // A host without RDMA hardware can't migrate over RDMA: only the
+        // workload needs a person.
+        assert_eq!(
+            unanswered(review_answers(&web, false)),
+            ["workload_reviewed"]
+        );
+        assert_eq!(
+            unanswered(review_answers(&web, true)),
+            ["workload_reviewed", "no_rdma_migration"]
+        );
+        let desk = review_answers(&inspect(PLAIN).unwrap(), false);
         let open: Vec<_> = desk
             .iter()
             .filter(|a| a.answer.is_none())
@@ -806,7 +880,7 @@ mod tests {
         let vm: rampire_core::settings::VmSettings =
             toml::from_str(&vm_toml("ua-virtiomem0", 100, "web", &suggested)).unwrap();
         assert_eq!(vm.max_ram, 4 * GIB);
-        let answers: Vec<_> = review_answers(&web)
+        let answers: Vec<_> = review_answers(&web, false)
             .into_iter()
             .map(|a| {
                 let (value, source) = a.answer.unwrap_or((true, AnswerSource::Confirmed));

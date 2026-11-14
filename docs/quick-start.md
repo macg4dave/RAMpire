@@ -66,9 +66,11 @@ rampire vm add webserver --fix-xml
 
 - adds what it lacks, after showing you the exact change: a NUMA cell and
   `maxMemory` if it has none, a virtio-mem device and the control
-  channel. The old definition is kept;
-- asks whether the VM's programs cope with memory coming and going, and
-  the few other questions the definition can't answer;
+  channel. It turns off the memory balloon libvirt adds by default,
+  which would work against RAMpire. The old definition is kept;
+- reads what it can from the VM and the host, and asks you one
+  question: whether the VM's programs are fine with memory being added
+  and taken back while they run;
 - writes `/etc/rampire/vms.d/webserver.toml`, with limits from the VM's
   boot RAM;
 - offers to restart the VM so its new definition takes effect, then
