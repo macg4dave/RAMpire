@@ -218,6 +218,7 @@ is a finding, fixed in the product or the docs.
   | `init` said "an eighth of its 1 GiB" on a 1.9 GiB host | Shown to a tenth of a GiB |
   | During `init`, apply said the controller "will use the new copy when it starts" just before `init` started it | Reworded: nothing was restarted |
   | `status` with no VMs said "Add one to /etc/rampire/vms.d", pointing a hobbyist at editing files | It names `rampire vm add VM --fix-xml` |
+
 - [ ] **S2.2** A VM with no virtio-mem device goes from `vm add` to managed
   in one guided command. Make the guest with `linux-guest-debian13 --keep`,
   then run the quick start's `rampire vm add t-guest --fix-xml` on a
