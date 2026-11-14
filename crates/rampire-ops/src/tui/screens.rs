@@ -780,15 +780,17 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
                 }
                 (None, None) => {}
             }
-            // Newest at the bottom, scrolled back by `scroll`, wrapping long lines.
-            let rows = wrapped_rows(&lines, inner.width);
+            // Newest at the bottom, scrolled back by `scroll`. Lines are
+            // wrapped here, so the rows counted are the rows drawn.
+            let rows: Vec<Line> = lines
+                .into_iter()
+                .flat_map(|line| hard_wrap(line, inner.width as usize))
+                .collect();
             let height = inner.height as usize;
-            let end = rows.saturating_sub(flow.scroll);
-            let skip = end.saturating_sub(height);
-            Paragraph::new(lines)
+            let end = rows.len().saturating_sub(flow.scroll);
+            let start = end.saturating_sub(height);
+            Paragraph::new(rows[start..end].to_vec())
                 .style(theme.base())
-                .wrap(Wrap { trim: false })
-                .scroll((skip as u16, 0))
                 .render(inner, buf);
         }
         Dialog::Choice(choice) => {
@@ -888,6 +890,36 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
             Paragraph::new(lines).style(theme.base()).render(inner, buf);
         }
     }
+}
+
+/// `line` cut into rows of at most `width` columns, keeping each span's
+/// style.
+fn hard_wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for span in line.spans {
+        let style = span.style;
+        let mut piece = String::new();
+        for character in span.content.chars() {
+            let cell = Span::raw(character.to_string()).width();
+            if used + cell > width {
+                if !piece.is_empty() {
+                    row.push(Span::styled(std::mem::take(&mut piece), style));
+                }
+                rows.push(Line::from(std::mem::take(&mut row)));
+                used = 0;
+            }
+            piece.push(character);
+            used += cell;
+        }
+        if !piece.is_empty() {
+            row.push(Span::styled(piece, style));
+        }
+    }
+    rows.push(Line::from(row));
+    rows
 }
 
 /// How many rows `lines` take wrapped at `width`.
@@ -1148,6 +1180,32 @@ mod tests {
             "10:00:00 systemd: Started rampire.service."
         );
         assert_eq!(compact_log_line("-- No entries --"), "-- No entries --");
+    }
+
+    #[test]
+    fn a_long_dialog_shows_its_newest_line_whatever_wraps() {
+        let mut app = app();
+        let (reply, _answer) = std::sync::mpsc::channel();
+        let long = "word ".repeat(30);
+        app.dialog = Some(Dialog::Flow(FlowDialog {
+            action: Action::Apply,
+            title: "rampire apply".to_owned(),
+            lines: std::iter::repeat_n((long, Tone::Normal), 40).collect(),
+            pending: Some(crate::tui::app::Pending {
+                question: Question::Confirm("Apply this and restart rampire.service?".to_owned()),
+                reply,
+                input: String::new(),
+            }),
+            done: None,
+            scroll: 0,
+        }));
+        for (width, height) in SIZES {
+            let text = text(&app, width, height);
+            assert!(text.contains("restart rampire.service? [y/N]"), "{text}");
+        }
+        let rows = hard_wrap(Line::from("abcdef"), 4);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].to_string(), "ef");
     }
 
     #[test]
