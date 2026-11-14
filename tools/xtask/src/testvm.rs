@@ -1,8 +1,9 @@
 //! Disposable test VMs on the development KVM host (`cargo xtask testvm`).
 //!
-//! A scenario file (`tools/testvm/*.toml`) says what the VM is: its cloud
-//! image, boot RAM, optional virtio-mem device and the commands it runs on
-//! first boot. `up` makes a fresh VM from it (a qcow2 overlay on the image
+//! A scenario (`tools/testvm/NAME.toml`) says what the VM is: its cloud
+//! image, boot RAM, optional virtio-mem device, the commands it runs on
+//! first boot, whether it is kept afterwards and what to do next. `up NAME`
+//! makes a fresh VM from it (a qcow2 overlay on the image
 //! and a cloud-init seed carrying the commands and any `--file`), waits for
 //! the commands to finish, reports each one's exit status from the serial
 //! port, records evidence and removes the VM again unless `--keep`. `down`
@@ -22,25 +23,27 @@ use std::time::{Duration, Instant};
 use rampire_ops::process;
 use serde::Deserialize;
 
-pub const HELP: &str = r#"Test VMs (on the KVM host; each runs itself through sudo):
-  cargo xtask testvm up SCENARIO --name NAME [--packages] [--file PATH]... [--keep] [--apply]
-  cargo xtask testvm down NAME [--apply]
-  cargo xtask testvm list
+pub const HELP: &str = r#"Test VMs, on the KVM host:
+  cargo xtask testvm                   the scenarios, and the test VMs running
+  cargo xtask testvm up SCENARIO       make a VM from a scenario and run it
+  cargo xtask testvm down NAME         remove a test VM
 
-up options:
-  --name NAME      The domain name (a-z, 0-9, - and _).
-  --packages       Build the packages from this checkout first
-                   (tools/build.sh package) and put each one in dist/ on
-                   the seed, where the scenario's commands find them.
-  --file PATH      Put PATH on the VM's seed; commands find it in $SEED.
-  --keep           Leave the VM running afterwards and print its address,
-                   for further tests; remove it later with `down`.
-  --apply          Make and start the VM; otherwise show what would be done.
+up builds the packages from this checkout first and puts them on the VM's
+seed. The VM is named after the scenario; the scenario says whether it is
+kept afterwards, and up prints what to do next. Each command runs itself
+through sudo for the part that needs root.
 
-down removes a VM that `up` made: it stops RAMpire managing it if it does
-(`rampire vm remove`), then removes the domain, its disk and its seed.
+Options, mostly for scripts:
+  --dry-run      Show what would be done; change nothing.
+  --name NAME    (up) Name the VM something else (a-z, 0-9, - and _).
+  --keep, --no-keep
+                 (up) Keep the VM afterwards, or remove it, whatever the
+                 scenario says.
+  --no-packages  (up) Don't build the packages.
+  --file PATH    (up) Put PATH on the seed too; commands find it in $SEED.
+  SCENARIO may also be a path to a scenario file.
 
-Environment, or site/testvm.env in the checkout (the host's values; see
+The host's values come from the environment or site/testvm.env (see
 deploy/examples/testvm.env.example):
   RAMPIRE_TESTVM_IMAGES   Folder for disks, seeds and downloaded images.
   RAMPIRE_TESTVM_BRIDGE   Host bridge the VMs join.
@@ -58,6 +61,18 @@ const POLL: Duration = Duration::from_secs(5);
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scenario {
+    /// One line saying what the scenario shows, for `testvm` to list.
+    description: String,
+    /// Keep the VM after its commands, for what comes next, rather than
+    /// remove it.
+    #[serde(default)]
+    keep: bool,
+    /// What to do next with a kept VM; `{name}` is its name.
+    #[serde(default)]
+    next: Option<String>,
+    /// Files and folders of the checkout the commands need on the seed.
+    #[serde(default)]
+    files: Vec<PathBuf>,
     /// An `https://` URL (downloaded once into the images folder) or a path.
     image: String,
     boot_mib: u64,
@@ -93,38 +108,40 @@ fn default_disk_gib() -> u64 {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Up {
-        scenario: PathBuf,
-        name: String,
+        /// A scenario's name, or a path to a scenario file.
+        scenario: String,
+        name: Option<String>,
         files: Vec<PathBuf>,
         packages: bool,
-        keep: bool,
-        apply: bool,
+        /// `None`: as the scenario says.
+        keep: Option<bool>,
+        dry_run: bool,
     },
     Down {
         name: String,
-        apply: bool,
+        dry_run: bool,
     },
     List,
 }
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
     match args.first().map(String::as_str) {
+        None | Some("list") if args.len() <= 1 => Ok(Command::List),
         Some("up") => parse_up(&args[1..]),
         Some("down") => {
-            let name = args.get(1).ok_or("testvm down requires a NAME")?;
+            let name = args.get(1).ok_or("testvm down needs a test VM's name")?;
             valid_name(name)?;
-            let apply = match &args[2..] {
+            let dry_run = match &args[2..] {
                 [] => false,
-                [flag] if flag == "--apply" => true,
-                _ => return Err("testvm down takes only NAME and --apply".to_owned()),
+                [flag] if flag == "--dry-run" => true,
+                _ => return Err("testvm down takes a NAME and --dry-run".to_owned()),
             };
             Ok(Command::Down {
                 name: name.clone(),
-                apply,
+                dry_run,
             })
         }
-        Some("list") if args.len() == 1 => Ok(Command::List),
-        _ => Err(format!("testvm requires up, down or list\n\n{HELP}")),
+        _ => Err(format!("testvm takes up, down or nothing\n\n{HELP}")),
     }
 }
 
@@ -132,19 +149,20 @@ fn parse_up(args: &[String]) -> Result<Command, String> {
     let scenario = args
         .first()
         .filter(|value| !value.starts_with("--"))
-        .ok_or("testvm up requires a SCENARIO file")?;
-    let (mut name, mut files, mut keep, mut apply) = (None, Vec::new(), false, false);
-    let mut packages = false;
+        .ok_or("testvm up needs a scenario: `cargo xtask testvm` lists them")?;
+    let (mut name, mut files, mut keep, mut dry_run) = (None, Vec::new(), None, false);
+    let mut packages = true;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
-            "--keep" if !keep => keep = true,
-            "--packages" if !packages => packages = true,
-            "--apply" if !apply => apply = true,
+            "--keep" if keep.is_none() => keep = Some(true),
+            "--no-keep" if keep.is_none() => keep = Some(false),
+            "--no-packages" if packages => packages = false,
+            "--dry-run" if !dry_run => dry_run = true,
             option @ ("--name" | "--file") => {
                 let value = args
                     .get(index + 1)
-                    .ok_or_else(|| format!("{option} requires a value"))?;
+                    .ok_or_else(|| format!("{option} needs a value"))?;
                 if option == "--file" {
                     files.push(PathBuf::from(value));
                 } else if name.replace(value.clone()).is_some() {
@@ -152,85 +170,172 @@ fn parse_up(args: &[String]) -> Result<Command, String> {
                 }
                 index += 1;
             }
-            option => return Err(format!("unknown or duplicate testvm up option: {option}")),
+            option => return Err(format!("unknown or repeated testvm up option: {option}")),
         }
         index += 1;
     }
-    let name = name.ok_or("testvm up requires --name")?;
-    valid_name(&name)?;
+    if let Some(name) = &name {
+        valid_name(name)?;
+    }
     Ok(Command::Up {
-        scenario: PathBuf::from(scenario),
+        scenario: scenario.clone(),
         name,
         files,
         packages,
         keep,
-        apply,
+        dry_run,
     })
 }
 
-/// The command line for `command`, to run it again through sudo.
-fn arguments(command: &Command) -> Vec<OsString> {
-    let mut arguments = vec![OsString::from("testvm")];
-    match command {
-        Command::Up {
-            scenario,
-            name,
-            files,
-            packages,
-            keep,
-            apply,
-        } => {
-            arguments.extend([
-                OsString::from("up"),
-                scenario.clone().into(),
-                "--name".into(),
-                name.into(),
-            ]);
-            if *packages {
-                arguments.push("--packages".into());
-            }
-            for file in files {
-                arguments.extend(["--file".into(), file.clone().into()]);
-            }
-            if *keep {
-                arguments.push("--keep".into());
-            }
-            if *apply {
-                arguments.push("--apply".into());
-            }
-        }
-        Command::Down { name, apply } => {
-            arguments.extend(["down".into(), name.into()]);
-            if *apply {
-                arguments.push("--apply".into());
-            }
-        }
-        Command::List => arguments.push("list".into()),
+/// A scenario's file: SCENARIO itself when it names a file, otherwise
+/// `tools/testvm/SCENARIO.toml`.
+fn scenario_path(scenario: &str, repo: &Path) -> Result<PathBuf, String> {
+    let given = PathBuf::from(scenario);
+    if scenario.ends_with(".toml") || scenario.contains('/') {
+        return if given.is_file() {
+            Ok(given)
+        } else {
+            Err(format!("no scenario file {scenario}"))
+        };
     }
-    arguments
+    let path = repo.join("tools/testvm").join(format!("{scenario}.toml"));
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "no scenario {scenario}; there are: {}",
+            scenarios(repo)?
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
 }
 
-/// Build the packages from the checkout, as the person running testvm
-/// (never as root: the build container is theirs), and return the
-/// command with each package in dist/ added as a `--file`.
-fn with_packages(command: Command, repo: &Path) -> Result<Command, String> {
+/// Every scenario in `tools/testvm`, by name, in name order.
+fn scenarios(repo: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let folder = repo.join("tools/testvm");
+    let mut found: Vec<(String, PathBuf)> = std::fs::read_dir(&folder)
+        .map_err(|error| format!("read {}: {error}", folder.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "toml")
+        })
+        .filter_map(|path| Some((path.file_stem()?.to_str()?.to_owned(), path.clone())))
+        .collect();
+    found.sort();
+    Ok(found)
+}
+
+/// `cargo xtask testvm`: the scenarios and the test VMs there are. libvirt
+/// is read as the person running it, which works for the libvirt group;
+/// without access the VMs are left out and it says so.
+fn list(repo: &Path) -> Result<(), String> {
+    println!("Scenarios (cargo xtask testvm up NAME):");
+    for (name, path) in scenarios(repo)? {
+        match load_scenario(&path) {
+            Ok(scenario) => println!(
+                "  {name:<20} {}{}",
+                scenario.description,
+                if scenario.keep { " (kept)" } else { "" }
+            ),
+            Err(error) => println!("  {name:<20} unreadable: {error}"),
+        }
+    }
+    let domains = match virsh(&["list", "--all", "--name"], repo) {
+        Ok(domains) => domains,
+        Err(_) => {
+            println!("\nTest VMs: libvirt can't be read as this user (join the libvirt group)");
+            return Ok(());
+        }
+    };
+    let mut made = Vec::new();
+    for name in domains
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        if made_here(name, repo)?.is_some() {
+            let state = virsh(&["domstate", name], repo).unwrap_or_default();
+            made.push(format!("  {name:<20} {}", state.trim()));
+        }
+    }
+    if made.is_empty() {
+        println!("\nTest VMs: none");
+    } else {
+        println!(
+            "\nTest VMs (cargo xtask testvm down NAME):\n{}",
+            made.join("\n")
+        );
+    }
+    Ok(())
+}
+
+/// Everything `up` needs settled before it runs as root: the scenario's
+/// file, the VM's name, whether it is kept, and the files for the seed,
+/// the packages built from the checkout among them.
+fn resolve_up(command: Command, repo: &Path) -> Result<Command, String> {
     let Command::Up {
         scenario,
         name,
         mut files,
-        packages: true,
+        packages,
         keep,
-        apply,
+        dry_run,
     } = command
     else {
         return Ok(command);
     };
+    let path = scenario_path(&scenario, repo)?;
+    let loaded = load_scenario(&path)?;
+    let name = match name {
+        Some(name) => name,
+        None => {
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            valid_name(&stem).map_err(|_| format!("give the VM a --name: {stem} isn't one"))?;
+            stem
+        }
+    };
+    // As root this runs again on what the person's run settled, so a file
+    // already listed isn't added twice.
+    for file in loaded.files.iter().map(|file| repo.join(file)) {
+        if !files.contains(&file) {
+            files.push(file);
+        }
+    }
+    if packages {
+        if dry_run {
+            println!("would build the packages (tools/build.sh package)");
+        } else {
+            files.extend(build_packages(repo)?);
+        }
+    }
+    Ok(Command::Up {
+        scenario: path.display().to_string(),
+        name: Some(name),
+        files,
+        packages: false,
+        keep: Some(keep.unwrap_or(loaded.keep)),
+        dry_run,
+    })
+}
+
+/// Build the packages from the checkout, as the person running testvm
+/// (never as root: the build container is theirs), and return them.
+fn build_packages(repo: &Path) -> Result<Vec<PathBuf>, String> {
     let mut build = std::process::Command::new("bash");
     if process::effective_uid() == 0 {
         let user = std::env::var("SUDO_USER")
             .ok()
             .filter(|user| !user.is_empty() && user != "root")
-            .ok_or("--packages builds as a person, not root: run testvm as yourself")?;
+            .ok_or("building the packages needs a person, not root: run testvm as yourself, or pass --no-packages")?;
         build = std::process::Command::new("sudo");
         build.args(["-u", &user, "-H", "bash"]);
     }
@@ -259,15 +364,50 @@ fn with_packages(command: Command, repo: &Path) -> Result<Command, String> {
             dist.display()
         ));
     }
-    files.extend(built);
-    Ok(Command::Up {
-        scenario,
-        name,
-        files,
-        packages: false,
-        keep,
-        apply,
-    })
+    Ok(built)
+}
+
+/// The command line for `command`, to run it again through sudo. `up` is
+/// resolved first, so it carries every choice explicitly.
+fn arguments(command: &Command) -> Vec<OsString> {
+    let mut arguments = vec![OsString::from("testvm")];
+    match command {
+        Command::Up {
+            scenario,
+            name,
+            files,
+            packages,
+            keep,
+            dry_run,
+        } => {
+            arguments.extend([OsString::from("up"), scenario.into()]);
+            if let Some(name) = name {
+                arguments.extend(["--name".into(), name.into()]);
+            }
+            if !*packages {
+                arguments.push("--no-packages".into());
+            }
+            for file in files {
+                arguments.extend(["--file".into(), file.clone().into()]);
+            }
+            match keep {
+                Some(true) => arguments.push("--keep".into()),
+                Some(false) => arguments.push("--no-keep".into()),
+                None => {}
+            }
+            if *dry_run {
+                arguments.push("--dry-run".into());
+            }
+        }
+        Command::Down { name, dry_run } => {
+            arguments.extend(["down".into(), name.into()]);
+            if *dry_run {
+                arguments.push("--dry-run".into());
+            }
+        }
+        Command::List => {}
+    }
+    arguments
 }
 
 /// Run this command again as root, through sudo, keeping the environment
@@ -359,37 +499,35 @@ fn site(repo: &Path) -> Result<Site, String> {
 }
 
 pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
-    let command = with_packages(command.clone(), repo)?;
-    if process::effective_uid() != 0 {
-        return elevate(&command);
+    if *command == Command::List {
+        return list(repo);
     }
-    match &command {
+    let command = if process::effective_uid() == 0 {
+        command.clone()
+    } else {
+        // Settled as the person running it, then run again as root.
+        return elevate(&resolve_up(command.clone(), repo)?);
+    };
+    // As root: an `up` from a script that ran testvm through sudo itself is
+    // settled here, packages built as SUDO_USER.
+    match resolve_up(command, repo)? {
         Command::Up {
             scenario,
             name,
             files,
             keep,
-            apply,
+            dry_run,
             ..
-        } => up(scenario, name, files, *keep, *apply, repo),
-        Command::Down { name, apply } => {
-            require_root()?;
-            down(name, *apply, repo)
-        }
-        Command::List => {
-            require_root()?;
-            for name in virsh(&["list", "--all", "--name"], repo)?.lines() {
-                let name = name.trim();
-                if name.is_empty() {
-                    continue;
-                }
-                if let Some(paths) = made_here(name, repo)? {
-                    let state = virsh(&["domstate", name], repo)?;
-                    println!("{name}\t{}\t{}", state.trim(), paths.disk.display());
-                }
-            }
-            Ok(())
-        }
+        } => up(
+            Path::new(&scenario),
+            &name.expect("resolved"),
+            &files,
+            keep.expect("resolved"),
+            !dry_run,
+            repo,
+        ),
+        Command::Down { name, dry_run } => down(&name, !dry_run, repo),
+        Command::List => list(repo),
     }
 }
 
@@ -397,7 +535,7 @@ fn require_root() -> Result<(), String> {
     if process::effective_uid() == 0 {
         Ok(())
     } else {
-        Err("testvm runs as root on the KVM host (sudo target/debug/xtask testvm ...)".to_owned())
+        Err("testvm needs root for this; run it as yourself and it uses sudo".to_owned())
     }
 }
 
@@ -492,7 +630,7 @@ fn up(
     describe(&plan);
     if !apply {
         println!(
-            "\n{}\n{}\ndry run: pass --apply to make and start it",
+            "\n{}\n{}\ndry run: nothing was made",
             plan.xml, plan.user_data
         );
         return Ok(());
@@ -563,6 +701,12 @@ fn up(
             Some(address) => println!("{name} kept, at {address} (ssh {USER}@{address})"),
             None => println!("{name} kept; its address isn't known yet (no guest agent answer)"),
         }
+        if outcome.is_ok() {
+            if let Some(next) = &plan.scenario.next {
+                println!("next: {}", next.replace("{name}", name));
+            }
+        }
+        println!("remove it with: cargo xtask testvm down {name}");
     } else {
         down(name, true, repo)?;
     }
@@ -1099,7 +1243,7 @@ fn down(name: &str, apply: bool, repo: &Path) -> Result<(), String> {
         paths.seed.display()
     );
     if !apply {
-        println!("dry run: pass --apply to remove it");
+        println!("dry run: nothing was removed");
         return Ok(());
     }
     if managed {
@@ -1154,6 +1298,10 @@ mod tests {
 
     fn scenario(device_mib: u64, hotplug_mib: u64) -> Scenario {
         Scenario {
+            description: "a test".to_owned(),
+            keep: false,
+            next: None,
+            files: Vec::new(),
             image: "https://example.invalid/image.qcow2".to_owned(),
             boot_mib: 1024,
             device_mib,
@@ -1176,38 +1324,102 @@ mod tests {
 
     #[test]
     fn parses_up_down_and_list() {
+        // A person names a scenario; everything else has a default.
         assert_eq!(
-            parse(&strings(&[
-                "up", "s.toml", "--name", "t1", "--file", "a.rpm", "--keep", "--apply"
-            ])),
+            parse(&strings(&["up", "guest-debian13"])),
             Ok(Command::Up {
-                scenario: PathBuf::from("s.toml"),
-                name: "t1".to_owned(),
-                files: vec![PathBuf::from("a.rpm")],
-                packages: false,
-                keep: true,
-                apply: true,
+                scenario: "guest-debian13".to_owned(),
+                name: None,
+                files: Vec::new(),
+                packages: true,
+                keep: None,
+                dry_run: false,
             })
         );
-        let with = parse(&strings(&["up", "s.toml", "--name", "t1", "--packages"])).unwrap();
-        assert!(matches!(with, Command::Up { packages: true, .. }));
         assert_eq!(
-            arguments(&with),
-            ["testvm", "up", "s.toml", "--name", "t1", "--packages"]
-                .map(OsString::from)
-                .to_vec()
+            parse(&strings(&[
+                "up",
+                "s.toml",
+                "--name",
+                "t1",
+                "--file",
+                "a.rpm",
+                "--no-keep",
+                "--no-packages",
+                "--dry-run"
+            ])),
+            Ok(Command::Up {
+                scenario: "s.toml".to_owned(),
+                name: Some("t1".to_owned()),
+                files: vec![PathBuf::from("a.rpm")],
+                packages: false,
+                keep: Some(false),
+                dry_run: true,
+            })
+        );
+        let resolved = Command::Up {
+            scenario: "/r/tools/testvm/g.toml".to_owned(),
+            name: Some("g".to_owned()),
+            files: vec![PathBuf::from("/r/dist/a.deb")],
+            packages: false,
+            keep: Some(true),
+            dry_run: false,
+        };
+        assert_eq!(
+            arguments(&resolved),
+            [
+                "testvm",
+                "up",
+                "/r/tools/testvm/g.toml",
+                "--name",
+                "g",
+                "--no-packages",
+                "--file",
+                "/r/dist/a.deb",
+                "--keep"
+            ]
+            .map(OsString::from)
+            .to_vec()
+        );
+        assert_eq!(
+            parse(
+                &arguments(&resolved)[1..]
+                    .iter()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            ),
+            Ok(resolved)
         );
         assert_eq!(
             parse(&strings(&["down", "t1"])),
             Ok(Command::Down {
                 name: "t1".to_owned(),
-                apply: false
+                dry_run: false
             })
         );
+        assert_eq!(parse(&strings(&[])), Ok(Command::List));
         assert_eq!(parse(&strings(&["list"])), Ok(Command::List));
-        assert!(parse(&strings(&["up", "s.toml"])).is_err());
-        assert!(parse(&strings(&["up", "s.toml", "--name", "Bad"])).is_err());
+        assert!(parse(&strings(&["up"])).is_err());
+        assert!(parse(&strings(&["up", "s", "--name", "Bad"])).is_err());
+        assert!(parse(&strings(&["up", "s", "--keep", "--no-keep"])).is_err());
         assert!(parse(&strings(&["down", "t1", "--force"])).is_err());
+    }
+
+    #[test]
+    fn every_scenario_in_the_repository_loads_and_says_what_it_is() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let found = scenarios(&repo).unwrap();
+        assert!(!found.is_empty());
+        for (name, path) in found {
+            valid_name(&name).unwrap();
+            let scenario = load_scenario(&path).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(!scenario.description.is_empty(), "{name}");
+            for file in &scenario.files {
+                assert!(repo.join(file).exists(), "{name}: {}", file.display());
+            }
+            assert_eq!(scenario_path(&name, &repo).unwrap(), path);
+        }
+        assert!(scenario_path("no-such-scenario", &repo).is_err());
     }
 
     #[test]

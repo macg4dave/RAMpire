@@ -37,8 +37,8 @@ tools/build.sh package --install
 
 builds the packages in the build container and installs the host package
 with dnf or apt, upgrading what is installed; it checks that `rampire
---version` reports the build just made. Guests get their package with
-`cargo xtask testvm --packages`, or `cargo xtask linux deploy`.
+--version` reports the build just made. A test VM gets the current packages
+from `cargo xtask testvm up SCENARIO`, which builds them first.
 
 This rule is about operating the product. It does not restrict editing,
 building or testing the code in this repository.

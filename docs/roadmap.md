@@ -183,11 +183,11 @@ added on top of something else instead of replacing it.
   tell a user to type. A scenario that does something the docs don't say
   is a gap in the docs or in the tool.
 
-  Done 2026-11-14. The `clean-host-*` scenarios run the quick start's
+  Done 2026-11-14. The `host-*` scenarios (then `clean-host-*`) run the quick start's
   `rampire init --yes` with no `doctor` beforehand and no `systemctl
   enable`, then check the unit is active and enabled. They install from
   `--file`, built by `tools/build.sh package`, since no repository is
-  published. `linux-guest-debian13` has the guest agent's channel and its
+  published. `guest-debian13` (then `linux-guest-debian13`) has the guest agent's channel and its
   `.deb` pulls in `qemu-guest-agent`, so `vm add` can read the kernel
   release. One gap, for S2.2: the test command used `--review
   linux-standard --yes`, which skips the questions the quick start asks.
@@ -201,7 +201,7 @@ knowledge of the repository, no Ansible. The goal is the experience, not
 just a working controller: anything that would stop or confuse a hobbyist
 is a finding, fixed in the product or the docs.
 
-- [x] **S2.1** A clean Debian 13 host (`clean-host-debian13`) goes from
+- [x] **S2.1** A clean Debian 13 host (`host-debian13`) goes from
   nothing to a running controller, managing no VMs, with the host `.deb`
   and `rampire init`.
 
@@ -220,11 +220,12 @@ is a finding, fixed in the product or the docs.
   | `status` with no VMs said "Add one to /etc/rampire/vms.d", pointing a hobbyist at editing files | It names `rampire vm add VM --fix-xml` |
 
 - [ ] **S2.2** A VM with no virtio-mem device goes from `vm add` to managed
-  in one guided command. Make the guest with `linux-guest-debian13 --keep`,
-  then run the quick start's `rampire vm add t-guest --fix-xml` on a
+  in one guided command. Make the guest with `cargo xtask testvm up
+  guest-debian13`, then run the quick start's `sudo rampire vm add
+  guest-debian13 --fix-xml` on a
   terminal on pc101 and answer its questions as a hobbyist would (a
-  person, or the owner watching). Check `rampire status t-guest`, then
-  remove it with `testvm down t-guest --apply`. The packages come from
+  person, or the owner watching). Check `rampire status guest-debian13`,
+  then remove it with `cargo xtask testvm down guest-debian13`. The packages come from
   `tools/build.sh package` until a repository is published.
 - [ ] **S2.3** Write up what the hobbyist path got wrong, fix it, and run
   S2.1 and S2.2 again until they go through with nothing done by hand.
@@ -233,12 +234,12 @@ is a finding, fixed in the product or the docs.
 
 The other supported families, as a system administrator would deploy them:
 package manager, configuration management, repeatable runs. Each uses its
-`clean-host-*` scenario.
+`host-*` scenario: `cargo xtask testvm up host-rocky10` and so on.
 
-- [ ] **S3.1** Rocky Linux 10 (`clean-host-rocky10`).
-- [ ] **S3.2** AlmaLinux 10 (`clean-host-almalinux10`).
-- [ ] **S3.3** Fedora 45 (`clean-host-fedora45`).
-- [ ] **S3.4** Ubuntu 24.04 (`clean-host-ubuntu2404`). Ubuntu 24.04 ships
+- [ ] **S3.1** Rocky Linux 10 (`host-rocky10`).
+- [ ] **S3.2** AlmaLinux 10 (`host-almalinux10`).
+- [ ] **S3.3** Fedora 45 (`host-fedora45`).
+- [ ] **S3.4** Ubuntu 24.04 (`host-ubuntu2404`). Ubuntu 24.04 ships
   libvirt 10.0, but `rampire doctor` requires 10.1, the first with
   `dynamicMemslots`. Expect `doctor` to fail there. The owner then decides
   whether to raise the supported Ubuntu release or to lower the minimum.

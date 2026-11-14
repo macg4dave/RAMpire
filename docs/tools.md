@@ -197,38 +197,48 @@ other. Diagnostic fields never authorise memory changes.
 ## Test VMs
 
 ```bash
-cargo xtask testvm up tools/testvm/SCENARIO.toml --name NAME \
-  [--packages] [--file PATH]... [--keep] [--apply]
-cargo xtask testvm down NAME [--apply]
-cargo xtask testvm list
+cargo xtask testvm                      # the scenarios, and the test VMs running
+cargo xtask testvm up guest-debian13    # make a VM from a scenario
+cargo xtask testvm down guest-debian13  # remove it
 ```
 
 Every VM a test needs is made by `testvm`, never by hand. Run it as
-yourself on the KVM host: each action runs itself again through `sudo`
+yourself on the KVM host; each command runs itself again through `sudo`
 for the part that needs root. The host's values (where images go, which
 bridge the VMs join) come from the environment or from `site/testvm.env`
 (copy [deploy/examples/testvm.env.example](../deploy/examples/testvm.env.example)).
-`--packages` builds the packages from the checkout first, as you, with
-`tools/build.sh package`, and puts each one on the seed. A scenario in
-[tools/testvm](../tools/testvm) says what the VM is (cloud image, boot RAM,
-a virtio-mem device or room for one, nested virtualisation) and the
-commands it runs on first boot. `up` downloads the image once, makes a
-qcow2 overlay and a cloud-init seed carrying the commands and each
-`--file` (a file or a folder; commands find them in `$SEED`), starts the
-VM and waits. Each command's exit status comes back over the serial port.
-Evidence and the serial log go to `.artifacts/testvm/`. The VM is removed
-afterwards unless `--keep`, which prints its address instead.
+
+`up SCENARIO` builds the packages from the checkout first, as you, with
+`tools/build.sh package`, so the VM tests the current build. It downloads
+the scenario's image once, makes a qcow2 overlay and a cloud-init seed
+carrying the packages, the files the scenario names and its commands,
+starts the VM named after the scenario and waits. Each command's exit
+status comes back over the serial port; evidence and the serial log go to
+`.artifacts/testvm/`. The scenario says whether the VM is kept afterwards:
+a kept one prints its address and the command to run next, and stays
+until `down`. `up` refuses to start a VM unless the host has its boot RAM
+and 1 GiB more available.
 
 `down` removes only a VM that `up` made, which it knows by a metadata
 element naming the VM's disk and seed. If RAMpire manages the VM, `down`
-runs `rampire vm remove` first. `up` refuses to start a VM unless the host
-has its boot RAM and 1 GiB more available.
+runs `rampire vm remove` first.
+
+For scripts, both take `--dry-run`, and `up` takes `--name NAME`,
+`--keep` or `--no-keep`, `--no-packages` and `--file PATH` (more on the
+seed; commands find it in `$SEED`). SCENARIO can also be a path to a
+scenario file.
+
+A scenario is a file in [tools/testvm](../tools/testvm): a `description`,
+whether to `keep` the VM, what to do `next` with it, the checkout's
+`files` its commands need, the cloud image, boot RAM, a virtio-mem device
+or room for one, nested virtualisation, and the `commands` it runs on
+first boot.
 
 | Scenario | What it shows |
 |---|---|
-| `clean-host-almalinux10`, `-rocky10`, `-fedora45`, `-debian13`, `-ubuntu2404` | A clean host of each supported family goes from nothing to a running controller with the package manager and `rampire init` (roadmap O2 exit) |
-| `linux-guest-debian13` | A guest with the guest package, room for a device but no device and no control channel, for `rampire vm add --fix-xml` (O3 exit); use `--keep` |
-| `ansible-almalinux10` | The example Ansible role on a clean host: "changed", then no change, then "changed" after a settings change (O4 exit) |
+| `host-almalinux10`, `host-rocky10`, `host-fedora45`, `host-debian13`, `host-ubuntu2404` | A clean host of each supported family goes from nothing to a running controller with the package manager and `rampire init` |
+| `guest-debian13` | A guest with the guest package, room for a device but no device and no control channel, for `rampire vm add --fix-xml`; kept |
+| `ansible-almalinux10` | The example Ansible role on a clean host: "changed", then no change, then "changed" after a settings change |
 
 ## Watching guest RAM
 
