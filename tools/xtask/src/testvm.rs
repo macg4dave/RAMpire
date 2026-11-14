@@ -1253,6 +1253,8 @@ fn down(name: &str, apply: bool, repo: &Path) -> Result<(), String> {
                 process::os("vm"),
                 process::os("remove"),
                 process::os(name),
+                // The VM is being deleted: nothing of it is kept.
+                process::os("--forget"),
                 process::os("--yes"),
             ],
             repo,

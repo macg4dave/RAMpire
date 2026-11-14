@@ -42,7 +42,7 @@ a problem found, 2 a wrong command line.
 | `rampire vm add VM [--fix-xml] [--review PROFILE] [--kernel RELEASE] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE]` | Starts managing a VM: checks its definition (fixing it with `--fix-xml`, keeping the old one: a NUMA cell, `maxMemory`, the device and the control channel), fills in its review from the definition and the guest agent and asks the rest, writes its settings, restarts it if its definition changed, and applies. A VM with a file in `parked/` gets that file back instead |
 | `rampire vm attest VM [--restart] [--no-apply]` | Attests a running VM again from its review profile, then applies. `--restart` cold-restarts it first |
 | `rampire vm attest --drifted` | Lists every running VM whose live evidence no longer matches its attestation, asks, and attests them again |
-| `rampire vm remove VM` | Stops managing a VM at once. It keeps its memory until its next cold start, which begins on boot RAM alone. Its file is kept in `parked/` |
+| `rampire vm remove VM [--forget]` | Stops managing a VM at once. It keeps its memory until its next cold start, which begins on boot RAM alone. Its file is kept in `parked/`, for `vm add` to bring it back; `--forget`, for a VM being deleted, removes its settings, attestation, request state, definition backups and the review profile `vm add` wrote for it |
 
 ### Watching
 

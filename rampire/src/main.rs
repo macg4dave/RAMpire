@@ -237,10 +237,16 @@ enum VmCommand {
         free_ram: Option<String>,
     },
     /// Stop managing a VM at once. It keeps the memory it has until its next
-    /// cold start, which begins on boot RAM alone.
+    /// cold start, which begins on boot RAM alone. Its settings are kept in
+    /// parked/, so `vm add` brings it back as it was.
     Remove {
         /// The VM.
         vm: String,
+        /// Forget the VM instead of parking it: for a VM that is being
+        /// deleted. Its settings, attestation, request state and definition
+        /// backups go, and the review profile `vm add` wrote for it.
+        #[arg(long)]
+        forget: bool,
     },
     /// Attest a running VM again from its review profile, then apply.
     ///
@@ -396,7 +402,7 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                     free_ram: free_ram.as_deref(),
                 },
             ),
-            VmCommand::Remove { vm } => vm_remove(cli, vm),
+            VmCommand::Remove { vm, forget } => vm_remove(cli, vm, *forget),
         },
         Command::ClearLatch { vm, reason, apply } => {
             let target = target(cli, Some(vm))?;
@@ -827,7 +833,7 @@ fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String> {
                 println!("nothing changed");
                 return Ok(ExitCode::SUCCESS);
             }
-            let backups = Path::new("/var/lib/rampire/domain-backups");
+            let backups = Path::new(DOMAIN_BACKUPS);
             std::fs::create_dir_all(backups).map_err(|error| error.to_string())?;
             let backup = backups.join(format!("{name}-{}.xml", process::unix_millis()?));
             std::fs::copy(&before, &backup)
@@ -1067,17 +1073,32 @@ fn write_vm_settings(
     Ok(())
 }
 
-fn vm_remove(cli: &Cli, name: &str) -> Result<ExitCode, String> {
+fn vm_remove(cli: &Cli, name: &str, forget: bool) -> Result<ExitCode, String> {
     use rampire_core::settings::{self, VMS_DIRECTORY};
     let directory = draft(cli);
     let path = directory
         .join(VMS_DIRECTORY)
         .join(settings::vm_filename(name)?);
+    // A VM removed earlier, now being deleted: only what was kept for it goes.
+    let parked = directory
+        .join(PARKED_DIRECTORY)
+        .join(settings::vm_filename(name)?);
+    if forget && !path.exists() && parked.exists() {
+        let review = settings::load_vm(&parked)?.review;
+        if !confirm(cli, &format!("Forget everything RAMpire kept for {name}?"))? {
+            println!("nothing changed");
+            return Ok(ExitCode::SUCCESS);
+        }
+        forget_vm(&directory, name, review.as_deref())?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let vm = settings::load_vm(&path)?;
-    if !confirm(
-        cli,
-        &format!("Stop managing {name}? It keeps its memory until its next cold start."),
-    )? {
+    let question = if forget {
+        format!("Stop managing {name} and forget everything RAMpire keeps for it?")
+    } else {
+        format!("Stop managing {name}? It keeps its memory until its next cold start.")
+    };
+    if !confirm(cli, &question)? {
         println!("nothing changed");
         return Ok(ExitCode::SUCCESS);
     }
@@ -1094,14 +1115,79 @@ fn vm_remove(cli: &Cli, name: &str) -> Result<ExitCode, String> {
             "--config",
         ])?;
     }
-    let parked = directory
-        .join(PARKED_DIRECTORY)
-        .join(settings::vm_filename(name)?);
+    if forget {
+        std::fs::remove_file(&path)
+            .map_err(|error| format!("remove {}: {error}", path.display()))?;
+        // The controller lets go of the VM first; then what it kept goes.
+        let code = apply(cli, false)?;
+        forget_vm(&directory, name, vm.review.as_deref())?;
+        return Ok(code);
+    }
     std::fs::create_dir_all(directory.join(PARKED_DIRECTORY)).map_err(|error| error.to_string())?;
     std::fs::rename(&path, &parked).map_err(|error| format!("move {}: {error}", path.display()))?;
     println!("{name}'s settings are kept in {}", parked.display());
     apply(cli, false)
 }
+
+/// Remove what RAMpire keeps for a VM it no longer manages: its parked
+/// settings, attestation, request state and definition backups, and its
+/// review profile when `vm add` wrote it for this VM (named after it) and
+/// no other VM's settings name it.
+fn forget_vm(directory: &Path, name: &str, review: Option<&str>) -> Result<(), String> {
+    use rampire_core::settings::{self, VMS_DIRECTORY};
+    let mut gone = vec![
+        directory
+            .join(PARKED_DIRECTORY)
+            .join(settings::vm_filename(name)?),
+        rampire_host::config::attestation_path(directory, name),
+    ];
+    let state = Path::new(rampire_host::config::DEFAULT_STATE_DIRECTORY);
+    for suffix in ["requests.json", "requests.json.lock"] {
+        gone.push(state.join(format!("{name}-{suffix}")));
+    }
+    if let Ok(entries) = std::fs::read_dir(DOMAIN_BACKUPS) {
+        for entry in entries.flatten() {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            if file
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with('-') && rest.ends_with(".xml"))
+            {
+                gone.push(entry.path());
+            }
+        }
+    }
+    if review == Some(name) {
+        let named_elsewhere = [VMS_DIRECTORY, PARKED_DIRECTORY].iter().any(|folder| {
+            std::fs::read_dir(directory.join(folder))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| {
+                    entry.file_name() != std::ffi::OsString::from(format!("{name}.toml"))
+                })
+                .filter_map(|entry| settings::load_vm(&entry.path()).ok())
+                .any(|other| other.review.as_deref() == Some(name))
+        });
+        if !named_elsewhere {
+            gone.push(
+                directory
+                    .join(rampire_ops::applied::REVIEW_DIRECTORY)
+                    .join(format!("{name}.toml")),
+            );
+        }
+    }
+    for path in gone {
+        match std::fs::remove_file(&path) {
+            Ok(()) => println!("removed {}", path.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("remove {}: {error}", path.display())),
+        }
+    }
+    Ok(())
+}
+
+/// Where `vm add --fix-xml` keeps the definitions it replaced.
+const DOMAIN_BACKUPS: &str = "/var/lib/rampire/domain-backups";
 
 fn vm_attest(
     cli: &Cli,
