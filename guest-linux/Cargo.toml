@@ -19,6 +19,3 @@ libc = "0.2"
 name = "rampire-guest"
 path = "src/main.rs"
 
-[[bin]]
-name = "rampire-workload"
-path = "src/bin/rampire-workload.rs"

@@ -18,6 +18,3 @@ winapi = { version = "0.3", features = ["fileapi", "ioapiset", "minwinbase", "ha
 name = "rampire-guest"
 path = "src/main.rs"
 
-[[bin]]
-name = "rampire-workload"
-path = "src/bin/rampire-workload.rs"

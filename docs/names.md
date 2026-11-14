@@ -55,7 +55,6 @@ under `crates/` follow their crate names.
 | `virtio-mem-host` | `rampire` | One binary; the unit runs `rampire daemon` |
 | `virtio-mem-guest` (Linux) | `rampire-guest` | |
 | `virtio-mem-service.exe` (Windows) | `rampire-guest.exe` | Same name as on Linux |
-| `virtio-mem-workload` | `rampire-workload` | Test tool, both guests |
 | `virtio-mem-watch-ram` (guest `.deb`) | `rampire-watch-ram` | |
 
 ## Host
@@ -124,10 +123,8 @@ document of its own, so it keeps its `version` and has no `schema`.
 `GUEST_SETTINGS_VERSION` and the host's choice of which guests to send
 settings to are gone: every guest reads them.
 
-The records `xtask` writes for development (the Windows build record and
-stamp, deploy and preflight evidence, metrics and qualification runs) are
-not RAMpire documents and keep their own versions. A record that moves into
-`rampire`, such as apply evidence in O1.5, gets a schema then.
+Development tooling writes no records of its own: every record is a
+RAMpire document with a schema.
 
 ## Environment variables
 
@@ -143,8 +140,6 @@ for example `VIRTIO_MEM_BUILD_ID` → `RAMPIRE_BUILD_ID`, apart from these:
 
 | Now | New |
 |---|---|
-| `/run/virtio-mem-qualification` | `/run/rampire-qualification` |
-| `virtio-mem-qualification-artifacts-*` | `rampire-qualification-artifacts-*` |
 | Test fixture port `org.virtio-mem.other.0` | `org.rampire.other.0` |
 
 ## Decisions

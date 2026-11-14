@@ -70,7 +70,7 @@ pub fn parse(arguments: &[String]) -> Result<Action, String> {
 }
 
 pub fn run(action: &Action, repo: &Path) -> Result<(), String> {
-    let identity = crate::windows::checkout_identity(repo)?;
+    let identity = crate::build_identity::checkout_identity(repo)?;
     let version = version(
         crate_version(repo)?.as_str(),
         exact_tag(repo).as_deref(),

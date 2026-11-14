@@ -1,8 +1,7 @@
 # Tools
 
-For developers and testers. Observation and development tools. The live views are `rampire watch`
-and `rampire top`, from the installed package. `metrics` and
-`qualification` run from a checkout on the KVM host. All of them read the
+The live views: `rampire watch` and `rampire top` from the host package,
+and `rampire-watch-ram` from the guest package. The host's views read the
 controller's journal, libvirt and each guest's publication. `CONFIG` below
 is the configuration directory the controller runs (installed as
 `/etc/rampire`); with several VMs, `--vm NAME` picks one. They follow the
@@ -74,176 +73,6 @@ site value: pass `-HostName`, set `RAMPIRE_TOP_HOST`, or copy
 `site/pool.env`. `-NewWindow` opens a separate 140-column window, and
 `-IntervalSeconds` and `-Events` are passed through.
 
-## Recording a run
-
-```bash
-cargo xtask metrics VM [--duration-seconds N]
-```
-
-`--config DIR` picks the configuration; by default it is the one the
-controller runs. With one VM, `cargo xtask metrics` alone records it.
-
-Read-only, like `watch`. On a terminal it opens a live UI: host, device and
-guest panels, a memory chart (host available, guest available, device
-current and requested), request results and latencies, problem and incident
-counters, and the controller's events alongside lifecycle events. A red
-`N INCIDENTS` badge in the header means a crash or restart was recorded.
-The controller row shows its pid, memory and CPU, or how it exited.
-`--plain`, or output that is not a terminal, prints one line per sample
-instead. It records until `q`/Ctrl+C or `--duration-seconds`.
-
-### Recording every VM
-
-```bash
-cargo xtask metrics all [--duration-seconds N]
-```
-
-Starts one plain recorder per VM, each in `DIR/<vm>/` with its own
-samples, events and incidents, and writes `DIR/pool.csv`: one row per
-interval with every VM's requested and current device size, the pool's
-charge (`max(requested, current)` per VM, as the controller counts it),
-free pool bytes and host `MemAvailable`. It prints one line per row, for
-example `host avail 16.2G | pool 4.1G/15.0G free 10.9G | webserver 0.3G |
-backup 0.4G->1.2G` (an arrow is a resize under way). Ctrl+C or SIGTERM
-stops every recorder cleanly. The default directory is
-`.artifacts/metrics/pool-<UTC time>/`.
-
-| Key | Action |
-|---|---|
-| `-` / `+` | Sample period (0.5 s – 120 s; default 5 s) |
-| `[` / `]` | Guest-agent read period (1 s – 120 s; default 5 s) |
-| space | Pause / resume logging (the UI keeps updating; nothing is written) |
-| `n` | Sample now |
-| `m` | Type a marker (e.g. "started 12 GB allocation"), Enter saves |
-| `s` | Save `summary.json` now |
-| `w` | Chart window: 5 min, 15 min, 1 h, whole run |
-| `q` | Quit |
-
-Period changes, pauses and markers are written to `events.jsonl` as
-`"event": "marker"` entries, so the logs show when each happened. Each run
-writes one directory under `.artifacts/metrics/<vm_name>-<UTC time>/` (or
-`--output DIR`):
-
-| File | Contents |
-|---|---|
-| `samples.csv` | Every sample period (`--interval-seconds`): host total/available RAM, headroom over `host_reserve`, swap used, QEMU RSS, controller active, device size/requested/current. Every guest read (`--guest-interval-seconds`, default 5): agent read time and success, publication age, guest available RAM, load, commit and commit headroom, cache, memory signal, pending request. Appended after those: controller unit state, pid, memory, CPU % and restart count; QEMU pid; libvirt domain state (`virsh domstate --reason`); and per guest read the service session, commit peak and kernel paged/non-paged pools. Sizes in MiB. |
-| `events.jsonl` | Every controller journal entry written during the run, with its fields split out, plus markers and `metrics_*` lifecycle events: controller failed/stopped/started/restarted, QEMU exited/started/restarted, domain state changes, guest service session changes, guest publication stalled/resumed, guest agent lost/restored and publication read failed/restored. |
-| `incidents.jsonl` | One record per incident, with its bundle path, pid and details (exit status, systemd result, panic text, last controller lines, core dump flag, publication gap). Empty when nothing crashed. |
-| `incidents/NNN-TIME-COMPONENT.txt` | Evidence bundle per incident, collected at detection: panic text and last controller lines, `systemctl status`, `coredumpctl info` when the controller dumped core, the unit's last 400 journal lines, the QEMU log tail (root only) for VM incidents, the guest's last and first publication around a service restart, and the 60 `samples.csv` rows before detection. |
-| `summary.json` | Min/max/mean of the above, time spent with requested ≠ current, guest read failures and stale publications, publication stall and agent outage durations, completed requests by operation and outcome (MiB asked and got), grant→completion and guest issue→completion latency, refusals, event counts, controller pids, memory and CPU, samples per domain state, guest service sessions, incident counts and records, and latches. Rewritten every minute, at exit and after each incident. |
-
-An incident is a controller that stops other than cleanly (any systemd
-`Result` except `success`, including one already failed when recording
-starts), a new guest service session (service restart or guest reboot; the
-host cannot tell which), a QEMU process exit or replacement, or a domain in
-`crashed`/`panicked` state. A `systemctl stop` is an event, not an incident.
-Lifecycle events and incidents are written even while logging is paused.
-Windows' own record of a service crash stays in the guest: System log,
-Service Control Manager 7031/7034, and Application log, Application Error
-1000; guest bundles include a `Get-WinEvent` query for the right time.
-
-The recorder uses a persistent libvirt connection for repeated XML/QGA reads.
-It appends host memory PSI (`some`/`full` avg10 percentages), swap-in/out pages
-per second, major faults per second and sample collection milliseconds to CSV.
-Rates are host-wide; the first sample has no rate. Unavailable interfaces leave
-blank values. Swap occupancy alone does not indicate active paging.
-
-Summary request totals include terminal PoolEmpty and Rejected results as well
-as completed/partial movements. Refusal counts include zero grants and final
-headroom rejections. Growth and removal latencies are also separate, and pending
-operations show age, original allocation goal and remaining bytes. The last
-observed guest request may persist briefly after host completion until the guest
-consumes its result. Full error messages remain in events; publication read
-failures are distinguished from explicit guest-agent connection loss.
-
-### Diagnostic evidence in captures
-
-Each capture now also writes `run.json` and `guest-publications.jsonl`.
-`run.json` records the recorder checkout and executable hash, running host
-executable hash, requested and installed settings, live and saved domain XML,
-host boot ID, and readable initial checkpoint/attestation. Missing permissions
-and metadata are recorded as errors rather than requiring elevation. The first
-readable guest publication adds its build identity, initial request and
-driver version: the on-disk `viomem.sys` version on Windows (not proof of
-the loaded driver; paused with the viomem path), the kernel release on Linux. A final status distinguishes a finished run from a recording
-interrupted before its manifest could be finalised.
-
-Guest publication snapshots retain every published field when the request,
-service session, native signal or policy reason changes, and otherwise every
-30 seconds. Pausing recording pauses these snapshots. Policy reason, desired
-allocation, safety floor, history readiness, retry delay and guest boot uptime
-are also appended to CSV. Desired targets may be unavailable while device
-geometry is pending; this is not zero demand. A new service session combined
-with decreased guest boot uptime records a separate reboot event; a service
-restart alone does not establish a reboot.
-
-Host events record the observed request, per-request pool/device/guest/host
-limits, all tied limiting factors, alignment loss, command start and duration.
-Unchanged pending-device health is reduced to a 30-second heartbeat, retaining
-state changes, request identity, idle time and timeout remaining. Existing
-completion events identify convergence. Guest result-consumed events add the
-sample time at which Windows consumed the result; compare clocks with care
-when interpreting host-to-guest timing.
-
-Sustained host reserve shortfall, stale readable publications, device stalls,
-and repeated capacity failures create `performance` incident bundles with the
-same journal/sample context as lifecycle incidents. Shortfall/staleness requires
-30 seconds; a device must first stop moving for 30 seconds and remain stalled
-for another 30. Five or more zero grants or rejected commands within a minute
-must persist as a condition for 30 seconds. Bundles are emitted once per episode
-and rearm after recovery. Durations use the recorder's monotonic clock.
-
-Every guest takes its settings from the host. Each publication names its
-schema (`rampire.publication`) and version 1, and the host refuses any
-other. Diagnostic fields never authorise memory changes.
-
-## Test VMs
-
-```bash
-cargo xtask testvm                      # the scenarios, and the test VMs running
-cargo xtask testvm up guest-debian13    # make a VM from a scenario
-cargo xtask testvm down guest-debian13  # remove it
-```
-
-Every VM a test needs is made by `testvm`, never by hand. Run it as
-yourself on the KVM host; each command runs itself again through `sudo`
-for the part that needs root. The host's values (where images go, which
-bridge the VMs join) come from the environment or from `site/testvm.env`
-(copy [deploy/examples/testvm.env.example](../deploy/examples/testvm.env.example)).
-
-`up SCENARIO` builds the packages from the checkout first, as you, with
-`tools/build.sh package`, so the VM tests the current build. It downloads
-the scenario's image once, makes a qcow2 overlay and a cloud-init seed
-carrying the packages, the files the scenario names and its commands,
-starts the VM named after the scenario and waits. Each command's exit
-status comes back over the serial port; evidence and the serial log go to
-`.artifacts/testvm/`. The scenario says whether the VM is kept afterwards:
-a kept one prints its address and the command to run next, and stays
-until `down`. `up` refuses to start a VM unless the host has its boot RAM
-and 1 GiB more available.
-
-`down` removes only a VM that `up` made, which it knows by a metadata
-element naming the VM's disk and seed. If RAMpire manages the VM, `down`
-runs `rampire vm remove` first.
-
-For scripts, both take `--dry-run`, and `up` takes `--name NAME`,
-`--keep` or `--no-keep`, `--no-packages` and `--file PATH` (more on the
-seed; commands find it in `$SEED`). SCENARIO can also be a path to a
-scenario file.
-
-A scenario is a file in [tools/testvm](../tools/testvm): a `description`,
-whether to `keep` the VM, what to do `next` with it, the checkout's
-`files` its commands need, the cloud image, boot RAM, a virtio-mem device
-or room for one, nested virtualisation, and the `commands` it runs on
-first boot.
-
-| Scenario | What it shows |
-|---|---|
-| `host-almalinux10`, `host-rocky10`, `host-fedora45`, `host-debian13`, `host-ubuntu2404` | A clean host of each supported family goes from nothing to a running controller with the package manager and `rampire init` |
-| `bare-debian13` | A Debian 13 KVM host with libvirt and QEMU, the built packages in the login's home and nothing of RAMpire installed, for a person to follow the [quick start](quick-start.md) on; kept, as a deployment |
-| `guest-debian13` | A guest with the guest package, room for a device but no device and no control channel, for `rampire vm add --fix-xml`; kept |
-| `ansible-almalinux10` | The example Ansible role on a clean host: "changed", then no change, then "changed" after a settings change |
-
 ## Watching guest RAM
 
 ```powershell
@@ -254,42 +83,22 @@ powershell -ExecutionPolicy Bypass -File tools\windows\Watch-Ram.ps1
 `GetPerformanceInfo`. It needs no configuration and no running service.
 
 ```bash
-tools/linux/watch-ram.sh
+rampire-watch-ram [-i SECONDS] [--csv]
 ```
+
+`rampire-watch-ram` comes with the Linux guest package and runs in the
+guest without root. It reads `/proc/meminfo` on every tick: a memory
+table, usage bars, memory pressure and page-cache refaults, and a history
+of total and in-use RAM. Piped, it prints plain snapshots; `--csv` gives
+one row per sample.
+
+## Building
 
 ```bash
-cargo xtask linux deploy HOST
-cargo xtask linux status HOST
-cargo xtask linux uninstall HOST [--discard-state]
+tools/build.sh            # the gate, in the build container
+tools/build.sh package    # the packages, into dist/
+tools/build.sh install    # build them and install the host package here
 ```
 
-Install, inspect or remove the Linux guest service on a development guest
-over SSH (the account needs passwordless `sudo`). Deploy builds the stamped
-binary first, installs it with the unit, the RAM monitor
-(`rampire-watch-ram`) and the qualification workload
-(`rampire-workload`), restarts the service and checks what it reads back.
-Deploy and uninstall act at once and record what they did in
-`.artifacts/linux/`; `--dry-run` records what they would do and changes
-nothing, and `--output PATH` puts the record elsewhere. Uninstall keeps the
-durable request state unless told to discard it.
-
-cargo xtask linux build
-
-Release-builds the Linux guest service with the checkout's build identity
-(`<commit>` or `<commit>-dirty.<source digest>`) compiled in, and checks that
-the binary reports it.
-
-## API commands
-
-These are for `tools/build.sh`, scripts and recorded evidence runs, not
-for typing: their options are explicit and mostly required, and `cargo
-xtask --help` lists them under "API". They will get man pages; until then
-`--help` is their reference.
-
-| Command | Called by |
-|---|---|
-| `cargo xtask gate` | `tools/build.sh` (the gate) |
-| `cargo xtask package` | `tools/build.sh package` and `install` |
-| `cargo xtask host-run` | Live tests that run the daemon in the foreground with a deadline and a host memory floor |
-| `cargo xtask qualification` | Recorded growth and reclaim trials ([Recording a run](#recording-a-run)) |
-| `cargo xtask preflight`, `cargo xtask windows …` | Windows guests, parked |
+`tools/build.sh` runs `cargo xtask gate` and `cargo xtask package` in the
+build container; see [development](development.md).

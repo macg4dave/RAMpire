@@ -1,118 +1,15 @@
 mod build_identity;
-mod host_run;
-mod linux;
 mod local;
-mod metrics;
 mod package;
-mod preflight;
-mod qualification;
-mod testvm;
-mod windows;
-
-use rampire_ops::process;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const HELP: &str = r#"Repository build and test tooling
+const HELP: &str = r#"Repository build tooling
 
-Commands:
-  cargo xtask testvm                 test VMs: list, up SCENARIO, down NAME
-  cargo xtask linux deploy HOST      put this checkout's guest on a dev VM
-  cargo xtask metrics VM             watch and record one VM (or all)
-Gate and packages: tools/build.sh (it runs gate and package below, in the
-build container).
-
-API: for tools/build.sh, scripts and recorded evidence runs; their options
-are listed below and will move to man pages:
-  cargo xtask gate <format|build|test|lint|checks|local|all>
-  cargo xtask package [--output DIR] [--static] | --print-version
-  cargo xtask host-run --config DIR --max-run-seconds N [OPTIONS]
-  cargo xtask qualification <start|run|status|review> [OPTIONS]
-  cargo xtask preflight VM_NAME ALIAS [OPTIONS]          (Windows, parked)
-  cargo xtask windows <check|sync|build|test|lint|fetch|all>  (parked)
-  cargo xtask windows deploy MANIFEST --output PATH [--apply]
-  cargo xtask windows service-cycle SERVICE --output PATH [--apply]
-  cargo xtask windows diagnose-service SERVICE --output PATH
-  cargo xtask windows build-status SERVICE --output PATH
-  cargo xtask windows uninstall SERVICE --output PATH [--apply]
-  cargo xtask windows verify EXPECTED_ED25519_FINGERPRINT --runs N
-
-Host run options (the daemon in the foreground instead of systemd):
-  --config DIR                  Required configuration directory.
-  --max-run-seconds N           Required; the daemon is stopped (SIGTERM) after N seconds.
-  --min-host-available-bytes N  Stop the daemon if host MemAvailable falls below N.
-  --log PATH                    Default .artifacts/host-run/<unix-millis>.log.
-  --sudo                        Run the daemon through sudo (root-only attestation).
-
-No-actuation preflight options:
-  --unit UNIT                   Required disabled/inactive rampire.service.
-  --telemetry-path PATH         Required protected Windows telemetry path.
-  --service SERVICE             Required Windows telemetry service identity.
-  --attestation PATH            Required reviewed attestation.
-  --host-deployment-evidence PATH  Required applied host deployment evidence.
-  --windows-evidence PATH       Required Windows restart evidence path.
-  --output PATH                 Required structured result path.
-  --host-headroom-bytes N       Required minimum MemAvailable.
-  --sample-interval-seconds N   Required poll interval.
-  --telemetry-max-age-seconds N Required telemetry freshness bound.
-  --future-tolerance-seconds N  Required future-clock tolerance.
-  --preflight-timeout-seconds N Required overall new-session bound.
-  --command-timeout-seconds N   Required external-command bound.
-  --connect URI                 Libvirt URI; default qemu:///system.
-  --apply-service-restart       Restart only the named Windows service.
-
-Qualification commands:
-  start VM ALIAS --ssh-target TARGET --mode resident|committed|file-cache [--apply] [OPTIONS]
-  status RUN_ID [--output-root PATH]
-  review RUN_ID [--output-root PATH]
-
-Qualification options:
-  --apply                    Start the workload; otherwise validate only.
-  --elevate                  Use one sudo boundary for controller and libvirt observation.
-  --mode MODE                Required resident or committed workload behavior;
-                             file-cache (Linux) keeps files' page cache in use.
-  --guest-os windows|linux   The guest's operating system; default windows.
-  --cache-dir PATH           Guest directory for the file-cache workload.
-  --peak-bytes N             Required peak allocation.
-  --retained-bytes N         Required allocation retained between peaks.
-  --max-allocation-bytes N   Required independent workload safety cap.
-  --peak-hold-seconds N      Required first-peak hold.
-  --settled-hold-seconds N   Required retained-allocation hold.
-  --renewed-hold-seconds N   Required renewed-peak hold.
-  --resident-refresh-seconds N  Required page refresh interval.
-  --post-hold-seconds N      Required final observation window; may be zero.
-  --interval-seconds N       Required host sampling interval.
-  --command-timeout-seconds N  Required bound for external commands.
-  --controller-timeout-seconds N Required hard bound for controller ownership.
-  --expect-growth-bytes N    Required minimum observed growth.
-  --expect-reclaim-bytes N   Required minimum observed reclaim.
-  --expect-renewed-growth-bytes N Required minimum growth after settled reclaim.
-  --expect-no-resize          Require observe-only mode and unchanged requested/current allocation.
-  --expect-no-reclaim         Require growth without any lower requested target; replaces --expect-reclaim-bytes.
-  --require-renewed-during-pending-shrink Require an observed pending shrink before renewed pressure.
-  --remote-workload PATH     Required workload executable path in the guest.
-  --controller-unit UNIT     Required rampire.service, whose config holds VM.
-  --guest-service NAME       Required guest service identity on the wire.
-  --apply-service-restart    Restart the named Windows service after the controller is active.
-  --guest-service-cycle-timeout-seconds N Required bound for that explicit restart.
-  --telemetry-path PATH      Required guest control publication path (read from the
-                             controller's copy, else through QGA).
-  --telemetry-max-age-seconds N Required telemetry freshness bound.
-  --telemetry-future-tolerance-seconds N Required future-clock tolerance.
-  --connect URI              Libvirt URI; default qemu:///system.
-  --output-root PATH         Default .artifacts/qualification.
-
-Windows environment:
-  RAMPIRE_WINDOWS_SSH              Required SSH config alias or USER@HOST.
-  RAMPIRE_WINDOWS_DIR              Remote workspace directory.
-  RAMPIRE_WINDOWS_ARTIFACTS        Local artifact directory.
-  RAMPIRE_WINDOWS_CONNECT_TIMEOUT_SECONDS Required SSH connection bound.
-  RAMPIRE_WINDOWS_OPERATION_TIMEOUT_SECONDS Required operation bound.
-  RAMPIRE_WINDOWS_KNOWN_HOSTS_FILE Optional pinned known-hosts file.
-  RAMPIRE_WINDOWS_IDENTITY_FILE    Optional private-key path.
-  RAMPIRE_WINDOWS_HOST_NAME        Optional current endpoint override.
-  RAMPIRE_WINDOWS_HOST_KEY_ALIAS   Required with host-name override.
+The gate and the packages: tools/build.sh runs these in the build
+container.
+  cargo xtask gate <format|build|test|lint|checks|local>
 "#;
 
 fn main() -> ExitCode {
@@ -130,31 +27,18 @@ fn execute(arguments: &[String]) -> Result<(), String> {
     let repo = repo_root()?;
     match arguments.first().map(String::as_str) {
         Some("help" | "--help" | "-h") | None => {
-            print!(
-                "{HELP}\n{}\n{}\n{}\n{}",
-                testvm::HELP,
-                linux::HELP,
-                metrics::HELP,
-                package::HELP
-            );
+            print!("{HELP}\n{}", package::HELP);
             Ok(())
         }
         Some("gate") => gate(&arguments[1..], &repo),
-        Some("host-run") => host_run::run(&host_run::parse(&arguments[1..])?, &repo),
-        Some("preflight") => preflight::run(&preflight::parse(&arguments[1..])?, &repo),
-        Some("linux") => linux::run(&arguments[1..], &repo),
-        Some("windows") => windows::run(windows::parse(&arguments[1..])?, &repo),
-        Some("qualification") => qualification::execute(&arguments[1..], &repo),
-        Some("metrics") => metrics::execute(&arguments[1..], &repo),
         Some("package") => package::run(&package::parse(&arguments[1..])?, &repo),
-        Some("testvm") => testvm::run(&testvm::parse(&arguments[1..])?, &repo),
         Some(command) => Err(format!("unknown command: {command}\n\n{HELP}")),
     }
 }
 
 fn gate(arguments: &[String], repo: &Path) -> Result<(), String> {
     if arguments.len() != 1 {
-        return Err("gate requires format|build|test|lint|checks|local|all".to_owned());
+        return Err("gate requires format|build|test|lint|checks|local".to_owned());
     }
     let step = match arguments[0].as_str() {
         "format" => local::Step::Format,
@@ -163,10 +47,6 @@ fn gate(arguments: &[String], repo: &Path) -> Result<(), String> {
         "lint" => local::Step::Lint,
         "checks" => local::Step::Checks,
         "local" => local::Step::Local,
-        "all" => {
-            local::run(local::Step::Local, repo)?;
-            return windows::run_all(repo);
-        }
         value => return Err(format!("unknown gate: {value}")),
     };
     local::run(step, repo)

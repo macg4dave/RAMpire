@@ -275,9 +275,7 @@ if (( install )); then
   fi
 fi
 if (( gate )); then
-  # On a Windows workstation the Windows guest builds natively too. This is
-  # not the native gate on a Windows VM (cargo xtask windows all), which also
-  # runs the release build that gets deployed.
+  # On a Windows workstation the Windows guest builds natively too.
   case $(uname -s) in
     MINGW* | MSYS* | CYGWIN*)
       if command -v cargo >/dev/null; then

@@ -17,7 +17,7 @@ code").
 | `rampire-host` | `host/` | Linux | The controller: settings resolution, runtime, libvirt, attestation, the CLI until O1.2 |
 | `rampire-ops` | `crates/rampire-ops` | Linux | Operator views: controller status, the pool, one VM live |
 | `rampire` | `rampire/` | Linux | The `rampire` binary: the daemon and operator commands |
-| `rampire-guest-linux` | `guest-linux/` | Linux | Linux guest service and `rampire-workload` |
+| `rampire-guest-linux` | `guest-linux/` | Linux | Linux guest service |
 | `rampire-guest-windows` | `guest-windows/` | Windows (native) | Windows service and its workload |
 | `xtask` | `tools/xtask` | Linux | Gate, deploy, observe, qualify (`cargo xtask`) |
 
@@ -58,8 +58,7 @@ workstation is visible to it.
 `install-check` installs the host and guest packages from `dist/` in a
 clean container of each family and checks that each installs with its
 dependencies, reports the build, and leaves the service account and both
-units. It doesn't start anything: that is what the `testvm` scenarios are
-for.
+units. It doesn't start anything.
 
 Two other builders, for a machine without a container engine:
 
@@ -70,7 +69,7 @@ Two other builders, for a machine without a container engine:
 
 The individual steps are `cargo xtask gate format|build|test|lint`.
 `cargo xtask gate local` is `checks` plus `git diff --check`, for a Linux
-checkout. `cargo xtask gate all` adds the native Windows gate below.
+checkout.
 
 ### Checking one crate
 
@@ -92,17 +91,10 @@ None needs a VM, a running service or a site's configuration. The host's
 |---|---|---|
 | Host, xtask, Linux guest | The build container (`tools/build.sh`) or Linux | `cargo xtask gate checks` |
 | Windows guest unit tests and Clippy | Windows workstation | part of `tools/build.sh` there |
-| Windows release build, native tests, fetched binaries | Windows build VM | `make windows-native-gate` |
-| Service control, sampling, ACLs, atomic replacement | A Windows guest | Deploy and observe; mocks do not prove them |
-| Resizing, onlining, pressure, cache behaviour | A live VM under the controller | `cargo xtask metrics`, qualification |
+| Resizing, onlining, pressure, cache behaviour | A deployment: the packages on a real host and guest | `rampire watch`, `rampire top`, `rampire-watch-ram` |
 
-The Windows targets in the `Makefile` read the site's build VM from
-`site/windows-build.mk` (copy
-[windows-build.mk.example](../deploy/examples/windows-build.mk.example)),
-or from the file named by `WINDOWS_SITE`. `make windows-native-gate` checks
-the toolchain, synchronises the working tree, release-builds, runs the
-native tests, `fmt` and Clippy, then fetches the binaries and records them
-in `build.json`.
+The Windows guest is parked. Its build and deployment come back with it,
+as a package, not as development scripts.
 
 ## Build identity
 
@@ -112,40 +104,19 @@ commit (`<12 hex>`), or for a working tree that differs from it
 tracked and untracked, non-ignored file. The build compiles it in through
 `RAMPIRE_BUILD_ID`; a build without it reports `unversioned`.
 
-- Linux guest: `cargo xtask linux build` builds the release binary and
-  checks that `rampire-guest version` reports the checkout's identity.
-- Windows guest: `sync` stamps the remote workspace, `build` compiles the
-  stamp in, `fetch` verifies the binaries by SHA-256 and writes
-  `build.json`. `make windows-status` compares the installed service with
-  that record.
+`cargo xtask package` stamps both binaries, so `rampire --version` and
+`rampire-guest version` name the build. Every guest publication carries
+its build identity, so `watch` and `top` show which build produced each
+sample.
 
-Every guest publication carries its build identity, so `watch`, `metrics`
-and captures show which build produced each sample.
+## Deployments
 
-## Development guests
-
-`cargo xtask linux deploy HOST` installs the stamped Linux guest, its unit,
-the RAM monitor and the workload on a development VM over SSH (the account
-needs passwordless `sudo`). It runs on a Linux checkout that can reach the
-guest, and records what it did in `.artifacts/linux/`; `--dry-run` records
-what it would do. `status` and `uninstall` complete it; see
-[tools](tools.md). Hosts and guests that aren't under development install
-packages, built with `tools/build.sh package`.
-
-Windows deployment is `make windows-deploy` with the site's VM settings.
-
-## Live tests
-
-Live tests change real VMs and the host's memory. They need the owner's
-authorisation, a bounded duration and bounded memory. Record them with
-`cargo xtask metrics` (or `qualification`) so the result is evidence, not
-recollection, and open `tools/linux/watch-ram.sh` (Linux guest) or
-`tools/windows/Watch-Ram.ps1` (Windows guest) to watch them. Results go in
-the roadmap with the capture's path under `.artifacts/`.
-
-Every VM a test needs is made and removed with `cargo xtask testvm`
-([tools](tools.md#test-vms)). A test that needs a VM no scenario
-describes gets a new scenario in `tools/testvm`, not a VM made by hand.
+Live work is done on deployments: the packages installed on a real host
+and guest, and the product's own commands (`rampire init`, `rampire vm
+add`, `rampire watch`, `rampire top`). A deployment is kept in place and
+improved as findings are fixed. Nothing outside the product makes,
+deploys or tests VMs; a step the product can't do is a missing product
+feature.
 
 ## Site configuration
 

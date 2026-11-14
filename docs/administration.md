@@ -266,14 +266,13 @@ has no configuration file.
 | Durable request state | `/var/lib/rampire-guest/control.json.request-state` |
 | Control files, without the channel | `/var/lib/rampire-guest/control.json` and `control.json.host-status` |
 
-Install with the `rampire-guest` package (`.deb` or RPM), or on a
-development VM with `cargo xtask linux deploy` ([tools](tools.md)). The
-package puts the binary in `/usr/libexec/rampire-guest`.
+Install with the `rampire-guest` package (`.deb` or RPM). The package
+puts the binary in `/usr/libexec/rampire-guest`.
 
 At start the service checks and logs its readiness: virtio-mem driver bound,
 pressure stall information and its trigger, how hot-plugged memory is
 onlined, the movable zone, swap and the commit model. The same report is
-published with each sample's diagnostics, so `metrics` records it.
+published with each sample's diagnostics.
 
 Memory onlining: the kernel guarantees removal only from the movable zone.
 Debian's default onlining (`online`, `contig-zones`) removed memory fully in
@@ -346,8 +345,8 @@ The Windows service is `RampireGuest`
 (`C:\Program Files\RAMpire\rampire-guest.exe`, running as
 LocalService). Its install configuration is
 `C:\ProgramData\RAMpire\config.json`; limits and policy come from
-the host as for Linux. Deploy it with `make windows-deploy` from a checkout
-whose `site/windows-build.mk` names the VM. Deployment gives LocalService
+the host as for Linux. It has no package yet (Windows is paused, below).
+Installing it gives LocalService
 access to the control channel's device instance
 (`\\.\Global\org.rampire.control.0`) and checks that the service stays
 running. Without the port the service uses the control files through the
@@ -398,7 +397,6 @@ sudo rampire status [VM]    # the controller's status, as JSON
 sudo rampire check          # settings and attestations against the live VMs
 sudo rampire doctor         # what the host needs, with the fix for each problem
 sudo rampire logs --follow  # the controller's journal
-cargo xtask metrics VM      # from a checkout: record a VM live
 ```
 
 Each round the controller writes Prometheus metrics to
@@ -461,4 +459,4 @@ controller serves guests from its own minor release and the one before it
 2. Install the new controller, then `sudo rampire apply` and
    `sudo systemctl restart rampire`.
 3. Check with `sudo rampire status`.
-4. Upgrade each guest service (package or `make windows-deploy`).
+4. Upgrade each guest service with its package.

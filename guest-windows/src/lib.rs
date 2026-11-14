@@ -14,9 +14,9 @@ mod port;
 pub mod service_host;
 pub mod service_scm;
 
-/// Build identity stamped by `xtask windows build` from the synchronised
-/// source (`<commit>` or `<commit>-dirty.<source digest>`); local builds
-/// without the stamp report `unversioned`.
+/// Build identity stamped at build time through `RAMPIRE_BUILD_ID`
+/// (`<commit>` or `<commit>-dirty.<source digest>`); builds without the
+/// stamp report `unversioned`.
 pub const BUILD_ID: &str = match option_env!("RAMPIRE_BUILD_ID") {
     Some(id) => id,
     None => "unversioned",

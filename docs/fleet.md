@@ -32,9 +32,6 @@ priorities, limits or the pool reloads the controller; adding or removing
 a VM restarts it. Each apply is recorded under
 `/var/lib/rampire/evidence/`.
 
-[deploy/ansible](../deploy/ansible) is an example Ansible role that does
-this and reports "changed" only when something changed.
-
 Attestations are made on the host: `apply` attests a running VM that names
 a review profile and has none yet. A VM whose definition changed needs a
 person to confirm the change: `rampire vm attest VM`, or

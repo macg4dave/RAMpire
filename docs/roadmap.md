@@ -14,17 +14,14 @@ The order matters. Each phase starts only when the one before it is done:
 
 ## Rules for every task
 
-- Every VM these tasks need is made with `cargo xtask testvm`
-  ([tools](tools.md#test-vms)), never by hand ([AGENTS.md](../AGENTS.md)).
-- **Every script used to deploy lives in the repository.** If a step needs a
-  script, a scenario, a cloud-init file or an option that doesn't exist yet,
-  it is written under `tools/`, `deploy/` or as an `xtask`/`rampire`
-  option, committed, and documented before it is used. Nothing is run from
-  a scratch directory. This is so each run can be repeated, and the scripts
-  reviewed and refined afterwards.
-- After each deployment, look back at the scripts it used: anything done
-  twice gets combined, anything that was awkward gets fixed in the tool.
-- Record each run's evidence path (`.artifacts/testvm/...`) against its task.
+- Everything is done with the product: the packages and the `rampire`
+  commands ([AGENTS.md](../AGENTS.md)). There is no test tooling beside
+  it. A step the product can't do is a finding, fixed by adding it to
+  the product.
+- Deployments stay in place and are improved as findings are fixed; they
+  are not torn down after a run.
+- After each deployment, look back at what it took: anything done twice
+  gets combined, anything that was awkward gets fixed in the product.
 
 ## S0: Clean pc101
 
@@ -40,11 +37,10 @@ project's tools; if no tool covers a piece, add the tool first.
   once pc101 was clean; it is in Git history).
 
 - [x] **S0.2** Run the removal. Afterwards pc101 has only the current
-  `rampire` build. Test VMs come from `testvm`.
+  `rampire` build.
 
   Done 2026-11-14 with `legacy.sh remove --apply --clear-scratch`.
-  `~/github/rampire` is a fresh clone with `site/testvm.env` carried
-  across; `~/scratch` is empty; `rampire.service` is still active.
+  `~/github/rampire` is a fresh clone; `~/scratch` is empty; `rampire.service` is still active.
 
 ## S1: Tooling and the end-user path
 
@@ -175,6 +171,17 @@ added on top of something else instead of replacing it.
   Those questions need a person on a terminal by design, so S2.2 now runs
   the quick start's own command.
 
+- [x] **S1.6** Remove every script and tool outside the product that did
+  a product task (owner, 2026-11-14: "if it's not part of the end product
+  then don't use it"). Removed: `cargo xtask testvm` and its scenarios,
+  `xtask linux deploy/status/uninstall/build`, `host-run`,
+  `qualification`, `preflight`, `metrics`, `windows` and the `Makefile`'s
+  Windows targets, `rampire-workload` in both guests,
+  `tools/windows/Set-PortAccess.ps1`, the example Ansible role and their
+  site examples. `cargo xtask` keeps `gate` and `package`, which build the
+  product. The guest RAM view ships as `rampire-watch-ram` in the guest
+  package; `rampire top` is the pool view.
+
 ## S2: The hobbyist deployment (Debian 13)
 
 One person, one host, following only the [quick start](quick-start.md). No
@@ -247,31 +254,26 @@ is a finding, fixed in the product or the docs.
   request in full; `top` showed its whole name; `testvm down` left
   nothing behind. Nothing was done by hand apart from that answer.
 - [ ] **S2.4** A second Debian 13 deployment with the hobbyist path, done
-  by the owner by hand, giving feedback as it goes. `cargo xtask testvm up
-  bare-debian13` makes a KVM host with libvirt and the built packages in
-  the home directory, and nothing else; the owner follows the
-  [quick start](quick-start.md) on it from `apt install` on, with the
-  installed `rampire`. It is a deployment, not a test: it stays in place,
-  and is changed as the findings are fixed. Write up what it finds and
-  fix it as in S2.3.
+  by the owner at a terminal, giving feedback as it goes. A Debian 13 KVM
+  host with libvirt, the packages from `tools/build.sh package`, and only
+  the [quick start](quick-start.md) from `apt install` on. It is a
+  deployment, not a test: it stays in place and is changed as the
+  findings are fixed. Write up what it finds and fix it in the product.
 
 ## S3: Administrator deployments
 
 The other supported families, as a system administrator would deploy them:
-package manager, configuration management, repeatable runs. Each uses its
-`host-*` scenario: `cargo xtask testvm up host-rocky10` and so on.
+package manager and the product's own commands, kept in place.
 
-- [ ] **S3.1** Rocky Linux 10 (`host-rocky10`).
-- [ ] **S3.2** AlmaLinux 10 (`host-almalinux10`).
-- [ ] **S3.3** Fedora 45 (`host-fedora45`).
-- [ ] **S3.4** Ubuntu 24.04 (`host-ubuntu2404`). Ubuntu 24.04 ships
+- [ ] **S3.1** Rocky Linux 10.
+- [ ] **S3.2** AlmaLinux 10.
+- [ ] **S3.3** Fedora 45.
+- [ ] **S3.4** Ubuntu 24.04. Ubuntu 24.04 ships
   libvirt 10.0, but `rampire doctor` requires 10.1, the first with
   `dynamicMemslots`. Expect `doctor` to fail there. The owner then decides
   whether to raise the supported Ubuntu release or to lower the minimum.
-- [ ] **S3.5** The Ansible role (`ansible-almalinux10`): run three times on
-  a clean host, it reports "changed", then no change, then "changed" after
-  a settings change. Add a Rocky 10 scenario if the role should be shown
-  there too.
+- [x] **S3.5** The Ansible role. Removed 2026-11-14 with the rest of the
+  tooling outside the product (S1.6).
 
 ## After this roadmap
 
