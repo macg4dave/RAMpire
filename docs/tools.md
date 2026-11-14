@@ -240,6 +240,7 @@ first boot.
 | Scenario | What it shows |
 |---|---|
 | `host-almalinux10`, `host-rocky10`, `host-fedora45`, `host-debian13`, `host-ubuntu2404` | A clean host of each supported family goes from nothing to a running controller with the package manager and `rampire init` |
+| `bare-debian13` | A Debian 13 KVM host with libvirt and QEMU, the built packages in the login's home and nothing of RAMpire installed, for a person to follow the [quick start](quick-start.md) on; kept, as a deployment |
 | `guest-debian13` | A guest with the guest package, room for a device but no device and no control channel, for `rampire vm add --fix-xml`; kept |
 | `ansible-almalinux10` | The example Ansible role on a clean host: "changed", then no change, then "changed" after a settings change |
 

@@ -246,9 +246,14 @@ is a finding, fixed in the product or the docs.
   VM) and the kernel release. The controller granted the guest's 122 MiB
   request in full; `top` showed its whole name; `testvm down` left
   nothing behind. Nothing was done by hand apart from that answer.
-- [ ] **S2.4** A second Debian 13 deployment with the hobbyist path, run
-  by the owner at a terminal on pc101, giving feedback as it goes.
-  Write up what it finds and fix it as in S2.3.
+- [ ] **S2.4** A second Debian 13 deployment with the hobbyist path, done
+  by the owner by hand, giving feedback as it goes. `cargo xtask testvm up
+  bare-debian13` makes a KVM host with libvirt and the built packages in
+  the home directory, and nothing else; the owner follows the
+  [quick start](quick-start.md) on it from `apt install` on, with the
+  installed `rampire`. It is a deployment, not a test: it stays in place,
+  and is changed as the findings are fixed. Write up what it finds and
+  fix it as in S2.3.
 
 ## S3: Administrator deployments
 
