@@ -29,6 +29,8 @@ struct State {
     latest: Option<Vec<u8>>,
     retry_after: Option<Instant>,
     reported: bool,
+    /// When the open connection was made, while it has had no record yet.
+    awaiting_since: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -100,6 +102,8 @@ impl ControlChannel {
                 state.stream = Some(stream);
                 state.reader.disconnected();
                 state.writer.reconnected();
+                state.latest = None;
+                state.awaiting_since = Some(Instant::now());
                 state.reported = false;
                 state.retry_after = None;
             }
@@ -143,6 +147,7 @@ impl ControlChannel {
             reader,
             writer,
             latest,
+            awaiting_since,
             ..
         } = &mut *state;
         let Some(open) = stream.as_mut() else {
@@ -167,6 +172,7 @@ impl ControlChannel {
         }
         if let Some(record) = reader.take_latest() {
             *latest = Some(record);
+            *awaiting_since = None;
         }
         while !lost {
             let pending = writer.pending();
@@ -195,6 +201,18 @@ impl ControlChannel {
     pub fn latest(&self) -> Option<Vec<u8>> {
         self.pump();
         self.state().latest.clone()
+    }
+
+    /// Whether the channel connected less than `grace` ago and the guest
+    /// has sent nothing on it yet: a guest service waits for the host's
+    /// settings before its first publication, so this is not a fault.
+    pub fn awaiting_first_record(&self, grace: Duration) -> bool {
+        self.pump();
+        let state = self.state();
+        state.stream.is_some()
+            && state
+                .awaiting_since
+                .is_some_and(|since| since.elapsed() < grace)
     }
 
     /// Send `record` to the guest, replacing any not yet sent.

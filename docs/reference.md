@@ -116,7 +116,7 @@ backups and `.rpmnew` files there are ignored.
 |---|---|
 | `alias` | The VM's virtio-mem device alias |
 | `priority` | Who is served first when memory is short; higher first |
-| `min_ram` | The smallest the VM is made, boot RAM included; memory is never taken back below it |
+| `min_ram` | The least RAM the VM's system sees, boot RAM included; memory is never taken back below it. The guest's kernel keeps some boot RAM for itself, so a `min_ram` equal to boot RAM grows the VM a little at once |
 | `max_ram` | The largest it may grow. For Linux, at most about four times boot RAM |
 | `free_ram` | Spare memory the guest keeps; it asks for more below this and returns memory above it ([sizes](#sizes)) |
 | `guest_os` | `"linux"`, or omitted for Windows |

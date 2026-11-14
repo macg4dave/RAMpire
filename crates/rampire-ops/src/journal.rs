@@ -29,14 +29,16 @@ pub fn read_events(unit: &str, cwd: &Path) -> Result<String, String> {
         LINES,
         "--no-pager",
         "-o",
-        "short-iso",
+        "short-iso-precise",
     ]
     .iter()
     .map(process::os)
     .collect();
     let root = process::effective_uid() == 0;
     match process::bounded_text("journalctl", &arguments, cwd, COMMAND_TIMEOUT) {
-        Ok(journal) if journal.lines().any(|line| line.contains(" event=")) => Ok(journal),
+        Ok(journal) if journal.lines().any(|line| line.contains(" event=")) => {
+            Ok(oldest_first(&journal))
+        }
         Ok(_) if root => Ok(String::new()),
         // journalctl exits 1 when --grep matches nothing.
         Err(error) if root && error.contains("status 1") => Ok(String::new()),
@@ -74,7 +76,17 @@ pub fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     Some(rest[..end].trim_end())
 }
 
-/// The line's time of day from its `short-iso` timestamp.
+/// The lines in time order. `journalctl` prints matches newest first when
+/// `--grep` and `-n` go together on some systemd versions, so the order it
+/// used is not relied on: microsecond timestamps sort as text, and the sort
+/// is stable for any that tie.
+fn oldest_first(journal: &str) -> String {
+    let mut lines: Vec<&str> = journal.lines().collect();
+    lines.sort_by_key(|line| line.split(' ').next().unwrap_or(""));
+    lines.join("\n")
+}
+
+/// The line's time of day from its `short-iso-precise` timestamp.
 pub fn time(line: &str) -> &str {
     line.get(11..19).unwrap_or("--:--:--")
 }
@@ -105,6 +117,21 @@ pub fn collapse_repeats<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn events_come_back_oldest_first_whatever_order_journalctl_used() {
+        let newest_first = "2026-11-14T20:17:08.000002+00:00 h rampire[1]: event=b\n\
+                            2026-11-14T20:17:08.000001+00:00 h rampire[1]: event=a\n\
+                            2026-11-14T12:22:36.500000+00:00 h rampire[1]: event=old";
+        let sorted = oldest_first(newest_first);
+        let events: Vec<_> = sorted
+            .lines()
+            .map(|line| line.rsplit('=').next().unwrap())
+            .collect();
+        assert_eq!(events, ["old", "a", "b"]);
+        assert_eq!(oldest_first(&sorted), sorted);
+        assert_eq!(time(sorted.lines().next().unwrap()), "12:22:36");
+    }
 
     const LINE: &str = "2026-11-14T16:12:59+00:00 h rampire[1]: rampire: vm=g event=resize_settled_short operation_id=7 kept_bytes=5 reason=guest kept vm=other memory command_result=Partial at 5 bytes";
 

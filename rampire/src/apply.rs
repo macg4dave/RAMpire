@@ -40,27 +40,83 @@ fn show_difference(from: Option<&Path>, to: &Path) -> Result<bool, String> {
             empty.path()
         }
     };
+    // An attestation is a machine record of hashes: a person can't check it
+    // line by line, so it is named rather than shown.
     let output = std::process::Command::new("diff")
         .arg("-ruN")
+        .arg(format!("--exclude=*{ATTESTATION_SUFFIX}"))
         .arg(from)
         .arg(to)
         .output()
         .map_err(|error| format!("run diff: {error}"))?;
-    match output.status.code() {
-        Some(0) => Ok(false),
+    let shown = match output.status.code() {
+        Some(0) => false,
         Some(1) => {
             // Name the two sides, not the temporary paths behind them.
             let text = String::from_utf8_lossy(&output.stdout)
                 .replace(&from.display().to_string(), "applied")
                 .replace(&to.display().to_string(), "draft");
             print!("{text}");
-            Ok(true)
+            true
         }
-        _ => Err(format!(
-            "diff failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
+        _ => {
+            return Err(format!(
+                "diff failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    };
+    let attestations = attestation_changes(from, to)?;
+    for (vm, change) in &attestations {
+        println!("attestation of {vm}: {change}");
     }
+    Ok(shown || !attestations.is_empty())
+}
+
+const ATTESTATION_SUFFIX: &str = ".attestation.json";
+
+/// Each VM whose attestation differs between two configuration
+/// directories, with what changed: new, changed or removed.
+fn attestation_changes(from: &Path, to: &Path) -> Result<Vec<(String, &'static str)>, String> {
+    let read = |root: &Path| -> Result<std::collections::BTreeMap<String, Vec<u8>>, String> {
+        let directory = root.join("attestations");
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Default::default())
+            }
+            Err(error) => return Err(format!("read {}: {error}", directory.display())),
+        };
+        let mut found = std::collections::BTreeMap::new();
+        for entry in entries {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            let Some(vm) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(ATTESTATION_SUFFIX))
+            else {
+                continue;
+            };
+            let bytes = std::fs::read(&path)
+                .map_err(|error| format!("read {}: {error}", path.display()))?;
+            found.insert(vm.to_owned(), bytes);
+        }
+        Ok(found)
+    };
+    let (before, after) = (read(from)?, read(to)?);
+    let mut changes = Vec::new();
+    for (vm, bytes) in &after {
+        match before.get(vm) {
+            None => changes.push((vm.clone(), "new, recording how the VM is set up now")),
+            Some(old) if old != bytes => changes.push((vm.clone(), "changed")),
+            Some(_) => {}
+        }
+    }
+    for vm in before.keys().filter(|vm| !after.contains_key(*vm)) {
+        changes.push((vm.clone(), "removed"));
+    }
+    changes.sort();
+    Ok(changes)
 }
 
 pub(crate) fn diff(cli: &Cli) -> Result<ExitCode, String> {
@@ -112,7 +168,8 @@ fn stage_and_apply(cli: &Cli, root: &Path, staged: &Path) -> Result<bool, String
     }
     show_difference(current.as_deref(), staged)?;
     let unit = controller_unit();
-    if !confirm(cli, &format!("Apply this and restart {unit}?"))? {
+    let refresh = Refresh::plan(&unit, current.as_deref(), staged);
+    if !confirm(cli, &format!("Apply this{}?", refresh.question(&unit)))? {
         println!("nothing changed");
         return Ok(false);
     }
@@ -120,7 +177,7 @@ fn stage_and_apply(cli: &Cli, root: &Path, staged: &Path) -> Result<bool, String
     let millis = process::unix_millis()?;
     let applied = rampire_ops::applied::install(root, staged, millis)?;
     println!("applied {}", applied.display());
-    let refreshed = refresh_controller(&unit, current.as_deref(), &applied)?;
+    let refreshed = refresh.run(&unit)?;
     keep_evidence(Change {
         action: "apply",
         unix_millis: millis,
@@ -156,16 +213,21 @@ pub(crate) fn rollback(cli: &Cli) -> Result<ExitCode, String> {
     }
     show_difference(Some(&current), &previous)?;
     let unit = controller_unit();
+    let refresh = Refresh::plan(&unit, Some(&current), &previous);
     if !confirm(
         cli,
-        &format!("Go back to {} and restart {unit}?", previous.display()),
+        &format!(
+            "Go back to {}{}?",
+            previous.display(),
+            refresh.question(&unit)
+        ),
     )? {
         println!("nothing changed");
         return Ok(ExitCode::SUCCESS);
     }
     rampire_ops::applied::make_current(root, &previous)?;
     println!("rolled back to {}", previous.display());
-    let refreshed = refresh_controller(&unit, Some(&current), &previous)?;
+    let refreshed = refresh.run(&unit)?;
     keep_evidence(Change {
         action: "rollback",
         unix_millis: process::unix_millis()?,
@@ -249,33 +311,61 @@ enum Refreshed {
     NotRunning,
 }
 
-/// Move a running controller onto the new copy `to`: by reloading when
-/// only what a reload can change differs from `from` (roadmap O4.5), by a
-/// restart otherwise. One that isn't running is left alone: it starts on
-/// the new copy whenever it starts.
-fn refresh_controller(unit: &str, from: Option<&Path>, to: &Path) -> Result<Refreshed, String> {
-    if !controller_active(unit) {
-        println!(
-            "{unit} isn't running, so nothing was restarted; it runs this copy when it starts"
-        );
-        return Ok(Refreshed::NotRunning);
-    }
-    let reload = from
-        .ok_or_else(|| "nothing was applied before".to_owned())
-        .and_then(|from| {
-            let load = |path: &Path| HostSettings::load(path).map_err(|error| error.to_string());
-            load(from)?.reloadable_to(&load(to)?)
-        });
-    match reload {
-        Ok(()) => {
-            systemctl("reload", unit)?;
-            println!("{unit} reloaded");
-            Ok(Refreshed::Reloaded)
+/// How a change reaches the controller, worked out before the person is
+/// asked so the question says what will happen.
+enum Refresh {
+    /// Only what a reload can change differs (roadmap O4.5).
+    Reload,
+    /// Anything else, with the reason.
+    Restart(String),
+    /// The unit isn't running: it starts on the new copy whenever it starts.
+    NotRunning,
+}
+
+impl Refresh {
+    /// Plan moving a running controller from the copy `from` onto `to`.
+    fn plan(unit: &str, from: Option<&Path>, to: &Path) -> Self {
+        if !controller_active(unit) {
+            return Self::NotRunning;
         }
-        Err(why) => {
-            systemctl("restart", unit)?;
-            println!("{unit} restarted: {why}");
-            Ok(Refreshed::Restarted)
+        let reload = from
+            .ok_or_else(|| "nothing was applied before".to_owned())
+            .and_then(|from| {
+                let load =
+                    |path: &Path| HostSettings::load(path).map_err(|error| error.to_string());
+                load(from)?.reloadable_to(&load(to)?)
+            });
+        match reload {
+            Ok(()) => Self::Reload,
+            Err(why) => Self::Restart(why),
+        }
+    }
+
+    /// What the question adds after its action, such as "and reload rampire.service".
+    fn question(&self, unit: &str) -> String {
+        match self {
+            Self::Reload => format!(" and reload {unit}"),
+            Self::Restart(_) => format!(" and restart {unit}"),
+            Self::NotRunning => String::new(),
+        }
+    }
+
+    fn run(self, unit: &str) -> Result<Refreshed, String> {
+        match self {
+            Self::NotRunning => {
+                println!("{unit} isn't running; it uses this copy when it starts");
+                Ok(Refreshed::NotRunning)
+            }
+            Self::Reload => {
+                systemctl("reload", unit)?;
+                println!("{unit} reloaded");
+                Ok(Refreshed::Reloaded)
+            }
+            Self::Restart(why) => {
+                systemctl("restart", unit)?;
+                println!("{unit} restarted: {why}");
+                Ok(Refreshed::Restarted)
+            }
         }
     }
 }

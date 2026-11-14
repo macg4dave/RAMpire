@@ -44,6 +44,9 @@ pub struct Inspection {
     /// The domain's `<memory>`: with no NUMA cell, the boot RAM.
     pub memory_bytes: u64,
     memory_unit: Option<String>,
+    /// `<currentMemory>`: what a balloon holds the VM at, when set.
+    pub current_memory_bytes: Option<u64>,
+    current_memory_unit: Option<String>,
 }
 
 impl Inspection {
@@ -126,10 +129,23 @@ impl Inspection {
             _ => {}
         }
         if self.balloon_active() {
-            changes.push(format!(
+            let mut change = format!(
                 "turn off the memory balloon (model '{}'): RAMpire resizes the VM with virtio-mem, and a balloon resizing it too would work against it",
                 self.balloon.as_deref().unwrap_or_default()
-            ));
+            );
+            // A balloon target below boot RAM goes with the balloon: say so,
+            // since the VM then takes more of the host's memory.
+            if let Some(current) = self
+                .current_memory_bytes
+                .filter(|current| *current < self.boot())
+            {
+                change.push_str(&format!(
+                    ". The balloon holds the VM at {} MiB; without it the VM has all {} MiB of its boot RAM",
+                    current / MIB,
+                    self.boot() / MIB
+                ));
+            }
+            changes.push(change);
         }
         changes
     }
@@ -213,6 +229,11 @@ pub fn inspect(xml: &str) -> Result<Inspection, String> {
                     let raw = text.decode().map_err(|error| error.to_string())?;
                     let unit = inspection.memory_unit.take();
                     inspection.memory_bytes = libvirt_bytes(raw.trim(), unit.as_deref())?;
+                } else if at(&[b"domain", b"currentMemory"]) {
+                    let raw = text.decode().map_err(|error| error.to_string())?;
+                    let unit = inspection.current_memory_unit.take();
+                    inspection.current_memory_bytes =
+                        Some(libvirt_bytes(raw.trim(), unit.as_deref())?);
                 }
                 if let Some((current, field, unit)) = device.as_mut() {
                     if let Some(field) = field.take() {
@@ -255,6 +276,9 @@ fn look(
     match (name.as_slice(), parent) {
         (b"memory", Some(b"domain")) => {
             inspection.memory_unit = attribute(element, b"unit")?;
+        }
+        (b"currentMemory", Some(b"domain")) => {
+            inspection.current_memory_unit = attribute(element, b"unit")?;
         }
         (b"maxMemory", Some(b"domain")) => {
             inspection.max_memory_slots =
@@ -656,7 +680,7 @@ pub fn review_toml(
 /// The VM's settings file.
 pub fn vm_toml(alias: &str, priority: u32, review: &str, suggested: &Suggested) -> String {
     format!(
-        "# Added by `rampire vm add`. Change a value with `rampire set VM KEY=VALUE`.\nalias = \"{alias}\"\npriority = {priority}\nreview = \"{review}\"\nguest_os = \"linux\"\n# The smallest the VM is made: its boot RAM.\nmin_ram = \"{}MB\"\n# The largest it may grow.\nmax_ram = \"{}MB\"\n# Spare memory it keeps ready.\nfree_ram = \"{}MB\"\n",
+        "# Added by `rampire vm add`. Change a value with `rampire set VM KEY=VALUE`.\nalias = \"{alias}\"\npriority = {priority}\nreview = \"{review}\"\nguest_os = \"linux\"\n# The least RAM the VM's system sees, here its boot RAM. The kernel keeps\n# some boot RAM for itself, so RAMpire may add a little to reach this.\nmin_ram = \"{}MB\"\n# The largest it may grow.\nmax_ram = \"{}MB\"\n# Spare memory it keeps ready.\nfree_ram = \"{}MB\"\n",
         suggested.min_ram / MIB,
         suggested.max_ram / MIB,
         suggested.free_ram / MIB
@@ -813,6 +837,28 @@ mod tests {
             text,
             "<domain>\n  <devices>\n    <memballoon model='none'/>\n  </devices>\n</domain>\n"
         );
+    }
+
+    #[test]
+    fn turning_off_a_balloon_below_boot_ram_says_the_vm_gets_all_of_it() {
+        let ballooned = "<domain>\n  <memory unit='KiB'>4194304</memory>\n  <currentMemory unit='KiB'>3145728</currentMemory>\n  <vcpu>2</vcpu>\n  <devices>\n    <memballoon model='virtio'/>\n  </devices>\n</domain>\n";
+        let inspection = inspect(ballooned).unwrap();
+        assert_eq!(inspection.current_memory_bytes, Some(3072 * MIB));
+        let balloon = inspection
+            .fixable()
+            .into_iter()
+            .find(|change| change.starts_with("turn off the memory balloon"))
+            .unwrap();
+        assert!(
+            balloon.ends_with(
+                "The balloon holds the VM at 3072 MiB; without it the VM has all 4096 MiB of its boot RAM"
+            ),
+            "{balloon}"
+        );
+        // With no target below boot RAM there is nothing more to say.
+        let full = ballooned.replace("3145728", "4194304");
+        let balloon = inspect(&full).unwrap().fixable().pop().unwrap();
+        assert!(!balloon.contains("holds the VM"), "{balloon}");
     }
 
     #[test]

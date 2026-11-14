@@ -196,7 +196,8 @@ where
                 (envelope.request, base)
             }
             Err(error) => {
-                if !self.guest_unavailable_reported {
+                if error != crate::guest_channel::AWAITING_GUEST && !self.guest_unavailable_reported
+                {
                     self.log(&format!("event=guest_input_invalid reason={error}"));
                     self.guest_unavailable_reported = true;
                 }

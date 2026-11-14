@@ -26,6 +26,9 @@ pub const PUBLICATION_COPY_DIRECTORY: &str = "/run/rampire";
 /// run whenever any other guest sends a record: dozens of calls a second.
 const ABSENT_AGENT_RETRY: Duration = Duration::from_secs(30);
 const ABSENT_AGENT: &str = "guest agent is not configured";
+/// The error while a newly connected guest has not published yet; the
+/// controller waits for it without reporting a fault.
+pub const AWAITING_GUEST: &str = "waiting for the guest's first publication on the control channel";
 
 pub fn publication_copy_path(vm_name: &str) -> PathBuf {
     Path::new(PUBLICATION_COPY_DIRECTORY).join(format!("{vm_name}.publication.json"))
@@ -156,6 +159,15 @@ impl<Q, T> GuestChannel<Q, T> {
         false
     }
 
+    /// The channel is newly connected and the guest has sent nothing yet.
+    fn awaiting_first_record(&self) -> bool {
+        #[cfg(unix)]
+        if let Some(control) = &self.control {
+            return control.awaiting_first_record(self.max_age);
+        }
+        false
+    }
+
     fn control_record(&self) -> Option<Vec<u8>> {
         #[cfg(unix)]
         if let Some(control) = &self.control {
@@ -241,6 +253,9 @@ impl<Q: GuestFileReader, T: UnixClock> GuestChannel<Q, T> {
                 self.via_control.set(true);
                 return channel;
             }
+        }
+        if self.awaiting_first_record() {
+            return Err(AWAITING_GUEST.to_owned());
         }
         self.via_control.set(false);
         let waiting_on_channel = self.channel_connected();

@@ -187,6 +187,9 @@ struct Worker {
     api: Api,
     uri: CString,
     connection: Ptr,
+    /// The daemon records each connection in its journal; an observer such
+    /// as `top` draws a screen, where the line would be noise.
+    log_connections: bool,
 }
 
 impl Worker {
@@ -214,7 +217,9 @@ impl Worker {
             if connection.is_null() {
                 return Err(format!("connect to libvirt: {}", self.api.last_error()));
             }
-            eprintln!("rampire: event=libvirt_connected");
+            if self.log_connections {
+                eprintln!("rampire: event=libvirt_connected");
+            }
             self.connection = connection;
         }
         Ok(self.connection)
@@ -336,6 +341,7 @@ pub struct LibvirtSession {
     uri: String,
     timeout: Duration,
     jobs: Mutex<Option<Sender<Job>>>,
+    log_connections: bool,
 }
 
 impl std::fmt::Debug for LibvirtSession {
@@ -354,6 +360,15 @@ impl LibvirtSession {
             uri: uri.into(),
             timeout,
             jobs: Mutex::new(None),
+            log_connections: false,
+        }
+    }
+
+    /// Like `new`, but each new connection is logged: for the daemon.
+    pub fn logged(uri: impl Into<String>, timeout: Duration) -> Self {
+        Self {
+            log_connections: true,
+            ..Self::new(uri, timeout)
         }
     }
 
@@ -432,6 +447,7 @@ impl LibvirtSession {
         let api = Api::load()?;
         let uri = CString::new(self.uri.as_str()).map_err(|_| "URI contains NUL".to_owned())?;
         let (sender, receiver) = mpsc::channel();
+        let log_connections = self.log_connections;
         thread::Builder::new()
             .name("libvirt-session".to_owned())
             .spawn(move || {
@@ -439,6 +455,7 @@ impl LibvirtSession {
                     api,
                     uri,
                     connection: std::ptr::null_mut(),
+                    log_connections,
                 }
                 .serve(receiver)
             })

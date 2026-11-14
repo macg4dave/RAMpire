@@ -61,7 +61,7 @@ impl Virsh {
     #[cfg(unix)]
     pub fn persistent(binary: impl Into<String>, timeout: Duration) -> Self {
         let mut virsh = Self::new(binary, timeout);
-        virsh.session = Some(std::sync::Arc::new(crate::libvirt::LibvirtSession::new(
+        virsh.session = Some(std::sync::Arc::new(crate::libvirt::LibvirtSession::logged(
             virsh.connection.clone(),
             timeout,
         )));

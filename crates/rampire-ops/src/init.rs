@@ -66,15 +66,37 @@ pub fn global_toml(suggestion: &Suggestion, domains: &[DomainMemory]) -> String 
          # Change a value with `rampire set global KEY=VALUE`, or edit this\n\
          # file and run `rampire apply`.\n\n",
     );
+    // To a tenth: a host's memory is rarely whole GiB, and rounding down
+    // would say a 1.9 GiB host has 1 GiB.
+    let tenths = |bytes: u64| bytes as f64 / GIB as f64;
+    let eighth = suggestion.host_bytes / 8;
+    let (bound, word) = if eighth < 2 * GIB {
+        (Some("the least it keeps"), "since")
+    } else if eighth > 8 * GIB {
+        (Some("the most it keeps"), "though")
+    } else {
+        (None, "")
+    };
+    let reserve_why = match bound {
+        Some(bound) => format!(
+            "{bound}, {word} an\n# eighth of its {:.1} GiB would be {:.1} GiB.",
+            tenths(suggestion.host_bytes),
+            tenths(eighth)
+        ),
+        None => format!(
+            "an eighth of its {:.1} GiB, in\n# whole GiB.",
+            tenths(suggestion.host_bytes)
+        ),
+    };
     text.push_str(&format!(
-        "# Memory the host keeps for itself: an eighth of its {:.1} GiB, between\n\
-         # 2 and 8 GiB.\nhost_reserve = \"{}GB\"\n\n",
-        // To a tenth: a host's memory is rarely whole GiB, and rounding down
-        // would say a 1.9 GiB host has 1 GiB.
-        suggestion.host_bytes as f64 / GIB as f64,
-        gib(suggestion.host_reserve_bytes)
+        "# Memory the host keeps for itself: {reserve} GiB, {reserve_why}\nhost_reserve = \"{reserve}GB\"\n\n",
+        reserve = gib(suggestion.host_reserve_bytes),
     ));
-    text.push_str("# The pool every managed VM grows from: the host's memory, less the\n# reserve, less what each VM below needs whatever happens:\n");
+    text.push_str(if domains.is_empty() {
+        "# The pool every managed VM grows from: the host's memory, less the\n# reserve. The host has no VMs yet.\n"
+    } else {
+        "# The pool every managed VM grows from: the host's memory, less the\n# reserve, less what each of these VMs needs whatever happens:\n"
+    });
     for domain in domains {
         let what = if domain.resizable && domain.boot_bytes > 0 {
             "boot RAM; it can be managed"
@@ -153,6 +175,35 @@ mod tests {
         assert!(
             text.contains("#   web: 1024 MiB (boot RAM; it can be managed)"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn the_notes_say_why_the_reserve_is_what_it_is_and_list_no_vms_when_there_are_none() {
+        // A small host: an eighth would be under the 2 GiB the host keeps.
+        let small = global_toml(&suggest(4 * GIB - 200 * (GIB >> 10), &[]), &[]);
+        assert!(
+            small.contains(
+                "2 GiB, the least it keeps, since an\n# eighth of its 3.8 GiB would be 0.5 GiB."
+            ),
+            "{small}"
+        );
+        assert!(
+            small.contains("reserve. The host has no VMs yet.\n"),
+            "{small}"
+        );
+        assert!(!small.contains("whatever happens"), "{small}");
+        // A large host: more than 8 GiB would be an eighth.
+        let large = global_toml(&suggest(128 * GIB, &[]), &[]);
+        assert!(
+            large.contains("8 GiB, the most it keeps, though an"),
+            "{large}"
+        );
+        // In between, an eighth is kept.
+        let middle = global_toml(&suggest(32 * GIB, &[]), &[]);
+        assert!(
+            middle.contains("4 GiB, an eighth of its 32.0 GiB"),
+            "{middle}"
         );
     }
 }
