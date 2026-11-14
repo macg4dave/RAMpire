@@ -239,14 +239,16 @@ if (( install )); then
   [[ -n $output ]] || { echo '--install needs packages, not --print-version' >&2; exit 1; }
   if command -v dnf >/dev/null; then
     packages=("$output"/rampire-[0-9]*.x86_64.rpm)
-    (( ${#packages[@]} == 1 )) && [[ -f ${packages[0]} ]]       || { echo "expected one host package in $output/, found: ${packages[*]}" >&2; exit 1; }
+    (( ${#packages[@]} == 1 )) && [[ -f ${packages[0]} ]] \
+      || { echo "expected one host package in $output/, found: ${packages[*]}" >&2; exit 1; }
     package=${packages[0]}
     # dnf install of a local file installs it, or upgrades the installed one.
     echo >&2 "==> installing $package with dnf"
     sudo dnf install -y "./$package"
   elif command -v apt-get >/dev/null; then
     packages=("$output"/rampire_*_amd64.deb)
-    (( ${#packages[@]} == 1 )) && [[ -f ${packages[0]} ]]       || { echo "expected one host package in $output/, found: ${packages[*]}" >&2; exit 1; }
+    (( ${#packages[@]} == 1 )) && [[ -f ${packages[0]} ]] \
+      || { echo "expected one host package in $output/, found: ${packages[*]}" >&2; exit 1; }
     package=${packages[0]}
     echo >&2 "==> installing $package with apt"
     sudo apt-get install -y --allow-downgrades "./$package"

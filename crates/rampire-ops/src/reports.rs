@@ -34,6 +34,20 @@ pub struct StatusReport {
     pub version: u16,
     pub controller: ControllerUnit,
     pub vms: Vec<ControllerStatusSnapshot>,
+    /// Managed VMs whose status couldn't be read, usually because they
+    /// aren't running.
+    pub unavailable: Vec<UnavailableVm>,
+}
+
+/// A managed VM `status` couldn't read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnavailableVm {
+    pub vm_name: String,
+    /// libvirt's state for it (`shut off`, `paused`, ...), or `unknown`.
+    pub state: String,
+    /// Why its status couldn't be read.
+    pub reason: String,
 }
 
 /// The controller's systemd unit, as `systemctl show` reports it.
@@ -134,6 +148,11 @@ mod tests {
                 recovery_reason: None,
                 last_latch_clear_reason: None,
                 compatibility_fingerprint_sha256: "e".repeat(64),
+            }],
+            unavailable: vec![UnavailableVm {
+                vm_name: "spare".to_owned(),
+                state: "shut off".to_owned(),
+                reason: "virtio-mem XML is missing current".to_owned(),
             }],
         }
     }

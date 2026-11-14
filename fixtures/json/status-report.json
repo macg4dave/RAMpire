@@ -37,5 +37,12 @@
       "last_latch_clear_reason": null,
       "compatibility_fingerprint_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     }
+  ],
+  "unavailable": [
+    {
+      "vm_name": "spare",
+      "state": "shut off",
+      "reason": "virtio-mem XML is missing current"
+    }
   ]
 }

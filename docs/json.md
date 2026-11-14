@@ -31,6 +31,7 @@ holds the code to it, so the examples are always what the command writes.
 |---|---|
 | `controller` | The controller's unit: `unit`, and `active_state`, `sub_state` and `unit_file_state` as `systemctl show` reports them (`unknown` when it reports none) |
 | `vms` | One `rampire.status` document per VM, in name order |
+| `unavailable` | Managed VMs whose status couldn't be read, usually because they aren't running: `vm_name`, libvirt's `state` for it (`shut off`, `paused`, or `unknown`) and the `reason` |
 
 ### `rampire.status`
 

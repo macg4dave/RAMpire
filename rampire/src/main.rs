@@ -454,14 +454,26 @@ fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
             .map(|config| config.vm_name)
             .collect(),
     };
+    // A VM that can't be read, usually because it isn't running, is
+    // reported on its own; the others are still shown.
     let mut vms = Vec::new();
+    let mut unavailable = Vec::new();
     for name in &names {
         let mut bytes = Vec::new();
-        rampire_host::cli::status(&target(cli, Some(name))?, &mut bytes)?;
-        vms.push(
-            rampire_core::parse_controller_status(&bytes)
-                .map_err(|error| format!("status of {name}: {error}"))?,
-        );
+        let read =
+            rampire_host::cli::status(&target(cli, Some(name))?, &mut bytes).and_then(|()| {
+                rampire_core::parse_controller_status(&bytes).map_err(|error| error.to_string())
+            });
+        match read {
+            Ok(status) => vms.push(status),
+            Err(reason) => unavailable.push(rampire_ops::reports::UnavailableVm {
+                vm_name: name.clone(),
+                state: libvirt(cli)
+                    .and_then(|libvirt| libvirt.state(name))
+                    .unwrap_or_else(|_| "unknown".to_owned()),
+                reason,
+            }),
+        }
     }
     let controller = rampire_ops::units::controller_state();
     if cli.json {
@@ -470,6 +482,7 @@ fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
             version: 1,
             controller,
             vms,
+            unavailable,
         })?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -477,7 +490,13 @@ fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
         "{}: {} ({}), {}",
         controller.unit, controller.active_state, controller.sub_state, controller.unit_file_state
     );
-    if vms.is_empty() {
+    for vm in &unavailable {
+        println!(
+            "{}: {}, so its status can't be read ({})",
+            vm.vm_name, vm.state, vm.reason
+        );
+    }
+    if vms.is_empty() && unavailable.is_empty() {
         println!("RAMpire manages no VMs yet. Add one with: rampire vm add VM --fix-xml");
     }
     for status in &vms {
