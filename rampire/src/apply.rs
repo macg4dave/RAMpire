@@ -391,3 +391,41 @@ fn controller_active(unit: &str) -> bool {
     )
     .is_ok_and(|state| state.trim() == "active")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attestations_are_named_as_new_changed_or_removed_not_shown() {
+        let from = TempDir::new("test-from").unwrap();
+        let to = TempDir::new("test-to").unwrap();
+        let write = |root: &Path, vm: &str, text: &str| {
+            let directory = root.join("attestations");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(format!("{vm}{ATTESTATION_SUFFIX}")), text).unwrap();
+        };
+        write(from.path(), "same", "{}");
+        write(to.path(), "same", "{}");
+        write(from.path(), "edited", "{\"a\":1}");
+        write(to.path(), "edited", "{\"a\":2}");
+        write(from.path(), "gone", "{}");
+        write(to.path(), "added", "{}");
+        assert_eq!(
+            attestation_changes(from.path(), to.path()).unwrap(),
+            [
+                (
+                    "added".to_owned(),
+                    "new, recording how the VM is set up now"
+                ),
+                ("edited".to_owned(), "changed"),
+                ("gone".to_owned(), "removed"),
+            ]
+        );
+        // No attestations folder on either side is no change.
+        let empty = TempDir::new("test-empty").unwrap();
+        assert!(attestation_changes(empty.path(), empty.path())
+            .unwrap()
+            .is_empty());
+    }
+}
