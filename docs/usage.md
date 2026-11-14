@@ -126,8 +126,8 @@ observe_only = false
 | `observe_only` | Trial mode. `true`: the program decides and logs everything but changes no VM's memory | `false` for normal use |
 
 The file has a few more settings, marked as technical. Leave them alone
-unless the [administration guide](administration.md#globaltoml)
-tells you otherwise.
+unless something in this guide tells you otherwise; every setting is
+listed in the [reference](reference.md#globaltoml).
 
 ### One VM: `vms.d/<vm name>.toml`
 
@@ -187,12 +187,10 @@ them later.
 | `"1.5GB"` | 1.5 gigabytes (1536 MB) |
 | `"3 GB"` or `"3gb"` | Also fine: spaces and lower case are allowed |
 
-Here, MB and MiB mean the same thing, and 1 GB is 1024 MB. Use whole
-gigabytes, or multiples of 16 MB (`"512MB"`, `"768MB"`, `"1536MB"`). If a
-size can't be used, applying the change tells you which one.
-
-Always include the unit. A number on its own, such as `max_ram = 8`,
-means 8 **bytes**, and is refused.
+Use whole gigabytes, or multiples of 16 MB (`"512MB"`, `"768MB"`,
+`"1536MB"`), and always include the unit. The exact rules are in the
+[reference](reference.md#sizes); if a size can't be used, applying the
+change tells you which one.
 
 ## How to change a setting
 

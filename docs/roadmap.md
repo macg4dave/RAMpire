@@ -148,7 +148,7 @@ added on top of something else instead of replacing it.
     `target/` on the SSH host counted as an untracked file and broke the
     build identity. Not a gap: `xtask` doesn't link on Windows, as before
     this roadmap; the container is the way to run it there.
-- [ ] **S1.4** The docs: one place for each fact. Check that the README,
+- [x] **S1.4** The docs: one place for each fact. Check that the README,
   quick start, administration and usage pages don't repeat each other or
   disagree, and that each page says who it is for.
 
@@ -165,21 +165,34 @@ added on top of something else instead of replacing it.
   | Fleet | Sysadmin, many hosts | Configuration management, metrics, JSON |
   | Reference | Both | The one definition of every command and setting |
 
-  So far: the quick start, README flow, reference and administration are
-  brought up to date with S1.1, and the README's link to the deleted
-  `roadmap_next.md` is fixed. Still to do: take the setting tables out of
-  usage and administration in favour of links to reference.
+  Done 2026-11-14. The quick start, README flow, reference and
+  administration follow S1.1, and the links to the deleted
+  `roadmap_next.md` and old roadmap sections are fixed. Reference is now
+  the one definition of every setting and of how sizes are written; it
+  took the facts only administration had (file names, the freshness
+  bound, the Linux removal time, the alignment rules, corrected against
+  the code: 1 MiB and 8 MiB in the file, the device block when running).
+  Administration lost its two setting tables and keeps how the settings
+  act together. Usage keeps its plain-words "how to choose" guide, which
+  nothing else has, and links to reference for the rest. Releasing no
+  longer repeats the quick start's repository lines. Every page now
+  opens by saying who it is for.
 
-- [ ] **S1.5** Check the `testvm` scenarios cover the deployments in S2 and
+- [x] **S1.5** Check the `testvm` scenarios cover the deployments in S2 and
   S3, and that their first-boot commands are the same commands the docs
   tell a user to type. A scenario that does something the docs don't say
   is a gap in the docs or in the tool.
 
-  So far: the `clean-host-*` scenarios now run the quick start's
+  Done 2026-11-14. The `clean-host-*` scenarios run the quick start's
   `rampire init --yes` with no `doctor` beforehand and no `systemctl
-  enable`, then check the unit is active and enabled. They still install
-  from `--file`, not from the repositories, which don't exist before
-  v0.1.0.
+  enable`, then check the unit is active and enabled. They install from
+  `--file`, built by `tools/build.sh package`, since no repository is
+  published. `linux-guest-debian13` has the guest agent's channel and its
+  `.deb` pulls in `qemu-guest-agent`, so `vm add` can read the kernel
+  release. One gap, for S2.2: the test command used `--review
+  linux-standard --yes`, which skips the questions the quick start asks.
+  Those questions need a person on a terminal by design, so S2.2 now runs
+  the quick start's own command.
 
 ## S2: The hobbyist deployment (Debian 13)
 
@@ -193,9 +206,11 @@ is a finding, fixed in the product or the docs.
   and `rampire init`.
 - [ ] **S2.2** A VM with no virtio-mem device goes from `vm add` to managed
   in one guided command. Make the guest with `linux-guest-debian13 --keep`,
-  run `rampire vm add t-guest --fix-xml --review linux-standard --yes`,
-  check `rampire status t-guest`, then remove it with
-  `testvm down t-guest --apply`.
+  then run the quick start's `rampire vm add t-guest --fix-xml` on a
+  terminal on pc101 and answer its questions as a hobbyist would (a
+  person, or the owner watching). Check `rampire status t-guest`, then
+  remove it with `testvm down t-guest --apply`. The packages come from
+  `tools/build.sh package` until a repository is published.
 - [ ] **S2.3** Write up what the hobbyist path got wrong, fix it, and run
   S2.1 and S2.2 again until they go through with nothing done by hand.
 

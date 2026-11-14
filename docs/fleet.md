@@ -1,6 +1,7 @@
 # Running a fleet
 
-RAMpire's command works the same for a script as for a person. This page
+For administrators of many hosts. RAMpire's command works the same for a
+script as for a person. This page
 collects what automation needs.
 
 ## The contract

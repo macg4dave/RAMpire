@@ -1,6 +1,6 @@
 # Releasing
 
-How a release is built. There is no CI: a release is built in the build
+For the maintainer. How a release is built. There is no CI: a release is built in the build
 container ([development](development.md#the-gate)), the same way as any
 development build.
 

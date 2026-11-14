@@ -1,6 +1,6 @@
 # Tools
 
-Observation and development tools. The live views are `rampire watch`
+For developers and testers. Observation and development tools. The live views are `rampire watch`
 and `rampire top`, from the installed package. `metrics` and
 `qualification` run from a checkout on the KVM host. All of them read the
 controller's journal, libvirt and each guest's publication. `CONFIG` below

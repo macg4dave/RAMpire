@@ -1,6 +1,7 @@
 # Reference
 
-Every `rampire` command and every setting. `rampire --help` and
+For looking things up: every `rampire` command and every setting, defined
+once here. `rampire --help` and
 `rampire COMMAND --help` show the same, from the same definition.
 
 ## Options every command takes
@@ -74,8 +75,20 @@ a problem found, 2 a wrong command line.
 | `/var/lib/rampire/domain-backups/` | Definitions `vm add --fix-xml` replaced |
 | `/run/rampire/metrics.prom` | Metrics, every round |
 
+## Sizes
+
 Sizes are written in quotes with a unit: `"512MB"`, `"3GB"`, `"1.5GB"`.
-MB and MiB mean the same (1 GB = 1024 MB).
+Units are binary whatever the spelling: MB and MiB mean the same, and
+1 GB = 1024 MB. Spaces and lower case are allowed (`"3 gb"`). A number
+without quotes is a count of bytes, so `max_ram = 8` means 8 bytes and is
+refused by the alignment rules below.
+
+In a VM's file, `min_ram` and `max_ram` are multiples of 1 MiB, and
+`free_ram` is a multiple of 8 MiB and less than `max_ram`. On the running
+VM the limits are also aligned to its device's block, and `free_ram` must
+be eight blocks or more: with the 2 MiB block `vm add` gives a new
+device, use multiples of 16 MiB. Whole gigabytes always fit. Applying a
+size that doesn't fit says which one.
 
 ## `global.toml`
 
@@ -86,25 +99,30 @@ Every setting is optional.
 | `pool` | none | Device memory shared by every VM, on top of each one's boot RAM. Required with more than one VM |
 | `host_reserve` | `"4GB"` | Memory the host keeps for itself; growth stops before crossing it |
 | `observe_only` | `false` | Decide and log everything, but change no VM's memory |
-| `poll_interval_seconds` | `5` | Seconds between checks, 1 to 10 |
+| `poll_interval_seconds` | `5` | Seconds between host polls and guest samples, 1 to 10. A publication older than six polls is stale |
 | `command_timeout_seconds` | `10` | Limit on each libvirt command |
-| `convergence_timeout_seconds` | `300` | How long a Windows removal may stop moving before it is settled |
+| `convergence_timeout_seconds` | `300` | How long a Windows removal may stop moving before it is settled at what the guest returned, and the deadline for each settle command. Linux removals use a built-in 380 s ([administration](administration.md#how-the-settings-act)) |
 | `libvirt_uri` | `"qemu:///system"` | The libvirt connection |
-| `retention` | `10` | Applied copies and their records kept; at least 2 |
+| `retention` | `10` | Applied copies, and records of what each apply did, kept under `/var/lib/rampire`; at least 2, so there is always a copy to roll back to |
 
 ## `vms.d/VM.toml`
+
+One file per VM, named for the libvirt domain with `.toml` added:
+lower-case ASCII letters, digits, `-` and `_`, at most 64 characters. The
+name isn't repeated inside. Only `vms.d/*.toml` files are read, so editor
+backups and `.rpmnew` files there are ignored.
 
 | Setting | Meaning |
 |---|---|
 | `alias` | The VM's virtio-mem device alias |
 | `priority` | Who is served first when memory is short; higher first |
-| `min_ram` | The smallest the VM is made, boot RAM included |
+| `min_ram` | The smallest the VM is made, boot RAM included; memory is never taken back below it |
 | `max_ram` | The largest it may grow. For Linux, at most about four times boot RAM |
-| `free_ram` | Spare memory the guest keeps; it asks for more below this and returns memory above it. A multiple of eight device blocks |
+| `free_ram` | Spare memory the guest keeps; it asks for more below this and returns memory above it ([sizes](#sizes)) |
 | `guest_os` | `"linux"`, or omitted for Windows |
 | `review` | The review profile in `reviews/` it is attested with |
 | `telemetry_path` | Optional host file for a diagnostic copy of each publication |
-| `install_path`, `service_account` | Windows only |
+| `install_path`, `service_account` | Windows only: where the guest service is installed and the account it runs as |
 
 `global` is not a VM name: `rampire set` uses it for `global.toml`.
 

@@ -1,7 +1,7 @@
 # Quick start
 
-From nothing to one VM whose memory RAMpire manages, in about ten
-minutes. You need a KVM host with libvirt (libvirt 10.1 or later, QEMU 8.2
+For a first install on one host. From nothing to one VM whose memory
+RAMpire manages, in about ten minutes. You need a KVM host with libvirt (libvirt 10.1 or later, QEMU 8.2
 or later) and a Linux VM on it. Every command runs on the host as root
 unless it says "in the VM".
 

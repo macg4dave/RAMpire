@@ -1,6 +1,6 @@
 # Administration
 
-How to install the RAMpire controller on a KVM host, add VMs to it,
+For system administrators. How to install the RAMpire controller on a KVM host, add VMs to it,
 install the guest services, recover from faults and upgrade. Development
 builds and checks are in [development](development.md); the observation
 tools are in [tools](tools.md).
@@ -135,23 +135,13 @@ profiles in `reviews/` and attestations in `attestations/`. A missing
 `global.toml` means every default. An empty `vms.d/` is valid: the
 controller runs and logs that it manages no VMs. Only `vms.d/*.toml` files
 are read, so editor backups and `.rpmnew` files there are ignored.
-Comments (`#`) are kept when installed. Unknown or misspelt keys are rejected. Memory sizes are binary
-whatever the spelling (`"1GB"` = `"1GiB"` = 2^30 bytes, `"128MB"` =
-`"128MiB"`); fractional sizes such as `"8.5GB"` and plain byte counts are
-accepted.
+Comments (`#`) are kept when installed. Unknown or misspelt keys are
+rejected. How sizes are written is in [reference](reference.md#sizes).
 
-### `global.toml`
+### How the settings act
 
-| Key | Default | Meaning |
-|---|---|---|
-| `pool` | none | Device memory shared by every VM, excluding fixed boot RAM. Required with more than one VM |
-| `host_reserve` | `4GB` | `MemAvailable` the host keeps. Growth is reduced or refused rather than cross it |
-| `observe_only` | `false` | Evaluate and log requests, but refuse each one before resizing |
-| `poll_interval_seconds` | `5` | Host poll and guest sample interval, 1–10. Freshness bounds are six polls |
-| `command_timeout_seconds` | `10` | Limit on each `virsh` command |
-| `convergence_timeout_seconds` | `300` | How long a Windows removal may stop moving before it is settled at what the guest returned, and the deadline for each settle command. Linux removals use their own built-in time (below) |
-| `libvirt_uri` | `qemu:///system` | The libvirt connection that owns the VMs |
-| `retention` | `10` | Applied copies, and records of what each apply did, kept under `/var/lib/rampire`. At least 2, so there is always a copy to roll back to |
+Every key, its default and its limits are in
+[reference](reference.md#globaltoml); this is how they work together.
 
 A Linux removal that stops moving is settled after 380 s without
 movement, not after `convergence_timeout_seconds`. The guest driver
@@ -166,24 +156,6 @@ request the guest issued first is served first, then VM name order. The
 controller never takes memory from one VM to give to another. Admission
 also keeps 256 MiB above `host_reserve` for changes between
 planning and resizing.
-
-### `vms.d/<vm_name>.toml`
-
-One file per VM. The file's name is the libvirt domain name with `.toml`
-added: lower-case ASCII letters, digits, `-` and `_`, at most 64
-characters, and not `global`, which `rampire set` uses for `global.toml`.
-The name isn't repeated inside.
-
-| Key | Meaning |
-|---|---|
-| `alias` | The virtio-mem device's alias in the domain XML |
-| `priority` | Positive; higher is served first from free pool memory |
-| `min_ram`, `max_ram` | Limits on total guest RAM, fixed boot RAM included, aligned to the device block size |
-| `free_ram` | The memory the guest keeps free above what it uses. A multiple of eight device blocks |
-| `guest_os` | `"linux"`, or omitted for Windows |
-| `install_path`, `service_account` | Windows only: where the service is installed and the account it runs as |
-| `review` | Optional: the review profile in `reviews/` the VM is attested with |
-| `telemetry_path` | Optional host file for a diagnostic copy of each publication |
 
 `free_ram` is the only policy size. The guest asks for more when free
 memory falls below it and returns memory when it has more than that spare.

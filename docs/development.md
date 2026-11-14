@@ -1,6 +1,6 @@
 # Development
 
-How to build, check and test this repository, and which checks need which
+For developers. How to build, check and test this repository, and which checks need which
 platform. Open work is in [the roadmap](roadmap.md);
 [the Rust standards](../.github/prompts/rust.md) hold coding rules;
 [administration](administration.md) covers installing and running the
