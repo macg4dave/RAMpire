@@ -715,6 +715,14 @@ fn events_panel(frame: &mut Frame, command: &Command, events: &Result<Vec<PoolEv
         .enumerate()
         .map(|(index, vm)| (vm.name.as_str(), vm_colour(index)))
         .collect();
+    // As wide as the longest name shown, as in the VM table (up to 31).
+    let width = events
+        .iter()
+        .take(command.events)
+        .map(|event| event.vm.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(13, 31);
     for index in 0..command.events {
         frame.row();
         match events.get(index) {
@@ -723,9 +731,9 @@ fn events_panel(frame: &mut Frame, command: &Command, events: &Result<Vec<PoolEv
                     .iter()
                     .find(|(name, _)| *name == event.vm)
                     .map_or(LABEL, |(_, colour)| *colour);
-                let vm: String = event.vm.chars().take(13).collect();
+                let vm: String = event.vm.chars().take(width).collect();
                 frame.add(format!("{}  ", event.time), DIM);
-                frame.add(format!("{vm:<14}"), colour);
+                frame.add(format!("{vm:<pad$}", pad = width + 1), colour);
                 frame.add(event.text.as_str(), event.colour);
             }
             None if index == 0 => frame.add("no pool events in the journal", DIM),

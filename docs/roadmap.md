@@ -253,12 +253,42 @@ is a finding, fixed in the product or the docs.
   VM) and the kernel release. The controller granted the guest's 122 MiB
   request in full; `top` showed its whole name; `testvm down` left
   nothing behind. Nothing was done by hand apart from that answer.
-- [ ] **S2.4** A second Debian 13 deployment with the hobbyist path, done
-  by the owner at a terminal, giving feedback as it goes. A Debian 13 KVM
-  host with libvirt, the packages from `tools/build.sh package`, and only
-  the [quick start](quick-start.md) from `apt install` on. It is a
-  deployment, not a test: it stays in place and is changed as the
-  findings are fixed. Write up what it finds and fix it in the product.
+- [x] **S2.4** A second deployment with the hobbyist path, using only the
+  product from `install` on, kept in place and changed as the findings
+  are fixed.
+
+  Done 2026-11-14 (owner: "you do this one"). The host is pc101 (RHEL
+  10.2), upgraded with `tools/build.sh install`. The guest is
+  `deb13_rampire`, the owner's empty VM: Claude wrote the Debian 13 cloud
+  image to its disk, gave it a cloud-init seed with an SSH key and a NIC
+  on `br-lan`, then installed the guest `.deb` (quick start step 3).
+  `sudo rampire vm add deb13_rampire --fix-xml` went through in one
+  command: it asked one question (yes: a fresh VM running only the guest
+  service) and detected the rest, then restarted and applied. The
+  controller granted the guest's first request in full. A first attempt
+  on a nested Debian host (`hobby-debian13`) was dropped. Nothing in the
+  run needed a feature the product lacks.
+
+  Found and fixed at `7b2f7a8` and the commit after it; pc101 and the
+  guest were then upgraded in place (packages only, not the VM):
+
+  | # | Where | Finding | Fixed |
+  |---|---|---|---|
+  | I1 | `init` | "an eighth of its 3.8 GiB, between 2 and 8 GiB" above `host_reserve = "2GB"`, which is the least, not an eighth | Says which: the least, the most, or an eighth |
+  | I2 | `init` | "less what each VM below needs whatever happens:" ended in a colon on a host with no VMs | Says the host has no VMs yet |
+  | I3 | `apply` | Asked to "restart rampire.service" when it wasn't running, and said "restart" when it would reload | The question is worked out first: reload, restart, or neither |
+  | I4 | daemon | With no VMs it said to add one to the *applied* copy's `vms.d` | Names `rampire vm add VM --fix-xml` |
+  | I5 | `top`, `watch` | Events were the oldest of the last 600 under "newest first": `journalctl --grep -n` prints newest first on this systemd | The journal reader sorts by microsecond timestamps |
+  | I6 | daemon | Every start logged `guest_input_invalid` and a libvirt error: it read the agent's control files before the guest had published on the new channel | A fresh channel with nothing yet is waited for |
+  | I7 | guest | Grew by 176 MiB with nothing running: `min_ram` = boot RAM is compared with what the guest sees, which the kernel keeps lower | Not a bug (owner: min_ram is what the user sets; growing above it is fine). The note `vm add` writes and reference say so |
+  | I8 | `apply` | Showed the 70-line attestation JSON | Names it: new, changed or removed |
+  | I9 | `vm add` | Turning off the balloon gave the VM back the 1 GiB its balloon held, unsaid | The shown change says so |
+  | I10 | `top`, `watch` | `rampire: event=libvirt_connected` printed above the screen | Only the daemon logs it |
+  | I11 | `top` | The events list cut names at 13 characters | As wide as the longest name, up to 31 |
+
+  Outside the product, for whoever repeats it: Debian's libvirt leaves
+  the `default` network inactive, and Debian's virt-install 5.0 stops a
+  `--cloud-init` guest when it exits; a NoCloud seed ISO avoids that.
 
 ## S3: Administrator deployments
 
