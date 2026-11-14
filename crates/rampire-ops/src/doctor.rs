@@ -14,10 +14,12 @@ pub const MIN_LIBVIRT: (u32, u32) = (10, 1);
 pub const MIN_QEMU: (u32, u32) = (8, 2);
 /// The virtio-mem device options attestation requires.
 pub const DEVICE_OPTIONS: [&str; 2] = ["dynamic-memslots", "unplugged-inaccessible"];
-/// Where the installed unit may be.
-const UNIT_PATHS: [&str; 2] = [
-    "/etc/systemd/system/rampire.service",
-    "/usr/lib/systemd/system/rampire.service",
+/// Where the installed unit may be, most important first, as systemd
+/// looks for it.
+const UNIT_DIRECTORIES: [&str; 3] = [
+    "/etc/systemd/system",
+    "/run/systemd/system",
+    "/usr/lib/systemd/system",
 ];
 
 /// A version as major, minor and micro.
@@ -228,20 +230,55 @@ fn device_options(emulator: &str) -> Finding {
     }
 }
 
-/// The groups the unit adds for libvirt's channel sockets.
-pub fn supplementary_groups(unit: &str) -> Vec<String> {
-    unit.lines()
-        .filter_map(|line| line.trim().strip_prefix("SupplementaryGroups="))
-        .flat_map(|groups| groups.split_whitespace().map(str::to_owned))
-        .collect()
+/// The groups the unit adds for libvirt's channel sockets, from the unit
+/// file and then its drop-ins in order, as systemd reads them: each
+/// assignment adds groups, and an empty one clears those before it.
+pub fn supplementary_groups(unit_and_drop_ins: &[String]) -> Vec<String> {
+    let mut groups = Vec::new();
+    for text in unit_and_drop_ins {
+        for value in text
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("SupplementaryGroups="))
+        {
+            if value.trim().is_empty() {
+                groups.clear();
+            }
+            groups.extend(value.split_whitespace().map(str::to_owned));
+        }
+    }
+    groups
+}
+
+/// The installed unit's text followed by its drop-ins' texts, in the order
+/// systemd applies them: drop-ins sorted by file name, a file in an earlier
+/// directory hiding one of the same name in a later one. `None` when the
+/// unit isn't installed.
+fn installed_unit(unit: &str) -> Option<Vec<String>> {
+    let text = UNIT_DIRECTORIES
+        .iter()
+        .find_map(|directory| std::fs::read_to_string(Path::new(directory).join(unit)).ok())?;
+    let mut drop_ins = std::collections::BTreeMap::new();
+    for directory in UNIT_DIRECTORIES.iter().rev() {
+        let Ok(entries) = std::fs::read_dir(Path::new(directory).join(format!("{unit}.d"))) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".conf") {
+                if let Ok(text) = std::fs::read_to_string(entry.path()) {
+                    drop_ins.insert(name, text);
+                }
+            }
+        }
+    }
+    let mut texts = vec![text];
+    texts.extend(drop_ins.into_values());
+    Some(texts)
 }
 
 fn socket_groups() -> Finding {
     let check = "socket group";
-    let Some(unit) = UNIT_PATHS
-        .iter()
-        .find_map(|path| std::fs::read_to_string(path).ok())
-    else {
+    let Some(unit) = installed_unit("rampire.service") else {
         return Finding::problem(
             check,
             "rampire.service is not installed",
@@ -334,7 +371,18 @@ mod tests {
         assert_eq!(emulator(xml).as_deref(), Some("/usr/libexec/qemu-kvm"));
         assert_eq!(emulator("<domainCapabilities/>"), None);
         let unit = "[Service]\nUser=rampire\nSupplementaryGroups=qemu kvm\n";
-        assert_eq!(supplementary_groups(unit), ["qemu", "kvm"]);
-        assert!(supplementary_groups("[Service]\n").is_empty());
+        assert_eq!(supplementary_groups(&[unit.to_owned()]), ["qemu", "kvm"]);
+        assert!(supplementary_groups(&["[Service]\n".to_owned()]).is_empty());
+        // The Debian package's drop-in clears the unit's qemu and adds its own.
+        let debian = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/debian-socket-group.conf"),
+        )
+        .unwrap();
+        let unit_file = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../host/systemd/rampire.service"),
+        )
+        .unwrap();
+        assert_eq!(supplementary_groups(&[unit_file.clone()]), ["qemu"]);
+        assert_eq!(supplementary_groups(&[unit_file, debian]), ["libvirt-qemu"]);
     }
 }
