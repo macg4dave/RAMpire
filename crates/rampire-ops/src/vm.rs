@@ -449,7 +449,7 @@ fn insert_numa_cell(text: &mut String, vcpus: u32, boot: u64) -> Result<(), Stri
         vcpus - 1,
         boot / 1024
     );
-    if let Some(start) = text.find("<cpu") {
+    if let Some(start) = find_element(text, "cpu") {
         let close = start
             + text[start..]
                 .find('>')
@@ -468,12 +468,27 @@ fn insert_numa_cell(text: &mut String, vcpus: u32, boot: u64) -> Result<(), Stri
         }
         return Ok(());
     }
-    let devices = text.find("<devices").ok_or("the domain has no <devices>")?;
+    let devices = find_element(text, "devices").ok_or("the domain has no <devices>")?;
     let line_start = text[..devices]
         .rfind('\n')
         .map_or(devices, |index| index + 1);
     text.insert_str(line_start, &format!("  <cpu>\n    {numa}\n  </cpu>\n"));
     Ok(())
+}
+
+/// Where the element `<name ...>` starts: the name followed by a space,
+/// `>` or `/`, so `<cpu` doesn't find `<cputune>`.
+fn find_element(text: &str, name: &str) -> Option<usize> {
+    let open = format!("<{name}");
+    let mut from = 0;
+    while let Some(at) = text[from..].find(&open) {
+        let start = from + at;
+        match text[start + open.len()..].chars().next() {
+            Some(' ' | '>' | '/' | '\n' | '\t') => return Some(start),
+            _ => from = start + open.len(),
+        }
+    }
+    None
 }
 
 /// `<maxMemory>`, on its own line before the domain's `<memory>`.
@@ -752,6 +767,33 @@ mod tests {
         assert!(desk.device().is_none() && !desk.control_channel);
         assert_eq!(desk.hostdevs, 1);
         assert_eq!(desk.balloon.as_deref(), Some("virtio"));
+    }
+
+    #[test]
+    fn a_numa_cell_goes_in_cpu_not_in_cputune() {
+        let tuned = "<domain type='kvm'>
+  <memory unit='KiB'>2097152</memory>
+  <vcpu placement='static'>2</vcpu>
+  <cputune>
+    <vcpupin vcpu='0' cpuset='1'/>
+  </cputune>
+  <cpu mode='host-passthrough' check='none'>
+    <topology sockets='1' cores='2' threads='1'/>
+  </cpu>
+  <devices>
+  </devices>
+</domain>
+";
+        let inspection = inspect(tuned).unwrap();
+        let text = fix_xml(tuned, &inspection).unwrap().unwrap();
+        assert!(
+            text.contains("<topology sockets='1' cores='2' threads='1'/>\n    <numa>"),
+            "{text}"
+        );
+        assert!(text.contains("<cputune>\n    <vcpupin"), "{text}");
+        let fixed = inspect(&text).unwrap();
+        assert_eq!(fixed.numa_cells, 1);
+        assert!(fixed.problems().is_empty(), "{:?}", fixed.problems());
     }
 
     #[test]

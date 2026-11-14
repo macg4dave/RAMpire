@@ -281,7 +281,7 @@ impl App {
                 flow.lines.push((line, tone));
             }
             FlowEvent::Shown(text) => {
-                for line in text.lines() {
+                for line in text.replace('\t', "    ").lines() {
                     let tone = if line.starts_with('+') && !line.starts_with("+++") {
                         Tone::Good
                     } else if line.starts_with('-') && !line.starts_with("---") {
@@ -626,6 +626,29 @@ impl App {
 
     fn on_remove_key(&mut self, key: KeyEvent) {
         let count = self.removable().len();
+        // The choices' own letters work here too, as the screen shows them.
+        if let KeyCode::Char(letter @ ('k' | 'f' | 'b')) = key.code {
+            let Some(vm) = self
+                .removable()
+                .get(self.remove_cursor)
+                .map(|vm| (*vm).clone())
+            else {
+                return;
+            };
+            let choice = remove_choice(
+                &vm.vm_name,
+                vm.management == Management::Parked,
+                &self.context,
+            );
+            if let Some(picked) = choice
+                .choices
+                .into_iter()
+                .find(|option| option.key == letter)
+            {
+                self.start(picked.action);
+            }
+            return;
+        }
         match key.code {
             KeyCode::Enter => {
                 let Some(vm) = self
@@ -799,8 +822,9 @@ impl App {
             }
             Dialog::Choice(choice) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.dialog = None,
-                KeyCode::Up | KeyCode::Char('k') => choice.cursor = choice.cursor.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => {
+                // Letters choose, so only arrows move.
+                KeyCode::Up => choice.cursor = choice.cursor.saturating_sub(1),
+                KeyCode::Down => {
                     choice.cursor = (choice.cursor + 1).min(choice.choices.len().saturating_sub(1))
                 }
                 KeyCode::Enter => {

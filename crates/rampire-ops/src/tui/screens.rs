@@ -90,16 +90,30 @@ fn header_bar(area: Rect, buf: &mut Buffer, app: &App) {
     };
     let left = Line::from(vec![
         Span::styled(format!(" {} RAMpire  ", theme.icon(Icon::Vm)), theme.bar()),
-        Span::styled(format!("{}  ", crate::dashboard::host_name()), theme.bar()),
+        Span::styled(format!("{}  ", short_host()), theme.bar()),
         controller,
     ]);
-    let right = format!("{}  {} ", app.context.build, crate::dashboard::clock());
+    // The build, without the version's words: `(build 5bac9b55a758)`.
+    let build = app
+        .context
+        .build
+        .split_once("(build ")
+        .map_or(app.context.build.as_str(), |(_, rest)| {
+            rest.trim_end_matches(')')
+        });
+    let right = format!("build {build}  {} ", crate::dashboard::clock());
     buf.set_style(area, theme.bar());
     Paragraph::new(left).style(theme.bar()).render(area, buf);
     let width = right.chars().count() as u16;
-    if area.width > width + 50 {
+    if area.width > width + 45 {
         buf.set_string(area.right() - width, area.y, right, theme.bar());
     }
+}
+
+/// The host's name up to its first dot.
+fn short_host() -> String {
+    let name = crate::dashboard::host_name();
+    name.split('.').next().unwrap_or(&name).to_owned()
 }
 
 fn tab_bar(area: Rect, buf: &mut Buffer, app: &App) {
@@ -778,8 +792,20 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
                 .render(inner, buf);
         }
         Dialog::Choice(choice) => {
-            let rows = 3 + choice.text.len() as u16 + 2 * choice.choices.len() as u16 + 2;
-            let rect = centred(area, width.min(100), rows.min(height));
+            let box_width = width.min(100);
+            let mut text: Vec<Line> = choice
+                .text
+                .iter()
+                .map(|text| widgets::line(theme, text.clone(), Tone::Normal))
+                .collect();
+            text.push(Line::default());
+            for option in &choice.choices {
+                text.push(Line::from(format!(" {}  {} ", option.key, option.label)));
+                text.push(Line::from(format!("    {}", option.detail)));
+            }
+            text.push(Line::default());
+            let rows = wrapped_rows(&text, box_width.saturating_sub(2)) as u16 + 2;
+            let rect = centred(area, box_width, rows.min(height));
             Clear.render(rect, buf);
             let block = panel(theme, Icon::Settings, &choice.title, "");
             let inner = block.inner(rect);
