@@ -37,9 +37,7 @@ tools/build.sh package --install
 
 builds the packages in the build container and installs the host package
 with dnf or apt, upgrading what is installed; it checks that `rampire
---version` reports the build just made. A host that still has a
-development install from before packages also needs, once,
-`tools/linux/legacy.sh remove --apply`. Guests get their package with
+--version` reports the build just made. Guests get their package with
 `cargo xtask testvm --packages`, or `cargo xtask linux deploy`.
 
 This rule is about operating the product. It does not restrict editing,

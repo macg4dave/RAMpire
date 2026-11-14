@@ -171,9 +171,7 @@ identity (`<commit>`, or `<commit>-dirty.<source digest>`), which
 commits to `HEAD`, so a later commit's package always upgrades an earlier
 one, and the release sorts after every development version that led to
 it. `--install` checks that the installed `rampire --version` reports the
-build just made. A host with a development install from before packages
-(the removed `xtask host-deploy`) then needs `tools/linux/legacy.sh remove
---apply` once, to drop its unit and polkit rule in `/etc`.
+build just made.
 `--static` adds the musl tarballs a release ships. The guest packages
 (`rampire-guest`) are in `dist/` too.
 

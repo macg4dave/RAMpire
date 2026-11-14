@@ -38,8 +38,8 @@ project's tools; if no tool covers a piece, add the tool first.
   `virtio-mem-guest` service inside the parked guests (`debian13`,
   `safe_vm_1` to `safe_vm_4`, `minecraft101`). Write the list here.
 
-  Done 2026-11-14 with the new `tools/linux/legacy.sh list`
-  ([tools](tools.md#removing-pre-rampire-leftovers)). No old binary, unit,
+  Done 2026-11-14 with a one-time tool, `tools/linux/legacy.sh` (removed
+  once pc101 was clean; it is in Git history). No old binary, unit,
   config, state directory, polkit rule or service account is left. What
   is left:
 
@@ -53,7 +53,7 @@ project's tools; if no tool covers a piece, add the tool first.
   | `~/github/virtio-mem-pool` | This repository at `6c2d09d` under the old folder name, with `site/testvm.env` | Delete and clone again as `~/github/rampire` (owner) |
   | Other files in `~/scratch` (bundles, XML, `.rs` copies, `safe_vm/` 418 MB, `rampire-site/`, `dist/`) | Hand work from earlier sessions | Remove all (owner) |
   | Domains `homebridge101`, `dc1`, `TrueNas`, `win11_gpu`, `Tail` | Not RAMpire's | Leave |
-  | `safe_vm` | Running, managed, new port | Keep |
+  | `safe_vm` | Running, managed, new port | Kept then; taken out of testing later the same day (owner): `rampire vm remove`, and its parked file, attestation, state and `linux-6-12-116` review removed by hand. Test VMs come from `testvm` now |
 
 - [x] **S0.2** Run the removal. Afterwards pc101 has only the current
   `rampire` build and the VMs the owner chose to keep.
@@ -114,7 +114,7 @@ added on top of something else instead of replacing it.
   | `xtask linux deploy/status/uninstall` | The guest package | Kept: it installs a guest build with the workload over SSH, for live tests |
   | `tools/gate.sh` and `xtask gate` | Each other | Kept: `gate.sh` runs `xtask gate` on a Linux build host from Windows |
   | `xtask qualification`, `metrics` | Nothing | Kept: live-test evidence |
-  | `tools/linux/legacy.sh` | Nothing | Remove after S3, once no host has old leftovers |
+  | `tools/linux/legacy.sh` | Nothing | Removed 2026-11-14 (owner): pc101 was the last host with old leftovers, and the rest were cleaned by hand |
 
 - [x] **S1.3** The overlaps already known:
   - `deploy/scripts/clone-vm.sh` and `xtask testvm` both make VMs from a

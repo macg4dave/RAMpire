@@ -100,8 +100,8 @@ samples, events and incidents, and writes `DIR/pool.csv`: one row per
 interval with every VM's requested and current device size, the pool's
 charge (`max(requested, current)` per VM, as the controller counts it),
 free pool bytes and host `MemAvailable`. It prints one line per row, for
-example `host avail 16.2G | pool 4.1G/15.0G free 10.9G | safe_vm 0.3G |
-safe_vm_1 0.4G->1.2G` (an arrow is a resize under way). Ctrl+C or SIGTERM
+example `host avail 16.2G | pool 4.1G/15.0G free 10.9G | webserver 0.3G |
+backup 0.4G->1.2G` (an arrow is a resize under way). Ctrl+C or SIGTERM
 stops every recorder cleanly. The default directory is
 `.artifacts/metrics/pool-<UTC time>/`.
 
@@ -229,28 +229,6 @@ has its boot RAM and 1 GiB more available.
 | `clean-host-almalinux10`, `-rocky10`, `-fedora45`, `-debian13`, `-ubuntu2404` | A clean host of each supported family goes from nothing to a running controller with the package manager and `rampire init` (roadmap O2 exit) |
 | `linux-guest-debian13` | A guest with the guest package, room for a device but no device and no control channel, for `rampire vm add --fix-xml` (O3 exit); use `--keep` |
 | `ansible-almalinux10` | The example Ansible role on a clean host: "changed", then no change, then "changed" after a settings change (O4 exit) |
-
-## Removing pre-RAMpire leftovers
-
-```bash
-ssh HOST 'bash -s' -- list < tools/linux/legacy.sh            # report only
-ssh HOST 'bash -s' -- remove < tools/linux/legacy.sh          # dry run
-ssh HOST 'bash -s' -- remove --apply < tools/linux/legacy.sh  # remove
-ssh HOST 'bash -s' -- remove --apply --clear-scratch < tools/linux/legacy.sh
-```
-
-A development host or guest that had an install from before the clean
-break may still hold its files. RAMpire has no code for the old names
-(decision D9), so this one-time tool finds them. It looks for the paths,
-units and service account in the "Now" column of [names](names.md), and the
-old guest package. It also finds parked VM files whose domain is gone,
-old-name working folders under `~/scratch` (with `--clear-scratch`,
-everything else there too), and a checkout of this repository still in a
-folder under the old name. `--apply` clones that checkout again as
-`rampire`, carrying its untracked `site/` across, then deletes the old
-folder. It lists every libvirt domain with its control port and whether
-RAMpire manages it, but never undefines a domain or deletes a disk. A parked
-file whose domain still exists is kept for `rampire vm add`.
 
 ## Watching guest RAM
 
