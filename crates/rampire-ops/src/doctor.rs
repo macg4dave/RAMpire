@@ -38,7 +38,7 @@ pub struct Finding {
 }
 
 impl Finding {
-    fn ok(check: &str, detail: impl Into<String>) -> Self {
+    pub fn ok(check: &str, detail: impl Into<String>) -> Self {
         Self {
             check: check.to_owned(),
             ok: true,
@@ -47,7 +47,7 @@ impl Finding {
         }
     }
 
-    fn problem(check: &str, detail: impl Into<String>, fix: impl Into<String>) -> Self {
+    pub fn problem(check: &str, detail: impl Into<String>, fix: impl Into<String>) -> Self {
         Self {
             check: check.to_owned(),
             ok: false,
@@ -134,6 +134,22 @@ pub fn run(connection: &str, account: &str, applied_root: &Path) -> Vec<Finding>
         )
     });
     findings
+}
+
+/// Findings as `rampire doctor` prints them: `ok:` or `problem:` and the
+/// fix beneath.
+pub fn text(findings: &[Finding]) -> String {
+    let mut out = String::new();
+    for finding in findings {
+        match &finding.fix {
+            None => out.push_str(&format!("ok: {}: {}\n", finding.check, finding.detail)),
+            Some(fix) => {
+                out.push_str(&format!("problem: {}: {}\n", finding.check, finding.detail));
+                out.push_str(&format!("  fix: {fix}\n"));
+            }
+        }
+    }
+    out
 }
 
 /// The check that something is applied: the one `rampire init` itself

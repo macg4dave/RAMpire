@@ -23,7 +23,7 @@ use signal_hook::flag;
 
 /// The copy the running controller started on, which `rampire apply` keeps
 /// while it runs.
-pub const RUNNING_COPY: &str = "/run/rampire/running-copy";
+pub use rampire_ops::context::RUNNING_COPY;
 
 /// `rampire daemon`: run the controller on the configuration in
 /// `config_path` until SIGTERM or SIGINT. SIGHUP reloads it.

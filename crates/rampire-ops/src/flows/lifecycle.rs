@@ -2,42 +2,45 @@
 //! (fixing its definition, writing its review and settings, restoring
 //! parked settings), parking or forgetting it, and attesting it again.
 
-use std::io::{IsTerminal, Write};
-use std::path::Path;
-use std::process::ExitCode;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
-use rampire_ops::process;
+use super::apply::{apply, running_copy};
+use crate::context::{applied_root, Context, TempDir, DOMAIN_BACKUPS, PARKED_DIRECTORY};
+use crate::process;
+use crate::ui::Ui;
 
-use crate::apply::{apply, running_copy};
-use crate::{applied_root, confirm, draft, libvirt, path_text, Cli, TempDir};
-
-pub(crate) struct AddOptions<'a> {
-    pub(crate) vm: &'a str,
-    pub(crate) fix_xml: bool,
-    pub(crate) review: Option<&'a str>,
-    pub(crate) kernel: Option<&'a str>,
-    pub(crate) priority: u32,
-    pub(crate) min_ram: Option<&'a str>,
-    pub(crate) max_ram: Option<&'a str>,
-    pub(crate) free_ram: Option<&'a str>,
+/// `vm add`'s options beside the VM's name.
+#[derive(Debug, Clone, Default)]
+pub struct AddOptions {
+    pub vm: String,
+    pub fix_xml: bool,
+    pub review: Option<String>,
+    pub kernel: Option<String>,
+    pub priority: u32,
+    pub min_ram: Option<String>,
+    pub max_ram: Option<String>,
+    pub free_ram: Option<String>,
 }
 
-/// Ask a person on the terminal; without one, there is nobody to answer.
-fn ask(question: &str) -> Result<String, String> {
-    if !std::io::stdin().is_terminal() {
-        return Err(format!(
-            "{question} needs a person: answer on a terminal, or name a reviewed profile with --review"
-        ));
+impl AddOptions {
+    /// A person's `vm add VM --fix-xml`, with every default.
+    pub fn fixing(vm: &str) -> Self {
+        Self {
+            vm: vm.to_owned(),
+            fix_xml: true,
+            priority: 100,
+            ..Self::default()
+        }
     }
-    print!("{question} ");
-    std::io::stdout()
-        .flush()
-        .map_err(|error| error.to_string())?;
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .map_err(|error| error.to_string())?;
-    Ok(answer.trim().to_owned())
+
+    fn has_settings(&self) -> bool {
+        self.review.is_some()
+            || self.kernel.is_some()
+            || self.min_ram.is_some()
+            || self.max_ram.is_some()
+            || self.free_ram.is_some()
+    }
 }
 
 /// Write a file that must not exist yet; an existing one is never replaced.
@@ -58,41 +61,48 @@ fn write_new(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
-pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String> {
-    use rampire_core::settings::{self, VMS_DIRECTORY};
-    use rampire_ops::vm;
-    let name = options.vm;
-    let directory = draft(cli);
-    let filename = settings::vm_filename(name)?;
-    let settings_path = directory.join(VMS_DIRECTORY).join(&filename);
+/// Where a VM's settings are in the draft: managed, or parked.
+fn settings_paths(directory: &Path, name: &str) -> Result<(PathBuf, PathBuf), String> {
+    let filename = rampire_core::settings::vm_filename(name)?;
+    Ok((
+        directory
+            .join(rampire_core::settings::VMS_DIRECTORY)
+            .join(&filename),
+        directory.join(PARKED_DIRECTORY).join(&filename),
+    ))
+}
+
+/// `rampire vm add`. Returns whether the applied configuration changed.
+pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Result<bool, String> {
+    use crate::vm;
+    use rampire_core::settings::VMS_DIRECTORY;
+    let name = options.vm.as_str();
+    let directory = context.draft();
+    let filename = rampire_core::settings::vm_filename(name)?;
+    let (settings_path, parked) = settings_paths(&directory, name)?;
     // Settings in the draft but not in the applied copy are an earlier
     // `vm add` that stopped before applying: this run finishes it.
     let resuming = settings_path.exists();
     if resuming {
-        let applied = rampire_ops::applied::current(applied_root())?
+        let applied = crate::applied::current(applied_root())?
             .map(|current| current.join(VMS_DIRECTORY).join(&filename));
         if applied.is_some_and(|path| path.exists()) {
             return Err(format!(
                 "{name} is already managed; change it with rampire set {name} KEY=VALUE"
             ));
         }
-        if options.review.is_some()
-            || options.kernel.is_some()
-            || options.min_ram.is_some()
-            || options.max_ram.is_some()
-            || options.free_ram.is_some()
-        {
+        if options.has_settings() {
             return Err(format!(
                 "{name} has settings from an earlier vm add in {}: run vm add {name} without settings to finish it, or change them with rampire set",
                 settings_path.display()
             ));
         }
-        println!(
+        ui.say(&format!(
             "{name} has settings from an earlier vm add that didn't finish ({}); finishing it",
             settings_path.display()
-        );
+        ));
     }
-    let libvirt = libvirt(cli)?;
+    let libvirt = context.libvirt()?;
     let xml = libvirt.virsh(&["dumpxml", "--inactive", name])?;
     let mut inspection = vm::inspect(&xml)?;
     let mut restart_needed = false;
@@ -100,10 +110,12 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
     let fixable = inspection.fixable();
     if !fixable.is_empty() {
         for change in &fixable {
-            println!("to fix: {change}");
+            ui.say(&format!("to fix: {change}"));
         }
         if !options.fix_xml {
-            println!("rampire vm add {name} --fix-xml makes these changes");
+            ui.say(&format!(
+                "rampire vm add {name} --fix-xml makes these changes"
+            ));
         } else if let Some(fixed) = vm::fix_xml(&xml, &inspection)? {
             let temporary = TempDir::new(name)?;
             let (before, after) = (
@@ -118,10 +130,10 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
                 .arg(&after)
                 .output()
                 .map_err(|error| format!("run diff: {error}"))?;
-            print!("{}", String::from_utf8_lossy(&shown.stdout));
-            if !confirm(cli, &format!("Change {name}'s saved definition like this?"))? {
-                println!("nothing changed");
-                return Ok(ExitCode::SUCCESS);
+            ui.show(&String::from_utf8_lossy(&shown.stdout));
+            if !ui.confirm(&format!("Change {name}'s saved definition like this?"))? {
+                ui.say("nothing changed");
+                return Ok(false);
             }
             let backups = Path::new(DOMAIN_BACKUPS);
             std::fs::create_dir_all(backups).map_err(|error| error.to_string())?;
@@ -130,9 +142,15 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
                 .map_err(|error| format!("keep {}: {error}", backup.display()))?;
             libvirt.virsh(&["define", &path_text(&after)?])?;
             drop(temporary);
-            println!(
+            ui.say(&format!(
                 "changed {name}'s definition; the old one is in {}",
                 backup.display()
+            ));
+            crate::audit::record(
+                context,
+                "fix_xml",
+                Some(name),
+                &[("backup", &backup.display().to_string())],
             );
             inspection = vm::inspect(&libvirt.virsh(&["dumpxml", "--inactive", name])?)?;
             // Every change but saving the requested size takes effect when
@@ -143,8 +161,8 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
     let problems = inspection.problems();
     if !problems.is_empty() {
         for (problem, fix) in &problems {
-            println!("problem: {problem}");
-            println!("  fix: {fix}");
+            ui.say(&format!("problem: {problem}"));
+            ui.say(&format!("  fix: {fix}"));
         }
         return Err(format!("{name} can't be managed yet; nothing was added"));
     }
@@ -158,15 +176,13 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
         .ok_or_else(|| format!("{name}'s virtio-mem device has no alias; nothing was added"))?;
 
     // A VM taken out with `vm remove` comes back with the settings it had.
-    let parked = directory
-        .join(PARKED_DIRECTORY)
-        .join(settings::vm_filename(name)?);
     if resuming {
         // Written by the earlier run; kept as it is.
     } else if parked.exists() {
-        restore_parked(&directory, &parked, &settings_path, &alias, options)?;
+        restore_parked(ui, &directory, &parked, &settings_path, &alias, options)?;
     } else {
         write_vm_settings(
+            ui,
             &libvirt,
             &directory,
             &settings_path,
@@ -174,6 +190,9 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
             &alias,
             options,
         )?;
+    }
+    if !resuming {
+        crate::audit::record(context, "vm_add", Some(name), &[]);
     }
 
     // A VM is attested while it runs, on the definition it was started
@@ -196,35 +215,36 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
         (false, _) => Some(format!("{name} is not running. Start it now, then apply?")),
     };
     if let Some(question) = question {
-        if !confirm(cli, &question)? {
-            println!("when {name} runs its saved definition, run rampire apply");
-            return Ok(ExitCode::SUCCESS);
+        if !ui.confirm(&question)? {
+            ui.say(&format!(
+                "when {name} runs its saved definition, run rampire apply"
+            ));
+            return Ok(false);
         }
-        rampire_ops::attest::cold_restart(name, &libvirt, std::time::Duration::from_secs(300))?;
-        println!("{name} started");
+        crate::attest::cold_restart(name, &libvirt, std::time::Duration::from_secs(300))?;
+        ui.say(&format!("{name} started"));
     }
-    apply(cli, false)
+    apply(context, ui)
 }
 
-/// Where `vm remove` keeps a VM's settings, in the draft.
-const PARKED_DIRECTORY: &str = "parked";
+fn path_text(path: &Path) -> Result<String, String> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
+}
 
 /// Move a parked VM's settings back into `vms.d`, after checking they still
 /// fit its device and name a review profile that exists.
 fn restore_parked(
+    ui: &mut dyn Ui,
     directory: &Path,
     parked: &Path,
     settings_path: &Path,
     alias: &str,
     options: &AddOptions,
 ) -> Result<(), String> {
-    let name = options.vm;
-    if options.review.is_some()
-        || options.kernel.is_some()
-        || options.min_ram.is_some()
-        || options.max_ram.is_some()
-        || options.free_ram.is_some()
-    {
+    let name = options.vm.as_str();
+    if options.has_settings() {
         return Err(format!(
             "{name}'s settings are kept in {}: add it without --review, --kernel or sizes, \
              then change them with rampire set {name} KEY=VALUE",
@@ -247,7 +267,7 @@ fn restore_parked(
     })?;
     rampire_host::attestation::read_review(
         &directory
-            .join(rampire_ops::applied::REVIEW_DIRECTORY)
+            .join(crate::applied::REVIEW_DIRECTORY)
             .join(format!("{review}.toml")),
     )?;
     if settings_path.exists() {
@@ -255,30 +275,31 @@ fn restore_parked(
     }
     std::fs::rename(parked, settings_path)
         .map_err(|error| format!("move {}: {error}", parked.display()))?;
-    println!(
+    ui.say(&format!(
         "restored {name}'s settings from {} (review {review}); change them with rampire set {name}",
         parked.display()
-    );
+    ));
     Ok(())
 }
 
 /// Write a new VM's settings, with its review profile: the one named, or
 /// one written from the definition and a person's answers.
 fn write_vm_settings(
-    libvirt: &rampire_ops::attest::Libvirt,
+    ui: &mut dyn Ui,
+    libvirt: &crate::attest::Libvirt,
     directory: &Path,
     settings_path: &Path,
-    inspection: &rampire_ops::vm::Inspection,
+    inspection: &crate::vm::Inspection,
     alias: &str,
     options: &AddOptions,
 ) -> Result<(), String> {
+    use crate::vm;
     use rampire_core::settings;
-    use rampire_ops::vm;
-    let name = options.vm;
-    let review = match options.review {
+    let name = options.vm.as_str();
+    let review = match options.review.as_deref() {
         Some(profile) => {
             let path = directory
-                .join(rampire_ops::applied::REVIEW_DIRECTORY)
+                .join(crate::applied::REVIEW_DIRECTORY)
                 .join(format!("{profile}.toml"));
             rampire_host::attestation::read_review(&path)?;
             profile.to_owned()
@@ -289,14 +310,10 @@ fn write_vm_settings(
             for detected in vm::review_answers(inspection, vm::host_has_rdma()) {
                 let (value, source) = match detected.answer {
                     Some(answer) => answer,
-                    None => {
-                        let reply =
-                            ask(&format!("{} [y/N]", vm::question_text(detected.question)))?;
-                        (
-                            matches!(reply.as_str(), "y" | "Y" | "yes" | "Yes"),
-                            AnswerSource::Confirmed,
-                        )
-                    }
+                    None => (
+                        ui.review(vm::question_text(detected.question))?,
+                        AnswerSource::Confirmed,
+                    ),
                 };
                 if !value {
                     return Err(format!(
@@ -308,7 +325,7 @@ fn write_vm_settings(
             }
             // The kernel release: given, else read from a running guest's
             // QEMU guest agent, else asked.
-            let (kernel, source) = match options.kernel {
+            let (kernel, source) = match options.kernel.as_deref() {
                 Some(kernel) => (kernel.to_owned(), AnswerSource::Confirmed),
                 None => match libvirt
                     .virsh(&["qemu-agent-command", name, r#"{"execute":"guest-get-osinfo"}"#])
@@ -317,11 +334,13 @@ fn write_vm_settings(
                     .and_then(vm::kernel_release_from_osinfo)
                 {
                     Some(kernel) => {
-                        println!("{name} runs Linux {kernel} (read from its guest agent)");
+                        ui.say(&format!(
+                            "{name} runs Linux {kernel} (read from its guest agent)"
+                        ));
                         (kernel, AnswerSource::Detected)
                     }
                     None => (
-                        ask("The guest's kernel release (uname -r in the VM; its guest agent didn't answer):")?,
+                        ui.text("The guest's kernel release (uname -r in the VM; its guest agent didn't answer):")?,
                         AnswerSource::Confirmed,
                     ),
                 },
@@ -336,11 +355,11 @@ fn write_vm_settings(
                 (&format!("linux {kernel}"), source),
             );
             let path = directory
-                .join(rampire_ops::applied::REVIEW_DIRECTORY)
+                .join(crate::applied::REVIEW_DIRECTORY)
                 .join(format!("{name}.toml"));
             write_new(&path, &text)?;
             rampire_host::attestation::read_review(&path)?;
-            println!("wrote the review {}", path.display());
+            ui.say(&format!("wrote the review {}", path.display()));
             name.to_owned()
         }
     };
@@ -352,9 +371,9 @@ fn write_vm_settings(
             rampire_core::parse_byte_size(text).map_err(|error| error.to_string())
         })
     };
-    suggested.min_ram = size(options.min_ram, suggested.min_ram)?;
-    suggested.max_ram = size(options.max_ram, suggested.max_ram)?;
-    suggested.free_ram = size(options.free_ram, suggested.free_ram)?;
+    suggested.min_ram = size(options.min_ram.as_deref(), suggested.min_ram)?;
+    suggested.max_ram = size(options.max_ram.as_deref(), suggested.max_ram)?;
+    suggested.free_ram = size(options.free_ram.as_deref(), suggested.free_ram)?;
     write_new(
         settings_path,
         &vm::vm_toml(alias, options.priority, &review, &suggested),
@@ -368,28 +387,31 @@ fn write_vm_settings(
             ),
         });
     }
-    println!("wrote {}", settings_path.display());
+    ui.say(&format!("wrote {}", settings_path.display()));
     Ok(())
 }
 
-pub(crate) fn vm_remove(cli: &Cli, name: &str, forget: bool) -> Result<ExitCode, String> {
-    use rampire_core::settings::{self, VMS_DIRECTORY};
-    let directory = draft(cli);
-    let path = directory
-        .join(VMS_DIRECTORY)
-        .join(settings::vm_filename(name)?);
+/// `rampire vm remove`: park the VM's settings, or with `forget` remove
+/// everything RAMpire keeps for it.
+pub fn vm_remove(
+    context: &Context,
+    ui: &mut dyn Ui,
+    name: &str,
+    forget: bool,
+) -> Result<(), String> {
+    use rampire_core::settings;
+    let directory = context.draft();
+    let (path, parked) = settings_paths(&directory, name)?;
     // A VM removed earlier, now being deleted: only what was kept for it goes.
-    let parked = directory
-        .join(PARKED_DIRECTORY)
-        .join(settings::vm_filename(name)?);
     if forget && !path.exists() && parked.exists() {
         let review = settings::load_vm(&parked)?.review;
-        if !confirm(cli, &format!("Forget everything RAMpire kept for {name}?"))? {
-            println!("nothing changed");
-            return Ok(ExitCode::SUCCESS);
+        if !ui.confirm(&format!("Forget everything RAMpire kept for {name}?"))? {
+            ui.say("nothing changed");
+            return Ok(());
         }
-        forget_vm(&directory, name, review.as_deref())?;
-        return Ok(ExitCode::SUCCESS);
+        forget_vm(ui, &directory, name, review.as_deref())?;
+        crate::audit::record(context, "vm_forget", Some(name), &[]);
+        return Ok(());
     }
     let vm = settings::load_vm(&path)?;
     let question = if forget {
@@ -397,11 +419,11 @@ pub(crate) fn vm_remove(cli: &Cli, name: &str, forget: bool) -> Result<ExitCode,
     } else {
         format!("Stop managing {name}? It keeps its memory until its next cold start.")
     };
-    if !confirm(cli, &question)? {
-        println!("nothing changed");
-        return Ok(ExitCode::SUCCESS);
+    if !ui.confirm(&question)? {
+        ui.say("nothing changed");
+        return Ok(());
     }
-    let libvirt = libvirt(cli)?;
+    let libvirt = context.libvirt()?;
     // The next cold start begins on boot RAM alone (decision D18).
     if libvirt.state(name).is_ok() {
         libvirt.virsh(&[
@@ -417,29 +439,56 @@ pub(crate) fn vm_remove(cli: &Cli, name: &str, forget: bool) -> Result<ExitCode,
     if forget {
         std::fs::remove_file(&path)
             .map_err(|error| format!("remove {}: {error}", path.display()))?;
+        crate::audit::record(context, "vm_forget", Some(name), &[]);
         // The controller lets go of the VM first; then what it kept goes.
-        let code = apply(cli, false)?;
+        apply(context, ui)?;
         if let Some(copy) = still_managed_in(name)? {
-            println!(
-                "{name} is still managed by {}, so what RAMpire keeps for it stays;                  when it is applied, run rampire vm remove {name} --forget",
+            ui.say(&format!(
+                "{name} is still managed by {}, so what RAMpire keeps for it stays; when it is applied, run rampire vm remove {name} --forget",
                 copy.display()
-            );
-            return Ok(code);
+            ));
+            return Ok(());
         }
-        forget_vm(&directory, name, vm.review.as_deref())?;
-        return Ok(code);
+        forget_vm(ui, &directory, name, vm.review.as_deref())?;
+        return Ok(());
     }
     std::fs::create_dir_all(directory.join(PARKED_DIRECTORY)).map_err(|error| error.to_string())?;
     std::fs::rename(&path, &parked).map_err(|error| format!("move {}: {error}", path.display()))?;
-    println!("{name}'s settings are kept in {}", parked.display());
-    apply(cli, false)
+    ui.say(&format!(
+        "{name}'s settings are kept in {}",
+        parked.display()
+    ));
+    crate::audit::record(context, "vm_remove", Some(name), &[]);
+    apply(context, ui)?;
+    Ok(())
 }
 
 /// Remove what RAMpire keeps for a VM it no longer manages: its parked
 /// settings, attestation, request state and definition backups, and its
 /// review profile when `vm add` wrote it for this VM (named after it) and
 /// no other VM's settings name it.
-fn forget_vm(directory: &Path, name: &str, review: Option<&str>) -> Result<(), String> {
+fn forget_vm(
+    ui: &mut dyn Ui,
+    directory: &Path,
+    name: &str,
+    review: Option<&str>,
+) -> Result<(), String> {
+    for path in forgotten_files(directory, name, review)? {
+        match std::fs::remove_file(&path) {
+            Ok(()) => ui.say(&format!("removed {}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("remove {}: {error}", path.display())),
+        }
+    }
+    Ok(())
+}
+
+/// The files [`forget_vm`] removes, those that exist or not.
+pub fn forgotten_files(
+    directory: &Path,
+    name: &str,
+    review: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
     use rampire_core::settings::{self, VMS_DIRECTORY};
     let mut gone = vec![
         directory
@@ -477,127 +526,186 @@ fn forget_vm(directory: &Path, name: &str, review: Option<&str>) -> Result<(), S
         if !named_elsewhere {
             gone.push(
                 directory
-                    .join(rampire_ops::applied::REVIEW_DIRECTORY)
+                    .join(crate::applied::REVIEW_DIRECTORY)
                     .join(format!("{name}.toml")),
             );
         }
     }
-    for path in gone {
-        match std::fs::remove_file(&path) {
-            Ok(()) => println!("removed {}", path.display()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("remove {}: {error}", path.display())),
-        }
-    }
-    Ok(())
+    Ok(gone)
 }
 
 /// The applied copy, current or running, that still manages `name`. Its
 /// checkpoint and lock belong to the controller until neither does.
-fn still_managed_in(name: &str) -> Result<Option<std::path::PathBuf>, String> {
+fn still_managed_in(name: &str) -> Result<Option<PathBuf>, String> {
     use rampire_core::settings::{self, VMS_DIRECTORY};
     let filename = settings::vm_filename(name)?;
     let running = running_copy();
-    let current = rampire_ops::applied::current(applied_root())?;
+    let current = crate::applied::current(applied_root())?;
     Ok([current, running]
         .into_iter()
         .flatten()
         .find(|copy| copy.join(VMS_DIRECTORY).join(&filename).exists()))
 }
 
-/// Where `vm add --fix-xml` keeps the definitions it replaced.
-const DOMAIN_BACKUPS: &str = "/var/lib/rampire/domain-backups";
-
-pub(crate) fn vm_attest(
-    cli: &Cli,
+/// `rampire vm attest`. `vm` is the one VM, or with `drifted` every VM
+/// whose live evidence has drifted.
+pub fn vm_attest(
+    context: &Context,
+    ui: &mut dyn Ui,
     vm: Option<&str>,
     drifted: bool,
     restart: bool,
     no_apply: bool,
-) -> Result<ExitCode, String> {
-    use rampire_ops::attest;
-    let directory = draft(cli);
-    let libvirt = libvirt(cli)?;
+) -> Result<(), String> {
+    use crate::attest;
+    let directory = context.draft();
+    let libvirt = context.libvirt()?;
     let vms = if drifted {
         let found = attest::drifted(&directory, &libvirt)?;
         if found.is_empty() {
-            println!("no running VM has drifted from its attestation");
-            return Ok(ExitCode::SUCCESS);
+            ui.say("no running VM has drifted from its attestation");
+            return Ok(());
         }
         for (name, change) in &found {
-            println!("{name}: {change}");
+            ui.say(&format!("{name}: {change}"));
         }
-        if !confirm(cli, "Attest these VMs again as they are now?")? {
-            println!("nothing changed");
-            return Ok(ExitCode::SUCCESS);
+        if !ui.confirm("Attest these VMs again as they are now?")? {
+            ui.say("nothing changed");
+            return Ok(());
         }
         found.into_iter().map(|(name, _)| name).collect()
     } else {
         let vm = vm.ok_or("name a VM, or pass --drifted")?.to_owned();
         if restart {
-            if !confirm(cli, &format!("Shut {vm} down and start it again?"))? {
-                println!("nothing changed");
-                return Ok(ExitCode::SUCCESS);
+            if !ui.confirm(&format!("Shut {vm} down and start it again?"))? {
+                ui.say("nothing changed");
+                return Ok(());
             }
             attest::cold_restart(&vm, &libvirt, std::time::Duration::from_secs(300))?;
-            println!("{vm} restarted");
+            ui.say(&format!("{vm} restarted"));
         }
         vec![vm]
     };
     for vm in &vms {
         let path = attest::attest(&directory, vm, &libvirt)?;
-        println!("attested {vm}: {}", path.display());
+        ui.say(&format!("attested {vm}: {}", path.display()));
+        crate::audit::record(context, "vm_attest", Some(vm), &[]);
     }
     if no_apply {
-        println!("not applied: run rampire apply when ready");
-        return Ok(ExitCode::SUCCESS);
+        ui.say("not applied: run rampire apply when ready");
+        return Ok(());
     }
-    apply(cli, false)
+    apply(context, ui)?;
+    Ok(())
+}
+
+/// `rampire set`: change settings in the draft, then apply unless
+/// `no_apply`.
+pub fn set(
+    context: &Context,
+    ui: &mut dyn Ui,
+    target: &str,
+    changes: &[crate::set::Assignment],
+    no_apply: bool,
+) -> Result<bool, String> {
+    let path = crate::set::set(&context.draft(), target, changes)?;
+    ui.say(&format!("changed {}", path.display()));
+    let described: Vec<String> = changes
+        .iter()
+        .map(|change| {
+            let value = change.value.to_string();
+            format!("{}={}", change.key, value.trim().trim_matches('"'))
+        })
+        .collect();
+    crate::audit::record(
+        context,
+        "set",
+        (target != crate::set::GLOBAL).then_some(target),
+        &[("changes", &described.join(","))],
+    );
+    if no_apply {
+        ui.say("not applied: run rampire apply when ready");
+        return Ok(false);
+    }
+    apply(context, ui)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::{Said, Transcript};
 
-    fn add_options(vm: &str) -> AddOptions<'_> {
+    fn add_options(vm: &str) -> AddOptions {
         AddOptions {
-            vm,
-            fix_xml: false,
-            review: None,
-            kernel: None,
+            vm: vm.to_owned(),
             priority: 100,
-            min_ram: None,
-            max_ram: None,
-            free_ram: None,
+            ..AddOptions::default()
         }
+    }
+
+    fn context(draft: &Path) -> Context {
+        Context {
+            config: Some(draft.to_path_buf()),
+            connect: Some("test:///default".to_owned()),
+            build: String::new(),
+            via: "command",
+        }
+    }
+
+    fn draft_with_parked_web() -> TempDir {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/examples");
+        let draft = TempDir::new("test-parked").unwrap();
+        for folder in [PARKED_DIRECTORY, "vms.d", "reviews"] {
+            std::fs::create_dir_all(draft.path().join(folder)).unwrap();
+        }
+        std::fs::copy(
+            examples.join("reviews/linux-standard.toml"),
+            draft.path().join("reviews/linux-standard.toml"),
+        )
+        .unwrap();
+        std::fs::copy(
+            examples.join("vms.d/linux-vm.toml"),
+            draft.path().join(PARKED_DIRECTORY).join("web.toml"),
+        )
+        .unwrap();
+        draft
     }
 
     #[test]
     fn vm_add_restores_parked_settings_that_fit_the_device() {
-        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../deploy/examples");
-        let draft = std::env::temp_dir().join(format!("rampire-parked-{}", std::process::id()));
-        for folder in [PARKED_DIRECTORY, "vms.d", "reviews"] {
-            std::fs::create_dir_all(draft.join(folder)).unwrap();
-        }
-        std::fs::copy(
-            examples.join("reviews/linux-standard.toml"),
-            draft.join("reviews/linux-standard.toml"),
-        )
-        .unwrap();
+        let draft = draft_with_parked_web();
+        let draft = draft.path();
         let parked = draft.join(PARKED_DIRECTORY).join("web.toml");
         let settings = draft.join("vms.d/web.toml");
-        std::fs::copy(examples.join("vms.d/linux-vm.toml"), &parked).unwrap();
+        let mut ui = Transcript::default();
 
         // Options for a new VM's settings would be ignored, so they are refused.
         let mut options = add_options("web");
-        options.max_ram = Some("4GB");
-        assert!(restore_parked(&draft, &parked, &settings, "ua-virtiomem0", &options).is_err());
+        options.max_ram = Some("4GB".to_owned());
+        assert!(restore_parked(
+            &mut ui,
+            draft,
+            &parked,
+            &settings,
+            "ua-virtiomem0",
+            &options
+        )
+        .is_err());
         // A different device means the file no longer describes this VM.
-        assert!(restore_parked(&draft, &parked, &settings, "other", &add_options("web")).is_err());
+        assert!(restore_parked(
+            &mut ui,
+            draft,
+            &parked,
+            &settings,
+            "other",
+            &add_options("web")
+        )
+        .is_err());
         assert!(parked.exists() && !settings.exists());
 
         restore_parked(
-            &draft,
+            &mut ui,
+            draft,
             &parked,
             &settings,
             "ua-virtiomem0",
@@ -612,6 +720,51 @@ mod tests {
                 .as_deref(),
             Some("linux-standard")
         );
-        std::fs::remove_dir_all(&draft).unwrap();
+        assert_eq!(
+            ui.lines(),
+            [format!(
+                "restored web's settings from {} (review linux-standard); change them with rampire set web",
+                parked.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn forgetting_a_parked_vm_asks_once_and_says_what_it_removed() {
+        let draft = draft_with_parked_web();
+        let parked = draft.path().join(PARKED_DIRECTORY).join("web.toml");
+
+        let mut ui = Transcript::answering(&["n"]);
+        vm_remove(&context(draft.path()), &mut ui, "web", true).unwrap();
+        assert_eq!(
+            ui.said,
+            [
+                Said::Confirm("Forget everything RAMpire kept for web?".to_owned(), false),
+                Said::Line("nothing changed".to_owned()),
+            ]
+        );
+        assert!(parked.exists());
+
+        let mut ui = Transcript::answering(&["y"]);
+        vm_remove(&context(draft.path()), &mut ui, "web", true).unwrap();
+        assert_eq!(
+            ui.said,
+            [
+                Said::Confirm("Forget everything RAMpire kept for web?".to_owned(), true),
+                Said::Line(format!("removed {}", parked.display())),
+            ]
+        );
+        assert!(!parked.exists());
+        // The shared profile it named is kept: vm add didn't write it for web.
+        assert!(draft.path().join("reviews/linux-standard.toml").exists());
+    }
+
+    #[test]
+    fn removing_a_vm_that_isnt_managed_says_so_before_asking() {
+        let draft = TempDir::new("test-unmanaged").unwrap();
+        let mut ui = Transcript::default();
+        let error = vm_remove(&context(draft.path()), &mut ui, "web", false).unwrap_err();
+        assert!(error.contains("web.toml"), "{error}");
+        assert!(ui.said.is_empty());
     }
 }

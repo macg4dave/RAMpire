@@ -1,0 +1,405 @@
+//! The TUI's work off the screen's thread, so keys answer at once however
+//! slow libvirt or the journal is: a reader that refreshes the pool and the
+//! chosen VM, one-off loads (the VM list, the doctor, the journal), and the
+//! guided flows, whose questions come back to the screen as dialogs.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use rampire_host::config::{HostConfig, HostSettings};
+
+use super::vm::VmDetails;
+use crate::context::Context;
+use crate::doctor::Finding;
+use crate::reports::{ControllerUnit, VmListReport};
+use crate::top::{PoolReader, PoolSnapshot};
+use crate::ui::Ui;
+use crate::watch::{VmReader, VmSnapshot};
+
+/// Everything the background work tells the screen.
+pub enum Msg {
+    Pool(Result<PoolSnapshot, String>),
+    Vm(String, Box<Result<VmSnapshot, String>>),
+    Details(String, VmDetails),
+    Controller(ControllerUnit),
+    Inventory(Result<VmListReport, String>),
+    /// The host's findings and each managed VM's.
+    Doctor(Result<Vec<DoctorSection>, String>),
+    Log(Result<String, String>),
+    Flow(FlowEvent),
+}
+
+/// One part of the doctor screen: the host (`vm` is `None`) or one VM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoctorSection {
+    pub vm: Option<String>,
+    pub findings: Vec<Finding>,
+}
+
+/// What a running flow says.
+pub enum FlowEvent {
+    Line(String),
+    Shown(String),
+    Ask(Question, Sender<Answer>),
+    /// The flow ended: what it last said, or its error.
+    Done(Result<String, String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Question {
+    /// Yes or no; `--yes` would answer it.
+    Confirm(String),
+    /// Yes or no, for a person only: a review question.
+    Review(String),
+    /// A short text.
+    Text(String),
+}
+
+impl Question {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Confirm(text) | Self::Review(text) | Self::Text(text) => text,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    Yes,
+    No,
+    Text(String),
+    /// The dialog was closed without an answer.
+    Cancelled,
+}
+
+/// A [`Ui`] whose answers come from the TUI's dialogs.
+pub struct ChannelUi {
+    tx: Sender<Msg>,
+}
+
+impl ChannelUi {
+    pub fn new(tx: Sender<Msg>) -> Self {
+        Self { tx }
+    }
+
+    fn ask(&mut self, question: Question) -> Result<Answer, String> {
+        let (reply, answer) = mpsc::channel();
+        self.tx
+            .send(Msg::Flow(FlowEvent::Ask(question, reply)))
+            .map_err(|_| "the TUI closed".to_owned())?;
+        match answer.recv() {
+            Ok(Answer::Cancelled) | Err(_) => {
+                Err("cancelled in the TUI; nothing more was changed".to_owned())
+            }
+            Ok(answer) => Ok(answer),
+        }
+    }
+}
+
+impl Ui for ChannelUi {
+    fn say(&mut self, line: &str) {
+        let _ = self.tx.send(Msg::Flow(FlowEvent::Line(line.to_owned())));
+    }
+
+    fn show(&mut self, text: &str) {
+        let _ = self.tx.send(Msg::Flow(FlowEvent::Shown(text.to_owned())));
+    }
+
+    fn confirm(&mut self, question: &str) -> Result<bool, String> {
+        Ok(self.ask(Question::Confirm(question.to_owned()))? == Answer::Yes)
+    }
+
+    fn review(&mut self, question: &str) -> Result<bool, String> {
+        Ok(self.ask(Question::Review(question.to_owned()))? == Answer::Yes)
+    }
+
+    fn text(&mut self, question: &str) -> Result<String, String> {
+        match self.ask(Question::Text(question.to_owned()))? {
+            Answer::Text(text) => Ok(text),
+            _ => Ok(String::new()),
+        }
+    }
+}
+
+/// Run a flow on its own thread, its questions and lines sent to the
+/// screen, and its end as [`FlowEvent::Done`].
+pub fn spawn_flow(
+    tx: Sender<Msg>,
+    flow: impl FnOnce(&mut ChannelUi) -> Result<String, String> + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        let mut ui = ChannelUi::new(tx.clone());
+        let result = flow(&mut ui);
+        let _ = tx.send(Msg::Flow(FlowEvent::Done(result)));
+    });
+}
+
+/// Run `load` on its own thread and send what it gives.
+pub fn spawn_load(tx: Sender<Msg>, load: impl FnOnce() -> Msg + Send + 'static) {
+    std::thread::spawn(move || {
+        let _ = tx.send(load());
+    });
+}
+
+/// The doctor for the host and every managed VM, problems first within
+/// each part.
+pub fn doctor(context: &Context) -> Result<Vec<DoctorSection>, String> {
+    let mut host = crate::doctor::run(
+        &context.connection()?,
+        crate::context::SERVICE_ACCOUNT,
+        crate::context::applied_root(),
+    );
+    host.sort_by_key(|finding| finding.ok);
+    let mut sections = vec![DoctorSection {
+        vm: None,
+        findings: host,
+    }];
+    let known = crate::inventory::Known::read(context)?;
+    for vm in &known.managed {
+        let mut findings = crate::doctor_vm::run(context, vm).unwrap_or_else(|error| {
+            vec![Finding::problem(
+                "doctor",
+                error,
+                format!("rampire doctor {vm}"),
+            )]
+        });
+        findings.sort_by_key(|finding| finding.ok);
+        sections.push(DoctorSection {
+            vm: Some(vm.clone()),
+            findings,
+        });
+    }
+    // Sections with problems first; the host stays first among equals.
+    sections.sort_by_key(|section| section.findings.iter().all(|finding| finding.ok));
+    Ok(sections)
+}
+
+/// What the reader is asked to read besides the pool.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Wanted {
+    /// The VM whose details are shown.
+    pub vm: Option<String>,
+}
+
+/// The reader's handles: what to read, and when to stop or reload.
+#[derive(Clone)]
+pub struct ReaderControl {
+    pub wanted: Arc<Mutex<Wanted>>,
+    pub reload: Arc<AtomicBool>,
+    pub stop: Arc<AtomicBool>,
+}
+
+impl ReaderControl {
+    pub fn new() -> Self {
+        Self {
+            wanted: Arc::new(Mutex::new(Wanted::default())),
+            reload: Arc::new(AtomicBool::new(true)),
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn want_vm(&self, vm: Option<String>) {
+        if let Ok(mut wanted) = self.wanted.lock() {
+            wanted.vm = vm;
+        }
+    }
+}
+
+impl Default for ReaderControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How often the slower facts are read again: the configuration, the
+/// controller's state and a VM's settings.
+const SLOW_EVERY: Duration = Duration::from_secs(5);
+
+/// Refresh the pool and the wanted VM every `interval` until stopped.
+pub fn spawn_reader(context: Context, control: ReaderControl, tx: Sender<Msg>, interval: Duration) {
+    std::thread::spawn(move || {
+        let cwd = Path::new("/");
+        let mut pool: Option<PoolReader> = None;
+        let mut vm: Option<VmReader> = None;
+        let mut slow: Option<Instant> = None;
+        while !control.stop.load(Ordering::Acquire) {
+            let started = Instant::now();
+            let reload = control.reload.swap(false, Ordering::AcqRel);
+            let slow_due = reload || slow.is_none_or(|at| at.elapsed() >= SLOW_EVERY);
+            if slow_due {
+                slow = Some(started);
+                let _ = tx.send(Msg::Controller(crate::systemd_unit::controller_state()));
+                match pool_command(&context) {
+                    Ok(command) => {
+                        if pool
+                            .as_ref()
+                            .is_none_or(|reader| reader.command() != &command)
+                        {
+                            pool = Some(PoolReader::new(command));
+                        }
+                    }
+                    Err(error) => {
+                        pool = None;
+                        let _ = tx.send(Msg::Pool(Err(error)));
+                    }
+                }
+            }
+            if let Some(reader) = pool.as_mut() {
+                let _ = tx.send(Msg::Pool(reader.read(cwd)));
+            }
+            let wanted = control
+                .wanted
+                .lock()
+                .map(|wanted| wanted.clone())
+                .unwrap_or_default();
+            match &wanted.vm {
+                None => vm = None,
+                Some(name) => {
+                    let changed = vm
+                        .as_ref()
+                        .is_none_or(|reader| &reader.command().vm != name);
+                    if changed || slow_due {
+                        match vm_command(&context, name) {
+                            Ok(command) => {
+                                if vm
+                                    .as_ref()
+                                    .is_none_or(|reader| reader.command() != &command)
+                                {
+                                    vm = Some(VmReader::new(command));
+                                }
+                            }
+                            Err(error) => {
+                                vm = None;
+                                let _ = tx.send(Msg::Vm(name.clone(), Box::new(Err(error))));
+                            }
+                        }
+                        let _ = tx.send(Msg::Details(name.clone(), details(&context, name)));
+                    }
+                    if let Some(reader) = vm.as_mut() {
+                        let _ = tx.send(Msg::Vm(name.clone(), Box::new(reader.read(cwd))));
+                    }
+                }
+            }
+            while !control.stop.load(Ordering::Acquire)
+                && !control.reload.load(Ordering::Acquire)
+                && started.elapsed() < interval
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    });
+}
+
+fn pool_command(context: &Context) -> Result<crate::top::Command, String> {
+    let running = context.running();
+    if !running.join(rampire_core::settings::GLOBAL_FILE).exists() {
+        return Err(format!(
+            "{} has no configuration yet: set the host up with rampire init",
+            running.display()
+        ));
+    }
+    let settings = HostSettings::load(&running).map_err(|error| error.to_string())?;
+    Ok(crate::top::Command::from_settings(
+        &settings,
+        &context.connection()?,
+    ))
+}
+
+fn vm_command(context: &Context, vm: &str) -> Result<crate::watch::Command, String> {
+    let config =
+        HostConfig::load_vm(&context.running(), Some(vm)).map_err(|error| error.to_string())?;
+    Ok(crate::watch::Command::from_config(
+        &config,
+        &context.connection()?,
+    ))
+}
+
+/// A VM's settings as the controller runs them, its boot RAM and its state.
+pub fn details(context: &Context, vm: &str) -> VmDetails {
+    let settings = crate::attest::vm_settings(&context.running(), vm).ok();
+    let libvirt = context.libvirt().ok();
+    let boot_bytes = libvirt
+        .as_ref()
+        .and_then(|libvirt| libvirt.virsh(&["dumpxml", "--inactive", vm]).ok())
+        .and_then(|xml| crate::vm::inspect(&xml).ok())
+        .map(|inspection| inspection.boot_bytes)
+        .filter(|bytes| *bytes > 0);
+    let state = libvirt
+        .and_then(|libvirt| libvirt.state(vm).ok())
+        .unwrap_or_else(|| "unknown".to_owned());
+    VmDetails {
+        settings,
+        boot_bytes,
+        state,
+    }
+}
+
+/// A channel for the TUI's messages.
+pub fn channel() -> (Sender<Msg>, Receiver<Msg>) {
+    mpsc::channel()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_flows_questions_come_back_as_dialogs_and_their_answers_go_on() {
+        let (tx, rx) = channel();
+        spawn_flow(tx, |ui| {
+            ui.say("checking");
+            if !ui.confirm("Apply this?")? {
+                return Ok("nothing changed".to_owned());
+            }
+            let kernel = ui.text("The guest's kernel release:")?;
+            Ok(format!("kernel {kernel}"))
+        });
+        let mut said = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Msg::Flow(FlowEvent::Line(line)) => said.push(line),
+                Msg::Flow(FlowEvent::Ask(Question::Confirm(question), reply)) => {
+                    said.push(question);
+                    reply.send(Answer::Yes).unwrap();
+                }
+                Msg::Flow(FlowEvent::Ask(Question::Text(question), reply)) => {
+                    said.push(question);
+                    reply.send(Answer::Text("6.12".to_owned())).unwrap();
+                }
+                Msg::Flow(FlowEvent::Done(result)) => {
+                    said.push(result.unwrap());
+                    break;
+                }
+                _ => panic!("unexpected message"),
+            }
+        }
+        assert_eq!(
+            said,
+            [
+                "checking",
+                "Apply this?",
+                "The guest's kernel release:",
+                "kernel 6.12"
+            ]
+        );
+    }
+
+    #[test]
+    fn closing_a_question_stops_the_flow_with_nothing_more_changed() {
+        let (tx, rx) = channel();
+        spawn_flow(tx, |ui| {
+            ui.confirm("Apply this?").map(|_| "applied".to_owned())
+        });
+        let error = loop {
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Msg::Flow(FlowEvent::Ask(_, reply)) => reply.send(Answer::Cancelled).unwrap(),
+                Msg::Flow(FlowEvent::Done(result)) => break result.unwrap_err(),
+                _ => {}
+            }
+        };
+        assert!(error.contains("nothing more was changed"), "{error}");
+    }
+}

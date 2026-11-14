@@ -1,0 +1,78 @@
+{
+  "schema": "rampire.vm-list",
+  "version": 1,
+  "vms": [
+    {
+      "vm_name": "db",
+      "state": "running",
+      "management": "not_managed",
+      "status": null,
+      "detail": "published 4s ago",
+      "to_fix": [
+        "add the control channel org.rampire.control.0",
+        "add a 6144 MiB virtio-mem device"
+      ],
+      "problems": [],
+      "guest": {
+        "state": "published",
+        "age_seconds": 4
+      },
+      "os_id": "http://debian.org/debian/13"
+    },
+    {
+      "vm_name": "old",
+      "state": "shut off",
+      "management": "parked",
+      "status": null,
+      "detail": "parked: rampire vm add old brings it back as it was",
+      "to_fix": [],
+      "problems": [],
+      "guest": {
+        "state": "unknown"
+      },
+      "os_id": null
+    },
+    {
+      "vm_name": "web",
+      "state": "running",
+      "management": "managed",
+      "status": {
+        "schema": "rampire.status",
+        "version": 1,
+        "observed_unix_millis": 1794600000000,
+        "vm_name": "web",
+        "device_alias": "ua-virtiomem0",
+        "device_size_bytes": 16106127360,
+        "block_size_bytes": 2097152,
+        "maximum_target_bytes": 16106127360,
+        "requested_bytes": 1073741824,
+        "current_bytes": 1073741824,
+        "observe_only": false,
+        "guest_input": {
+          "error": null,
+          "observed_unix_millis": 1794599999500,
+          "request": null
+        },
+        "admitted_request": null,
+        "result": null,
+        "command_ownership": "none",
+        "command": null,
+        "control_health": "converged",
+        "actuation_latched": false,
+        "latch_reason": null,
+        "recovery_state": "not_required",
+        "recovery_reason": null,
+        "last_latch_clear_reason": null,
+        "compatibility_fingerprint_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "detail": "web: 1.0 GiB of at most 15.0 GiB, steady",
+      "to_fix": [],
+      "problems": [],
+      "guest": {
+        "state": "published",
+        "age_seconds": 0
+      },
+      "os_id": "http://redhat.com/rhel/10.0"
+    }
+  ]
+}

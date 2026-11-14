@@ -16,3 +16,4 @@ quick-xml = "0.41.0"
 signal-hook = "0.3"
 rampire-core = { path = "../rampire-core" }
 rampire-host = { path = "../../host" }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }

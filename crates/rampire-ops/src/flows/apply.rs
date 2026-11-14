@@ -5,25 +5,23 @@
 //! evidence.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use rampire_host::config::HostSettings;
-use rampire_ops::process;
 
-use crate::controller::{controller_unit, systemctl};
-use crate::{
-    applied_root, confirm, daemon, draft, exit, libvirt, version, Cli, TempDir, SERVICE_ACCOUNT,
-};
+use super::controller::{controller_unit, systemctl};
+use crate::context::{applied_root, Context, TempDir, RUNNING_COPY, SERVICE_ACCOUNT};
+use crate::process;
+use crate::ui::Ui;
 
-fn print_check(report: &rampire_ops::check::Report) {
+fn print_check(ui: &mut dyn Ui, report: &crate::check::Report) {
     for vm in &report.vms {
         if let Some(problem) = &vm.problem {
-            println!("problem: {}: {problem}", vm.vm_name);
+            ui.say(&format!("problem: {}: {problem}", vm.vm_name));
             if problem.contains("drifted") {
-                println!(
+                ui.say(&format!(
                     "  fix: if the change was intended, rampire vm attest {}",
                     vm.vm_name
-                );
+                ));
             }
         }
     }
@@ -31,7 +29,7 @@ fn print_check(report: &rampire_ops::check::Report) {
 
 /// Show the difference between two configuration directories, `None` being
 /// no configuration at all. Returns whether there is any.
-fn show_difference(from: Option<&Path>, to: &Path) -> Result<bool, String> {
+fn show_difference(ui: &mut dyn Ui, from: Option<&Path>, to: &Path) -> Result<bool, String> {
     let empty;
     let from = match from {
         Some(path) => path,
@@ -56,7 +54,7 @@ fn show_difference(from: Option<&Path>, to: &Path) -> Result<bool, String> {
             let text = String::from_utf8_lossy(&output.stdout)
                 .replace(&from.display().to_string(), "applied")
                 .replace(&to.display().to_string(), "draft");
-            print!("{text}");
+            ui.show(&text);
             true
         }
         _ => {
@@ -68,7 +66,7 @@ fn show_difference(from: Option<&Path>, to: &Path) -> Result<bool, String> {
     };
     let attestations = attestation_changes(from, to)?;
     for (vm, change) in &attestations {
-        println!("attestation of {vm}: {change}");
+        ui.say(&format!("attestation of {vm}: {change}"));
     }
     Ok(shown || !attestations.is_empty())
 }
@@ -119,82 +117,96 @@ fn attestation_changes(from: &Path, to: &Path) -> Result<Vec<(String, &'static s
     Ok(changes)
 }
 
-pub(crate) fn diff(cli: &Cli) -> Result<ExitCode, String> {
+/// `rampire diff`: the draft against the applied copy.
+pub fn diff(context: &Context, ui: &mut dyn Ui) -> Result<(), String> {
     let temporary = TempDir::new("draft")?;
     let staged = temporary.path().join("draft");
-    rampire_ops::applied::snapshot(&draft(cli), &staged)?;
-    let current = rampire_ops::applied::current(applied_root())?;
-    if !show_difference(current.as_deref(), &staged)? {
-        println!("no changes: the draft is what the controller runs");
+    crate::applied::snapshot(&context.draft(), &staged)?;
+    let current = crate::applied::current(applied_root())?;
+    if !show_difference(ui, current.as_deref(), &staged)? {
+        ui.say("no changes: the draft is what the controller runs");
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
-pub(crate) fn apply(cli: &Cli, detailed: bool) -> Result<ExitCode, String> {
+/// `rampire apply`. Returns whether the applied configuration changed.
+pub fn apply(context: &Context, ui: &mut dyn Ui) -> Result<bool, String> {
     let root = applied_root();
-    let staged = rampire_ops::applied::staging(root)?;
-    let result = stage_and_apply(cli, root, &staged);
+    let staged = crate::applied::staging(root)?;
+    let result = stage_and_apply(context, ui, root, &staged);
     if staged.exists() {
         let _ = std::fs::remove_dir_all(&staged);
     }
-    let changed = result?;
-    Ok(ExitCode::from(if changed && detailed {
-        exit::CHANGED
-    } else {
-        exit::SUCCESS
-    }))
+    result
 }
 
 /// Returns whether the applied configuration changed.
-fn stage_and_apply(cli: &Cli, root: &Path, staged: &Path) -> Result<bool, String> {
+fn stage_and_apply(
+    context: &Context,
+    ui: &mut dyn Ui,
+    root: &Path,
+    staged: &Path,
+) -> Result<bool, String> {
+    let draft = context.draft();
     // A VM with no attestation yet is attested here when its file names a
     // review profile and it runs (decision D11); a drifted one is not.
-    for vm in rampire_ops::attest::attest_missing(&draft(cli), &libvirt(cli)?)? {
-        println!("attested {vm}, which had no attestation");
+    for vm in crate::attest::attest_missing(&draft, &context.libvirt()?)? {
+        ui.say(&format!("attested {vm}, which had no attestation"));
     }
-    rampire_ops::applied::snapshot(&draft(cli), staged)?;
+    crate::applied::snapshot(&draft, staged)?;
     // Check the copy, so what is checked is exactly what is applied.
-    let report = rampire_ops::check::run(staged)?;
+    let report = crate::check::run(staged)?;
     if !report.passed() {
-        print_check(&report);
+        print_check(ui, &report);
         return Err("the draft did not pass its checks; nothing changed".to_owned());
     }
-    let current = rampire_ops::applied::current(root)?;
+    let current = crate::applied::current(root)?;
     if let Some(current) = &current {
-        if rampire_ops::applied::same(current, staged)? {
-            println!("nothing to apply: the draft is what the controller runs");
+        if crate::applied::same(current, staged)? {
+            ui.say("nothing to apply: the draft is what the controller runs");
             return Ok(false);
         }
     }
-    show_difference(current.as_deref(), staged)?;
+    show_difference(ui, current.as_deref(), staged)?;
     let unit = controller_unit();
     let refresh = Refresh::plan(&unit, current.as_deref(), staged);
-    if !confirm(cli, &format!("Apply this{}?", refresh.question(&unit)))? {
-        println!("nothing changed");
+    if !ui.confirm(&format!("Apply this{}?", refresh.question(&unit)))? {
+        ui.say("nothing changed");
         return Ok(false);
     }
     secure(staged)?;
     let millis = process::unix_millis()?;
-    let applied = rampire_ops::applied::install(root, staged, millis)?;
-    println!("applied {}", applied.display());
-    let refreshed = refresh.run(&unit)?;
-    keep_evidence(Change {
-        action: "apply",
-        unix_millis: millis,
-        draft: Some(&draft(cli)),
-        from: current.as_deref(),
-        to: &applied,
-        report: &report,
-        unit: &unit,
-        refreshed,
-    })?;
+    let applied = crate::applied::install(root, staged, millis)?;
+    ui.say(&format!("applied {}", applied.display()));
+    let refreshed = refresh.run(ui, &unit)?;
+    crate::audit::record(
+        context,
+        "apply",
+        None,
+        &[("to", &applied.display().to_string())],
+    );
+    keep_evidence(
+        context,
+        ui,
+        Change {
+            action: "apply",
+            unix_millis: millis,
+            draft: Some(&draft),
+            from: current.as_deref(),
+            to: &applied,
+            report: &report,
+            unit: &unit,
+            refreshed,
+        },
+    )?;
     Ok(true)
 }
 
-pub(crate) fn rollback(cli: &Cli) -> Result<ExitCode, String> {
+/// `rampire rollback`: back to the applied copy before the current one.
+pub fn rollback(context: &Context, ui: &mut dyn Ui) -> Result<(), String> {
     let root = applied_root();
-    let current = rampire_ops::applied::current(root)?.ok_or("nothing has been applied yet")?;
-    let copies = rampire_ops::applied::copies(root)?;
+    let current = crate::applied::current(root)?.ok_or("nothing has been applied yet")?;
+    let copies = crate::applied::copies(root)?;
     let index = copies
         .iter()
         .position(|copy| copy == &current)
@@ -203,42 +215,49 @@ pub(crate) fn rollback(cli: &Cli) -> Result<ExitCode, String> {
         .checked_sub(1)
         .map(|index| copies[index].clone())
         .ok_or("there is no earlier applied copy")?;
-    let report = rampire_ops::check::run(&previous)?;
+    let report = crate::check::run(&previous)?;
     if !report.passed() {
-        print_check(&report);
+        print_check(ui, &report);
         return Err(format!(
             "{} no longer passes its checks; nothing changed",
             previous.display()
         ));
     }
-    show_difference(Some(&current), &previous)?;
+    show_difference(ui, Some(&current), &previous)?;
     let unit = controller_unit();
     let refresh = Refresh::plan(&unit, Some(&current), &previous);
-    if !confirm(
-        cli,
-        &format!(
-            "Go back to {}{}?",
-            previous.display(),
-            refresh.question(&unit)
-        ),
-    )? {
-        println!("nothing changed");
-        return Ok(ExitCode::SUCCESS);
+    if !ui.confirm(&format!(
+        "Go back to {}{}?",
+        previous.display(),
+        refresh.question(&unit)
+    ))? {
+        ui.say("nothing changed");
+        return Ok(());
     }
-    rampire_ops::applied::make_current(root, &previous)?;
-    println!("rolled back to {}", previous.display());
-    let refreshed = refresh.run(&unit)?;
-    keep_evidence(Change {
-        action: "rollback",
-        unix_millis: process::unix_millis()?,
-        draft: None,
-        from: Some(&current),
-        to: &previous,
-        report: &report,
-        unit: &unit,
-        refreshed,
-    })?;
-    Ok(ExitCode::SUCCESS)
+    crate::applied::make_current(root, &previous)?;
+    ui.say(&format!("rolled back to {}", previous.display()));
+    let refreshed = refresh.run(ui, &unit)?;
+    crate::audit::record(
+        context,
+        "rollback",
+        None,
+        &[("to", &previous.display().to_string())],
+    );
+    keep_evidence(
+        context,
+        ui,
+        Change {
+            action: "rollback",
+            unix_millis: process::unix_millis()?,
+            draft: None,
+            from: Some(&current),
+            to: &previous,
+            report: &report,
+            unit: &unit,
+            refreshed,
+        },
+    )?;
+    Ok(())
 }
 
 /// One change to the applied configuration, for its record.
@@ -248,15 +267,15 @@ struct Change<'a> {
     draft: Option<&'a Path>,
     from: Option<&'a Path>,
     to: &'a Path,
-    report: &'a rampire_ops::check::Report,
+    report: &'a crate::check::Report,
     unit: &'a str,
     refreshed: Refreshed,
 }
 
 /// Record what the change did, then prune applied copies and records to
 /// the `retention` of the copy now current.
-fn keep_evidence(change: Change) -> Result<(), String> {
-    use rampire_ops::evidence::{self, ApplyEvidence, ApplyEvidenceSchema};
+fn keep_evidence(context: &Context, ui: &mut dyn Ui, change: Change) -> Result<(), String> {
+    use crate::evidence::{self, ApplyEvidence, ApplyEvidenceSchema};
     let evidence_root = Path::new(evidence::EVIDENCE_ROOT);
     let record = evidence::record(
         evidence_root,
@@ -265,7 +284,7 @@ fn keep_evidence(change: Change) -> Result<(), String> {
             version: 1,
             action: change.action.to_owned(),
             unix_millis: change.unix_millis,
-            build: version(),
+            build: context.build.clone(),
             draft: change.draft.map(|path| path.display().to_string()),
             from: change.from.map(|path| path.display().to_string()),
             to: change.to.display().to_string(),
@@ -281,9 +300,9 @@ fn keep_evidence(change: Change) -> Result<(), String> {
             reloaded: change.refreshed == Refreshed::Reloaded,
         },
     )?;
-    println!("recorded {}", record.display());
+    ui.say(&format!("recorded {}", record.display()));
     let keep = rampire_core::settings::load_globals(change.to)?.retention as usize;
-    rampire_ops::applied::prune(applied_root(), keep, running_copy().as_deref())?;
+    crate::applied::prune(applied_root(), keep, running_copy().as_deref())?;
     evidence::prune(evidence_root, keep)?;
     Ok(())
 }
@@ -314,7 +333,7 @@ enum Refreshed {
 /// How a change reaches the controller, worked out before the person is
 /// asked so the question says what will happen.
 enum Refresh {
-    /// Only what a reload can change differs (roadmap O4.5).
+    /// Only what a reload can change differs.
     Reload,
     /// Anything else, with the reason.
     Restart(String),
@@ -350,20 +369,22 @@ impl Refresh {
         }
     }
 
-    fn run(self, unit: &str) -> Result<Refreshed, String> {
+    fn run(self, ui: &mut dyn Ui, unit: &str) -> Result<Refreshed, String> {
         match self {
             Self::NotRunning => {
-                println!("{unit} isn't running; it uses this copy when it starts");
+                ui.say(&format!(
+                    "{unit} isn't running; it uses this copy when it starts"
+                ));
                 Ok(Refreshed::NotRunning)
             }
             Self::Reload => {
                 systemctl("reload", unit)?;
-                println!("{unit} reloaded");
+                ui.say(&format!("{unit} reloaded"));
                 Ok(Refreshed::Reloaded)
             }
             Self::Restart(why) => {
                 systemctl("restart", unit)?;
-                println!("{unit} restarted: {why}");
+                ui.say(&format!("{unit} restarted: {why}"));
                 Ok(Refreshed::Restarted)
             }
         }
@@ -373,16 +394,16 @@ impl Refresh {
 /// The copy the running controller started on, if it is running and says.
 /// The record outlives a stopped controller, so it counts only while the
 /// unit is active.
-pub(crate) fn running_copy() -> Option<PathBuf> {
+pub fn running_copy() -> Option<PathBuf> {
     if !controller_active(&controller_unit()) {
         return None;
     }
-    std::fs::read_to_string(daemon::RUNNING_COPY)
+    std::fs::read_to_string(RUNNING_COPY)
         .ok()
         .map(|text| PathBuf::from(text.trim()))
 }
 
-fn controller_active(unit: &str) -> bool {
+pub fn controller_active(unit: &str) -> bool {
     process::bounded_text(
         "systemctl",
         &[process::os("is-active"), process::os(unit)],
@@ -395,6 +416,7 @@ fn controller_active(unit: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::{Said, Transcript};
 
     #[test]
     fn attestations_are_named_as_new_changed_or_removed_not_shown() {
@@ -427,5 +449,25 @@ mod tests {
         assert!(attestation_changes(empty.path(), empty.path())
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn a_difference_is_shown_as_one_change_with_its_sides_named() {
+        let from = TempDir::new("test-show-from").unwrap();
+        let to = TempDir::new("test-show-to").unwrap();
+        std::fs::write(from.path().join("global.toml"), "a = 1\n").unwrap();
+        std::fs::write(to.path().join("global.toml"), "a = 2\n").unwrap();
+        let mut ui = Transcript::default();
+        assert!(show_difference(&mut ui, Some(from.path()), to.path()).unwrap());
+        let [Said::Shown(text)] = ui.said.as_slice() else {
+            panic!("{:?}", ui.said);
+        };
+        assert!(text.contains("applied/global.toml"), "{text}");
+        assert!(text.contains("draft/global.toml"), "{text}");
+        assert!(text.contains("-a = 1\n+a = 2\n"), "{text}");
+
+        let mut ui = Transcript::default();
+        assert!(!show_difference(&mut ui, Some(to.path()), to.path()).unwrap());
+        assert!(ui.said.is_empty());
     }
 }

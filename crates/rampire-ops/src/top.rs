@@ -1,7 +1,7 @@
-//! `rampire top`: a live, read-only dashboard of the whole pool. One
-//! screen shows the pool's charge split by VM, every VM's device and guest,
-//! a stacked history of the pool and the controller's pool events for all
-//! VMs.
+//! What `rampire top` and the TUI's dashboard read about the whole pool:
+//! each VM's device and guest, the host's memory, a history of the pool's
+//! charge and the controller's pool events for all VMs. The drawing is in
+//! [`crate::tui::pool`].
 //!
 //! It reads `virsh --readonly dumpxml` per VM, the controller's copy of each
 //! guest's publication (`/run/rampire/<vm>.publication.json`, so no
@@ -17,15 +17,13 @@ use rampire_host::config::HostSettings;
 use rampire_host::guest_channel::publication_copy_path;
 use rampire_host::virsh::Virsh;
 
-use crate::dashboard::{
-    clock, draw, gib, host_name, load_colour, mib, run_live, Frame, LiveView, BACKGROUND, CYAN,
-    DIM, GIB, GREEN, LABEL, RED, TRACK, VALUE, YELLOW,
-};
+use crate::dashboard::{mib, GIB};
 use crate::host_readings::{
     device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
 };
 use crate::journal::{self, field};
 use crate::process;
+use crate::tone::{self, Tone};
 
 pub const HELP: &str = "Pool options (read-only live dashboard of every VM):
   --config PATH                 Required host list; the VMs, pool size and
@@ -34,60 +32,80 @@ pub const HELP: &str = "Pool options (read-only live dashboard of every VM):
   --interval-seconds N          Refresh period; default 1.
   --events N                    Pool events shown; default 8.
   --once                        Print one plain snapshot.
-Ctrl+C leaves a plain snapshot on the screen to copy.
+Ctrl+C or q leaves a plain snapshot on the screen to copy.
 ";
 
-/// One colour per VM, in host-list order, repeating after eight.
-const VM_COLOURS: [u8; 8] = [51, 213, 214, 120, 117, 228, 177, 210];
-
-/// Rows in the stacked history chart.
-const CHART_HEIGHT: usize = 8;
-
 /// Samples kept for the chart: more than the widest terminal shows.
-const HISTORY_SAMPLES: usize = 300;
+pub const HISTORY_SAMPLES: usize = 300;
 
 /// A publication older than this is shown as stale.
-const STALE_PUBLICATION: Duration = Duration::from_secs(30);
+pub const STALE_PUBLICATION: Duration = Duration::from_secs(30);
 
+/// A managed VM as the pool sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Vm {
-    name: String,
-    alias: String,
-    priority: u32,
-    min_ram: u64,
-    max_ram: u64,
+pub struct Vm {
+    pub name: String,
+    pub alias: String,
+    pub priority: u32,
+    pub min_ram: u64,
+    pub max_ram: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
-    vms: Vec<Vm>,
+    pub vms: Vec<Vm>,
     /// `None` for a single-VM controller, which has no shared pool.
-    pool_bytes: Option<u64>,
-    host_floor_bytes: u64,
-    unit: String,
-    connect: String,
-    interval: Duration,
-    events: usize,
-    once: bool,
+    pub pool_bytes: Option<u64>,
+    pub host_floor_bytes: u64,
+    pub unit: String,
+    pub connect: String,
+    pub interval: Duration,
+    pub events: usize,
+    pub once: bool,
+}
+
+impl Command {
+    /// The pool of the configuration in `settings`, which may manage no VMs.
+    pub fn from_settings(settings: &HostSettings, connect: &str) -> Self {
+        Self {
+            vms: settings
+                .vms
+                .iter()
+                .map(|vm| Vm {
+                    name: vm.vm_name.clone(),
+                    alias: vm.alias.clone(),
+                    priority: vm.priority,
+                    min_ram: vm.min_ram,
+                    max_ram: vm.max_ram,
+                })
+                .collect(),
+            pool_bytes: settings.pool_bytes,
+            host_floor_bytes: settings
+                .vms
+                .iter()
+                .map(|vm| vm.host_min_headroom_bytes)
+                .max()
+                .unwrap_or(0),
+            unit: crate::systemd_unit::CONTROLLER_UNIT.to_owned(),
+            connect: connect.to_owned(),
+            interval: Duration::from_secs(1),
+            events: 8,
+            once: false,
+        }
+    }
 }
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut config_path = None;
-    let mut command = Command {
-        vms: Vec::new(),
-        pool_bytes: None,
-        host_floor_bytes: 0,
-        unit: crate::systemd_unit::CONTROLLER_UNIT.to_owned(),
-        connect: "qemu:///system".to_owned(),
-        interval: Duration::from_secs(1),
-        events: 8,
-        once: false,
-    };
+    let mut connect = "qemu:///system".to_owned();
+    let mut interval = Duration::from_secs(1);
+    let mut events = 8;
+    let mut once = false;
     let mut index = 0;
     while index < args.len() {
         let option = args[index].as_str();
         if option == "--once" {
-            command.once = true;
+            once = true;
             index += 1;
             continue;
         }
@@ -96,9 +114,9 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             .ok_or_else(|| format!("{option} requires a value"))?;
         match option {
             "--config" => config_path = Some(PathBuf::from(value)),
-            "--connect" => command.connect = value.clone(),
+            "--connect" => connect = value.clone(),
             "--interval-seconds" => {
-                command.interval = value
+                interval = value
                     .parse::<f64>()
                     .ok()
                     .filter(|seconds| seconds.is_finite() && *seconds >= 0.1)
@@ -106,7 +124,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     .ok_or("--interval-seconds requires a number of seconds >= 0.1")?;
             }
             "--events" => {
-                command.events = value
+                events = value
                     .parse()
                     .ok()
                     .filter(|count| (1..=30).contains(count))
@@ -119,59 +137,38 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     let config_path = config_path.ok_or_else(|| format!("pool requires --config\n\n{HELP}"))?;
     let settings = HostSettings::load(&config_path)
         .map_err(|error| format!("{}: {error}", config_path.display()))?;
-    command.vms = settings
-        .vms
-        .iter()
-        .map(|vm| Vm {
-            name: vm.vm_name.clone(),
-            alias: vm.alias.clone(),
-            priority: vm.priority,
-            min_ram: vm.min_ram,
-            max_ram: vm.max_ram,
-        })
-        .collect();
+    let mut command = Command::from_settings(&settings, &connect);
     if command.vms.is_empty() {
         return Err("RAMpire manages no VMs yet: there is no pool to show".to_owned());
     }
-    command.pool_bytes = settings.pool_bytes;
-    command.host_floor_bytes = settings
-        .vms
-        .iter()
-        .map(|vm| vm.host_min_headroom_bytes)
-        .max()
-        .unwrap_or(0);
+    command.interval = interval;
+    command.events = events;
+    command.once = once;
     Ok(command)
 }
 
-#[derive(Debug, Clone, Default)]
-struct VmSample {
-    device: Option<VirtioMemState>,
-    guest: Option<RawTelemetryEnvelope>,
+/// One VM's device and guest at one refresh.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VmSample {
+    pub device: Option<VirtioMemState>,
+    pub guest: Option<RawTelemetryEnvelope>,
 }
 
 impl VmSample {
     /// What the pool charges this VM: `max(requested, plugged)`, as the
-    /// controller counts it.
-    /// The pool's charge as the controller counts it; a recorded command
-    /// libvirt doesn't show yet is not visible here.
-    fn charge(&self) -> u64 {
+    /// controller counts it; a recorded command libvirt doesn't show yet is
+    /// not visible here.
+    pub fn charge(&self) -> u64 {
         self.device.map_or(0, |device| device.pool_charge(0))
     }
 }
 
-struct Sample {
-    host: HostMemory,
-    vms: Vec<VmSample>,
-    now_unix_millis: u64,
-    samples: u64,
-}
-
 /// Session extremes, so a brief squeeze stays visible after it passes.
-#[derive(Debug, Clone, Copy, Default)]
-struct Session {
-    peak_charged: u64,
-    low_free: Option<u64>,
-    low_host_available: Option<u64>,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Session {
+    pub peak_charged: u64,
+    pub low_free: Option<u64>,
+    pub low_host_available: Option<u64>,
 }
 
 impl Session {
@@ -187,66 +184,150 @@ impl Session {
     }
 }
 
-pub fn run(command: &Command, cwd: &Path) -> Result<(), String> {
-    let virsh = Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
-    let mut history: VecDeque<Vec<u64>> = VecDeque::new();
-    let mut session = Session::default();
-    let mut samples = 0u64;
-    let view = LiveView {
-        once: command.once,
-        interval: command.interval,
-        max_width: 140,
-    };
-    run_live(&view, |_started, width, interactive| {
-        samples += 1;
-        let vms: Vec<VmSample> = command
+/// Everything one refresh of the pool shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoolSnapshot {
+    pub command: Command,
+    pub host: HostMemory,
+    /// In the order of `command.vms`.
+    pub vms: Vec<VmSample>,
+    pub now_unix_millis: u64,
+    pub samples: u64,
+    pub session: Session,
+    /// Each VM's charge at each refresh, oldest first.
+    pub history: Vec<Vec<u64>>,
+    /// Newest first, or why the journal gave none.
+    pub events: Result<Vec<PoolEvent>, String>,
+}
+
+impl PoolSnapshot {
+    pub fn charges(&self) -> Vec<u64> {
+        self.vms.iter().map(VmSample::charge).collect()
+    }
+
+    pub fn charged(&self) -> u64 {
+        self.vms
+            .iter()
+            .map(VmSample::charge)
+            .fold(0, u64::saturating_add)
+    }
+
+    /// The pool's free memory, with a pool.
+    pub fn free(&self) -> Option<u64> {
+        self.command
+            .pool_bytes
+            .map(|pool| pool.saturating_sub(self.charged()))
+    }
+
+    /// The bar's full scale: the pool, or with no pool the larger of what is
+    /// charged and every device's size.
+    pub fn scale(&self) -> u64 {
+        self.command.pool_bytes.unwrap_or_else(|| {
+            self.vms
+                .iter()
+                .map(|vm| vm.device.map_or(0, |device| device.size_bytes))
+                .fold(0, u64::saturating_add)
+                .max(self.charged())
+        })
+    }
+
+    /// Resizes under way: how many VMs, and the bytes still to plug and to
+    /// unplug.
+    pub fn resizing(&self) -> (usize, u64, u64) {
+        self.vms
+            .iter()
+            .filter_map(|vm| vm.device)
+            .filter(|device| device.requested_bytes != device.current_bytes)
+            .fold((0, 0, 0), |(count, growing, shrinking), device| {
+                (
+                    count + 1,
+                    growing + device.requested_bytes.saturating_sub(device.current_bytes),
+                    shrinking + device.current_bytes.saturating_sub(device.requested_bytes),
+                )
+            })
+    }
+}
+
+/// Reads the pool at each refresh, keeping its history and session
+/// extremes between refreshes.
+pub struct PoolReader {
+    command: Command,
+    virsh: Virsh,
+    history: VecDeque<Vec<u64>>,
+    session: Session,
+    samples: u64,
+}
+
+impl PoolReader {
+    pub fn new(command: Command) -> Self {
+        Self {
+            virsh: Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect),
+            command,
+            history: VecDeque::new(),
+            session: Session::default(),
+            samples: 0,
+        }
+    }
+
+    pub fn command(&self) -> &Command {
+        &self.command
+    }
+
+    pub fn read(&mut self, cwd: &Path) -> Result<PoolSnapshot, String> {
+        self.samples += 1;
+        let vms: Vec<VmSample> = self
+            .command
             .vms
             .iter()
             .map(|vm| VmSample {
-                device: device_state(&virsh, &vm.name, &vm.alias),
+                device: device_state(&self.virsh, &vm.name, &vm.alias),
                 guest: read_publication(&publication_copy_path(&vm.name)),
             })
             .collect();
-        let sample = Sample {
-            host: read_meminfo()?,
-            vms,
-            now_unix_millis: process::unix_millis()?,
-            samples,
-        };
-        let charged = sample
-            .vms
+        let host = read_meminfo()?;
+        let charged = vms
             .iter()
             .map(VmSample::charge)
             .fold(0, u64::saturating_add);
-        session.record(
+        self.session.record(
             charged,
-            command.pool_bytes.map(|pool| pool.saturating_sub(charged)),
-            sample.host.available,
+            self.command
+                .pool_bytes
+                .map(|pool| pool.saturating_sub(charged)),
+            host.available,
         );
-        history.push_back(sample.vms.iter().map(VmSample::charge).collect());
-        if history.len() > HISTORY_SAMPLES {
-            history.pop_front();
+        self.history
+            .push_back(vms.iter().map(VmSample::charge).collect());
+        if self.history.len() > HISTORY_SAMPLES {
+            self.history.pop_front();
         }
-        let events = read_events(command, cwd);
-        Ok(draw(width, interactive, "", |frame| {
-            build(frame, command, &sample, &session, &history, &events)
-        }))
-    })
+        Ok(PoolSnapshot {
+            command: self.command.clone(),
+            host,
+            vms,
+            now_unix_millis: process::unix_millis()?,
+            samples: self.samples,
+            session: self.session,
+            history: self.history.iter().cloned().collect(),
+            events: read_events(&self.command, cwd),
+        })
+    }
 }
 
 /// The controller's copy of a guest's publication; missing (controller
 /// stopped), oversized or mid-write leaves it empty.
-fn read_publication(path: &Path) -> Option<RawTelemetryEnvelope> {
+pub fn read_publication(path: &Path) -> Option<RawTelemetryEnvelope> {
     let bytes = rampire_core::files::read_bounded(path, MAX_TELEMETRY_BYTES).ok()??;
     serde_json::from_slice(&bytes).ok()
 }
 
+/// One pool event, short.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PoolEvent {
-    time: String,
-    vm: String,
-    text: String,
-    colour: u8,
+pub struct PoolEvent {
+    pub time: String,
+    pub vm: String,
+    pub text: String,
+    pub tone: Tone,
 }
 
 /// The pool events, or why the journal gave none.
@@ -260,18 +341,13 @@ fn mebibytes(line: &str, name: &str) -> String {
         .map_or_else(|| "?".to_owned(), |bytes| format!("{}M", mib(bytes)))
 }
 
-/// One pool-relevant journal line as a short, coloured event.
+/// One pool-relevant journal line as a short event with its tone.
 fn pool_event(line: &str) -> Option<PoolEvent> {
     let event = field(line, "event")?;
     let operation = || field(line, "operation").unwrap_or("?");
-    let (text, colour) = match event {
+    let (text, tone) = match event {
         "request_completed" => {
             let outcome = field(line, "outcome").unwrap_or("?");
-            let colour = match outcome {
-                "Completed" => GREEN,
-                "Partial" | "PoolEmpty" => YELLOW,
-                _ => RED,
-            };
             let mut text = format!(
                 "{} {} -> {} {outcome}",
                 operation(),
@@ -281,7 +357,7 @@ fn pool_event(line: &str) -> Option<PoolEvent> {
             if let Some(reason) = field(line, "reason") {
                 text.push_str(&format!(": {reason}"));
             }
-            (text, colour)
+            (text, tone::outcome(outcome))
         }
         "controller_decision" => match field(line, "action")? {
             "grant" => (
@@ -291,7 +367,7 @@ fn pool_event(line: &str) -> Option<PoolEvent> {
                     mebibytes(line, "grant_bytes"),
                     mebibytes(line, "bytes")
                 ),
-                CYAN,
+                Tone::Info,
             ),
             "refuse" => (
                 format!(
@@ -300,7 +376,7 @@ fn pool_event(line: &str) -> Option<PoolEvent> {
                     mebibytes(line, "bytes"),
                     field(line, "reason").unwrap_or("?")
                 ),
-                RED,
+                Tone::Bad,
             ),
             _ => return None,
         },
@@ -310,30 +386,30 @@ fn pool_event(line: &str) -> Option<PoolEvent> {
                 mebibytes(line, "kept_bytes"),
                 mebibytes(line, "target_bytes")
             ),
-            YELLOW,
+            Tone::Warn,
         ),
         "actuation_latched" => (
             format!("LATCHED: {}", field(line, "reason").unwrap_or("?")),
-            RED,
+            Tone::Bad,
         ),
         "vm_stopped" => (
             format!("stopped: {}", field(line, "reason").unwrap_or("?")),
-            RED,
+            Tone::Bad,
         ),
-        "control_channel_lost" => ("control channel lost".to_owned(), YELLOW),
-        "control_channel_connected" => ("control channel connected".to_owned(), DIM),
+        "control_channel_lost" => ("control channel lost".to_owned(), Tone::Warn),
+        "control_channel_connected" => ("control channel connected".to_owned(), Tone::Dim),
         _ => return None,
     };
     Some(PoolEvent {
         time: journal::time(line).to_owned(),
         vm: field(line, "vm").unwrap_or("?").to_owned(),
         text,
-        colour,
+        tone,
     })
 }
 
 /// Newest-first pool events, consecutive repeats per VM collapsed with a count.
-fn parse_events(journal: &str, count: usize) -> Vec<PoolEvent> {
+pub fn parse_events(journal: &str, count: usize) -> Vec<PoolEvent> {
     journal::collapse_repeats(
         journal.lines().rev().filter_map(pool_event),
         count,
@@ -349,18 +425,14 @@ fn parse_events(journal: &str, count: usize) -> Vec<PoolEvent> {
     .collect()
 }
 
-fn vm_colour(index: usize) -> u8 {
-    VM_COLOURS[index % VM_COLOURS.len()]
-}
-
 /// GiB with two decimals and a `G`, for the narrow table columns.
-fn short_gib(bytes: u64) -> String {
+pub fn short_gib(bytes: u64) -> String {
     format!("{:.2}G", bytes as f64 / GIB as f64)
 }
 
 /// Where each VM's segment ends in a bar of `cells` scaled to `scale`
 /// bytes: cumulative rounding, so segments never overlap or overflow.
-fn segment_ends(charges: &[u64], scale: u64, cells: usize) -> Vec<usize> {
+pub fn segment_ends(charges: &[u64], scale: u64, cells: usize) -> Vec<usize> {
     let scale = scale.max(1) as f64;
     let mut total = 0u64;
     charges
@@ -372,382 +444,9 @@ fn segment_ends(charges: &[u64], scale: u64, cells: usize) -> Vec<usize> {
         .collect()
 }
 
-/// The bar's full scale: the pool, or with no pool the larger of what is
-/// charged and every device's size.
-fn scale_bytes(command: &Command, sample: &Sample) -> u64 {
-    command.pool_bytes.unwrap_or_else(|| {
-        sample
-            .vms
-            .iter()
-            .map(|vm| vm.device.map_or(0, |device| device.size_bytes))
-            .fold(0, u64::saturating_add)
-            .max(
-                sample
-                    .vms
-                    .iter()
-                    .map(VmSample::charge)
-                    .fold(0, u64::saturating_add),
-            )
-    })
-}
-
-fn build(
-    frame: &mut Frame,
-    command: &Command,
-    sample: &Sample,
-    session: &Session,
-    history: &VecDeque<Vec<u64>>,
-    events: &Result<Vec<PoolEvent>, String>,
-) {
-    let g = frame.glyphs;
-    frame.bar(
-        &format!(
-            "{} RAMPIRE POOL  {}  {} VMs",
-            g.dot,
-            host_name(),
-            command.vms.len()
-        ),
-        &clock(),
-    );
-    frame.line();
-    frame.add(
-        format!(
-            " refresh {:.1}s   samples {}   {}   Ctrl+C stop",
-            command.interval.as_secs_f64(),
-            sample.samples,
-            command.unit
-        ),
-        LABEL,
-    );
-    frame.pad_to(frame.width, BACKGROUND);
-    pool_panel(frame, command, sample, session);
-    vm_panel(frame, command, sample);
-    history_chart(frame, command, sample, history);
-    events_panel(frame, command, events);
-    frame.bar(
-        "Read-only: virsh --readonly, publication copies and the journal",
-        "",
-    );
-}
-
-fn pool_panel(frame: &mut Frame, command: &Command, sample: &Sample, session: &Session) {
-    let g = frame.glyphs;
-    let charges: Vec<u64> = sample.vms.iter().map(VmSample::charge).collect();
-    let charged = charges.iter().copied().fold(0, u64::saturating_add);
-    let scale = scale_bytes(command, sample);
-    frame.top("POOL", "charge = max(requested, plugged) per VM");
-
-    // The stacked bar: each VM's charge in its colour, then the free part.
-    let cells = frame.width.saturating_sub(4 + 12 + 8);
-    frame.row();
-    frame.add(format!("{:<12}", "Charged"), LABEL);
-    let mut start = 0;
-    for (index, end) in segment_ends(&charges, scale, cells).into_iter().enumerate() {
-        frame.add(g.full.repeat(end - start), vm_colour(index));
-        start = end;
-    }
-    frame.add(g.empty.repeat(cells - start), TRACK);
-    let fraction = charged as f64 / scale.max(1) as f64;
-    frame.add(format!(" {:5.1}%", fraction * 100.0), load_colour(fraction));
-    frame.end_row();
-
-    frame.row();
-    frame.add(" ".repeat(12), LABEL);
-    for (index, vm) in command.vms.iter().enumerate() {
-        frame.add(g.full, vm_colour(index));
-        frame.add(format!(" {}  ", vm.name), LABEL);
-    }
-    frame.end_row();
-
-    match command.pool_bytes {
-        Some(pool) => {
-            let free = pool.saturating_sub(charged);
-            frame.metric(
-                "Pool size",
-                &gib(pool),
-                "device memory shared by every VM",
-                VALUE,
-            );
-            frame.metric(
-                "Charged",
-                &gib(charged),
-                &format!("peak {} this session", gib(session.peak_charged)),
-                load_colour(fraction),
-            );
-            let free_colour = if free == 0 {
-                RED
-            } else if free < pool / 10 {
-                YELLOW
-            } else {
-                GREEN
-            };
-            frame.metric(
-                "Free",
-                &gib(free),
-                &format!("low {} this session", gib(session.low_free.unwrap_or(free))),
-                free_colour,
-            );
-        }
-        None => {
-            frame.metric(
-                "Charged",
-                &gib(charged),
-                "single-VM controller: no pool",
-                VALUE,
-            );
-        }
-    }
-
-    let (growing, shrinking) = sample.vms.iter().filter_map(|vm| vm.device).fold(
-        (0, 0),
-        |(growing, shrinking), device| {
-            (
-                growing + device.requested_bytes.saturating_sub(device.current_bytes),
-                shrinking + device.current_bytes.saturating_sub(device.requested_bytes),
-            )
-        },
-    );
-    let moving = sample
-        .vms
-        .iter()
-        .filter_map(|vm| vm.device)
-        .filter(|device| device.requested_bytes != device.current_bytes)
-        .count();
-    if moving == 0 {
-        frame.metric("Resizing", "none", "every device has converged", GREEN);
-    } else {
-        frame.metric(
-            "Resizing",
-            &format!("{moving} VMs"),
-            &format!(
-                "+{} MiB to plug, -{} MiB to unplug",
-                mib(growing),
-                mib(shrinking)
-            ),
-            CYAN,
-        );
-    }
-
-    let host = sample.host;
-    let floor = command.host_floor_bytes;
-    let floor_colour = if host.available < floor {
-        RED
-    } else if host.available < floor + floor / 4 {
-        YELLOW
-    } else {
-        GREEN
-    };
-    frame.metric(
-        "Host available",
-        &gib(host.available),
-        &format!(
-            "floor {:.1} GiB, {:+.2} GiB to spare, low {}",
-            floor as f64 / GIB as f64,
-            (host.available as f64 - floor as f64) / GIB as f64,
-            gib(session.low_host_available.unwrap_or(host.available))
-        ),
-        floor_colour,
-    );
-    frame.bottom();
-}
-
-fn vm_panel(frame: &mut Frame, command: &Command, sample: &Sample) {
-    let g = frame.glyphs;
-    let wide = frame.width >= 110;
-    frame.top("VMS", "host-list order; higher priority is served first");
-    frame.row();
-    // As wide as the longest name, so a name is shown whole (up to 31).
-    let width = command
-        .vms
-        .iter()
-        .map(|vm| vm.name.chars().count())
-        .max()
-        .unwrap_or(0)
-        .clamp(13, 31)
-        + 1;
-    let mut header = format!(
-        "  {:<width$}{:>4}  {:>8}  {:<17}",
-        "VM", "PRI", "PLUGGED", "DEVICE"
-    );
-    if wide {
-        header.push_str(&format!("{:<14}", "RAM LIMITS"));
-    }
-    header.push_str("GUEST IN USE        REQUEST");
-    frame.add(header, DIM);
-    frame.end_row();
-    for (index, (vm, state)) in command.vms.iter().zip(&sample.vms).enumerate() {
-        frame.row();
-        frame.add(format!("{} ", g.full), vm_colour(index));
-        let name: String = vm.name.chars().take(width - 1).collect();
-        frame.add(format!("{name:<width$}"), VALUE);
-        frame.add(format!("{:>4}  ", vm.priority), LABEL);
-        match state.device {
-            None => {
-                frame.add(format!("{:>8}  ", "-"), DIM);
-                frame.add(format!("{:<17}", "off / unreadable"), RED);
-            }
-            Some(device) => {
-                frame.add(format!("{:>8}  ", short_gib(device.current_bytes)), VALUE);
-                let (requested, current) = (device.requested_bytes, device.current_bytes);
-                let (text, colour) = match requested.cmp(&current) {
-                    std::cmp::Ordering::Equal => ("steady".to_owned(), GREEN),
-                    std::cmp::Ordering::Greater => {
-                        (format!("grow +{}M", mib(requested - current)), CYAN)
-                    }
-                    std::cmp::Ordering::Less => {
-                        (format!("shrink -{}M", mib(current - requested)), YELLOW)
-                    }
-                };
-                frame.add(format!("{text:<17}"), colour);
-            }
-        }
-        if wide {
-            frame.add(
-                format!(
-                    "{:<14}",
-                    format!("{}-{}", short_gib(vm.min_ram), short_gib(vm.max_ram))
-                ),
-                DIM,
-            );
-        }
-        guest_cells(frame, state.guest.as_ref(), sample.now_unix_millis);
-        frame.end_row();
-    }
-    frame.bottom();
-}
-
-/// A small in-use meter, the guest's available RAM and its pending request.
-fn guest_cells(frame: &mut Frame, guest: Option<&RawTelemetryEnvelope>, now_unix_millis: u64) {
-    const CELLS: usize = 8;
-    let g = frame.glyphs;
-    let Some(guest) = guest else {
-        frame.add("no publication (controller stopped?)", DIM);
-        return;
-    };
-    let memory = &guest.memory;
-    let total = memory.physical_total_bytes.max(1);
-    let fraction = 1.0 - memory.physical_available_bytes as f64 / total as f64;
-    let filled = (fraction.clamp(0.0, 1.0) * CELLS as f64).round() as usize;
-    frame.add(g.full.repeat(filled), load_colour(fraction));
-    frame.add(g.empty.repeat(CELLS - filled), TRACK);
-    frame.add(format!(" {:3.0}%", fraction * 100.0), load_colour(fraction));
-    frame.add(
-        format!(" of {:<6} ", short_gib(memory.physical_total_bytes)),
-        LABEL,
-    );
-    match &guest.request {
-        Some(request) => frame.add(
-            format!("{:?} {}M", request.operation, mib(request.bytes)),
-            CYAN,
-        ),
-        None => frame.add("none", DIM),
-    }
-    let age = Duration::from_millis(now_unix_millis.saturating_sub(guest.observed_unix_millis));
-    if age >= STALE_PUBLICATION {
-        frame.add(format!("  stale {}s", age.as_secs()), YELLOW);
-    }
-}
-
-fn history_chart(
-    frame: &mut Frame,
-    command: &Command,
-    sample: &Sample,
-    history: &VecDeque<Vec<u64>>,
-) {
-    let g = frame.glyphs;
-    let scale = scale_bytes(command, sample).max(1);
-    let columns = frame.width.saturating_sub(4 + 7);
-    let points: Vec<&Vec<u64>> = history.iter().rev().take(columns).rev().collect();
-    frame.top(
-        "POOL HISTORY",
-        &format!(
-            "last {} samples, stacked by VM, 0..{:.1} GiB",
-            points.len(),
-            scale as f64 / GIB as f64
-        ),
-    );
-    let ends: Vec<Vec<usize>> = points
-        .iter()
-        .map(|charges| segment_ends(charges, scale, CHART_HEIGHT * 2))
-        .collect();
-    for y in (1..=CHART_HEIGHT).rev() {
-        frame.row();
-        frame.add(
-            format!(
-                "{:5.1}{}",
-                (scale as f64 / GIB as f64) * y as f64 / CHART_HEIGHT as f64,
-                g.axis
-            ),
-            DIM,
-        );
-        // Half-cell resolution: a cell belongs to the VM covering its middle.
-        let middle = y * 2 - 1;
-        for column in &ends {
-            match column.iter().position(|end| *end > middle) {
-                Some(index) => frame.add(g.full, vm_colour(index)),
-                None => frame.add(" ", LABEL),
-            }
-        }
-        frame.end_row();
-    }
-    frame.row();
-    frame.add(
-        format!("     {}{}", g.corner, g.rule.repeat(points.len())),
-        DIM,
-    );
-    frame.end_row();
-    frame.bottom();
-}
-
-fn events_panel(frame: &mut Frame, command: &Command, events: &Result<Vec<PoolEvent>, String>) {
-    frame.top("POOL EVENTS", "every VM, newest first");
-    let events = match events {
-        Ok(events) => events,
-        Err(reason) => {
-            frame.message(reason, YELLOW);
-            frame.bottom();
-            return;
-        }
-    };
-    let colours: Vec<(&str, u8)> = command
-        .vms
-        .iter()
-        .enumerate()
-        .map(|(index, vm)| (vm.name.as_str(), vm_colour(index)))
-        .collect();
-    // As wide as the longest name shown, as in the VM table (up to 31).
-    let width = events
-        .iter()
-        .take(command.events)
-        .map(|event| event.vm.chars().count())
-        .max()
-        .unwrap_or(0)
-        .clamp(13, 31);
-    for index in 0..command.events {
-        frame.row();
-        match events.get(index) {
-            Some(event) => {
-                let colour = colours
-                    .iter()
-                    .find(|(name, _)| *name == event.vm)
-                    .map_or(LABEL, |(_, colour)| *colour);
-                let vm: String = event.vm.chars().take(width).collect();
-                frame.add(format!("{}  ", event.time), DIM);
-                frame.add(format!("{vm:<pad$}", pad = width + 1), colour);
-                frame.add(event.text.as_str(), event.colour);
-            }
-            None if index == 0 => frame.add("no pool events in the journal", DIM),
-            None => {}
-        }
-        frame.end_row();
-    }
-    frame.bottom();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dashboard::MIB;
 
     fn fixture() -> String {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -758,35 +457,6 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
-    }
-
-    fn two_vm_command() -> Command {
-        let vm = |name: &str| Vm {
-            name: name.to_owned(),
-            alias: "memory0".to_owned(),
-            priority: 100,
-            min_ram: GIB / 4,
-            max_ram: 15 * GIB,
-        };
-        Command {
-            vms: vec![vm("alpha"), vm("a-very-long-vm-name")],
-            pool_bytes: Some(15 * GIB),
-            host_floor_bytes: 4 * GIB,
-            unit: "rampire.service".to_owned(),
-            connect: "qemu:///system".to_owned(),
-            interval: Duration::from_secs(1),
-            events: 8,
-            once: true,
-        }
-    }
-
-    fn device(requested: u64, current: u64) -> Option<VirtioMemState> {
-        Some(VirtioMemState {
-            size_bytes: 15 * GIB,
-            block_size_bytes: 2 * MIB,
-            requested_bytes: requested,
-            current_bytes: current,
-        })
     }
 
     #[test]
@@ -848,19 +518,19 @@ mod tests {
                     time: "10:00:04".to_owned(),
                     vm: "alpha".to_owned(),
                     text: "Add 1024M -> 512M Partial".to_owned(),
-                    colour: YELLOW,
+                    tone: Tone::Warn,
                 },
                 PoolEvent {
                     time: "10:00:03".to_owned(),
                     vm: "beta".to_owned(),
                     text: "(x2) Add 1024M -> 0M PoolEmpty: the pool is fully charged".to_owned(),
-                    colour: YELLOW,
+                    tone: Tone::Warn,
                 },
                 PoolEvent {
                     time: "10:00:01".to_owned(),
                     vm: "alpha".to_owned(),
                     text: "grant Add 512M of 1024M".to_owned(),
-                    colour: CYAN,
+                    tone: Tone::Info,
                 },
             ]
         );
@@ -869,15 +539,21 @@ mod tests {
     }
 
     #[test]
-    fn plain_frames_keep_every_line_within_the_width() {
-        let command = two_vm_command();
-        let sample = Sample {
-            host: HostMemory {
-                total: 32 * GIB,
-                available: 5 * GIB,
-                swap_total: 0,
-                swap_free: 0,
-            },
+    fn a_snapshot_sums_charges_free_memory_and_resizes() {
+        let config = fixture();
+        let mut command = parse(&strings(&["--config", &config])).unwrap();
+        command.pool_bytes = Some(8 * GIB);
+        let device = |requested: u64, current: u64| {
+            Some(VirtioMemState {
+                size_bytes: 8 * GIB,
+                block_size_bytes: 2 << 20,
+                requested_bytes: requested,
+                current_bytes: current,
+            })
+        };
+        let snapshot = PoolSnapshot {
+            command,
+            host: HostMemory::default(),
             vms: vec![
                 VmSample {
                     device: device(2 * GIB, GIB),
@@ -890,43 +566,13 @@ mod tests {
             ],
             now_unix_millis: 0,
             samples: 1,
+            session: Session::default(),
+            history: vec![],
+            events: Ok(vec![]),
         };
-        let history: VecDeque<_> = std::iter::repeat_n(vec![2 * GIB, 3 * GIB], 400).collect();
-        let events = Ok(vec![PoolEvent {
-            time: "10:00:00".to_owned(),
-            vm: "alpha".to_owned(),
-            text: "x".repeat(500),
-            colour: RED,
-        }]);
-        for width in [80, 140] {
-            let mut frame = Frame::new(width, false);
-            build(
-                &mut frame,
-                &command,
-                &sample,
-                &Session::default(),
-                &history,
-                &events,
-            );
-            let text = frame.render();
-            assert!(text.contains("grow +1024M"), "{text}");
-            assert!(text.contains("off / unreadable"));
-            assert!(text.contains("no publication"));
-            assert!(text.contains("+1024 MiB to plug"));
-            for line in text.lines() {
-                assert!(line.chars().count() <= width, "{width}: {line}");
-            }
-        }
-        let mut frame = Frame::new(80, false);
-        let unreadable = Err("journal unreadable: join systemd-journal".to_owned());
-        build(
-            &mut frame,
-            &command,
-            &sample,
-            &Session::default(),
-            &history,
-            &unreadable,
-        );
-        assert!(frame.render().contains("journal unreadable"));
+        assert_eq!(snapshot.charged(), 2 * GIB);
+        assert_eq!(snapshot.free(), Some(6 * GIB));
+        assert_eq!(snapshot.resizing(), (1, GIB, 0));
+        assert_eq!(snapshot.scale(), 8 * GIB);
     }
 }

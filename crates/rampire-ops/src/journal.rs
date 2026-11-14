@@ -76,6 +76,56 @@ pub fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     Some(rest[..end].trim_end())
 }
 
+/// `journalctl` arguments for `rampire logs`: the controller unit's lines,
+/// systemd's about the unit, and the changes people made (logged under the
+/// identifier `rampire`), optionally since a time and only about one VM.
+pub fn log_arguments(since: Option<&str>, vm: Option<&str>) -> Vec<String> {
+    let unit = crate::systemd_unit::CONTROLLER_UNIT;
+    let mut arguments: Vec<String> = vec![
+        "--no-pager".to_owned(),
+        format!("_SYSTEMD_UNIT={unit}"),
+        "+".to_owned(),
+        format!("UNIT={unit}"),
+        "+".to_owned(),
+        format!("SYSLOG_IDENTIFIER={}", crate::audit::IDENTIFIER),
+    ];
+    if let Some(since) = since {
+        arguments.extend(["--since".to_owned(), since.to_owned()]);
+    }
+    if let Some(vm) = vm {
+        arguments.extend(["--grep".to_owned(), vm_pattern(vm)]);
+    }
+    arguments
+}
+
+/// A `journalctl --grep` pattern for the lines naming `vm` as their VM.
+pub fn vm_pattern(vm: &str) -> String {
+    let mut escaped = String::new();
+    for character in vm.chars() {
+        if !character.is_ascii_alphanumeric() {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    format!("(^|\\s)vm={escaped}(\\s|$)")
+}
+
+/// The newest `lines` of `rampire logs` (optionally about one VM), oldest
+/// first, for the TUI's logs screen.
+pub fn read_log(vm: Option<&str>, lines: usize, cwd: &Path) -> Result<String, String> {
+    let mut arguments: Vec<OsString> = log_arguments(None, vm).iter().map(process::os).collect();
+    for argument in ["-n", &lines.to_string(), "-o", "short-iso"] {
+        arguments.push(process::os(argument));
+    }
+    match process::bounded_text("journalctl", &arguments, cwd, COMMAND_TIMEOUT) {
+        Ok(text) => Ok(text),
+        // journalctl exits 1 when --grep matches nothing.
+        Err(error) if error.contains("status 1") => Ok(String::new()),
+        Err(error) if error.contains("permission") => Err(UNREADABLE.to_owned()),
+        Err(error) => Err(error),
+    }
+}
+
 /// The lines in time order. `journalctl` prints matches newest first when
 /// `--grep` and `-n` go together on some systemd versions, so the order it
 /// used is not relied on: microsecond timestamps sort as text, and the sort
@@ -148,6 +198,27 @@ mod tests {
         assert_eq!(field(LINE, "id"), None);
         assert_eq!(time(LINE), "16:12:59");
         assert_eq!(time("short"), "--:--:--");
+    }
+
+    #[test]
+    fn logs_name_the_unit_and_peoples_changes_and_one_vm_exactly() {
+        let arguments = log_arguments(Some("1 hour ago"), Some("web.1"));
+        assert_eq!(
+            arguments,
+            [
+                "--no-pager",
+                "_SYSTEMD_UNIT=rampire.service",
+                "+",
+                "UNIT=rampire.service",
+                "+",
+                "SYSLOG_IDENTIFIER=rampire",
+                "--since",
+                "1 hour ago",
+                "--grep",
+                r"(^|\s)vm=web\.1(\s|$)",
+            ]
+        );
+        assert_eq!(log_arguments(None, None).len(), 6);
     }
 
     #[test]

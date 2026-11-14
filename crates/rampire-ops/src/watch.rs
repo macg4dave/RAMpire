@@ -1,14 +1,14 @@
-//! `rampire watch`: a live, read-only host-side dashboard of one
-//! virtio-mem guest. It shows host RAM against the controller floor, the
-//! device, the guest's own view from its latest publication, a device
-//! history chart and the controller's latest journal events.
+//! What `rampire watch` and the TUI's VM details read about one VM: host
+//! RAM against the controller floor, the device, the guest's own view from
+//! its latest publication, a device history and the controller's latest
+//! journal events. The drawing is in [`crate::tui::vm`].
 //!
 //! It uses `virsh --readonly dumpxml`, the guest's publication (the
-//! controller's copy, or a guest-agent read without it) and `journalctl`. It never resizes, clears latches or restarts
-//! anything. It deliberately does not read `.host-status`: a guest-agent read
-//! holds that file open across several commands and makes the controller's
-//! write of it fail with a sharing violation; the controller journal records
-//! the same results.
+//! controller's copy, or a guest-agent read without it) and `journalctl`. It
+//! never resizes, clears latches or restarts anything. It deliberately does
+//! not read `.host-status`: a guest-agent read holds that file open across
+//! several commands and makes the controller's write of it fail with a
+//! sharing violation; the controller journal records the same results.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -20,14 +20,12 @@ use rampire_host::guest_channel::{PublicationCopyFirst, PublicationSource};
 use rampire_host::qga::{GuestFileReader, VirshGuestFiles};
 use rampire_host::virsh::Virsh;
 
-use crate::dashboard::{
-    clock, draw, gib, host_name, mib, run_live, Frame, LiveView, BACKGROUND, CYAN, DIM, GIB, GREEN,
-    LABEL, MAGENTA, MIB, RED, VALUE, YELLOW,
-};
+use crate::dashboard::{mib, MIB};
 use crate::host_readings::{
     device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
 };
 use crate::journal::{self, field};
+use crate::tone::{self, Tone};
 
 pub const HELP: &str = "Watch options (read-only live dashboard):
   --config PATH                 Required host TOML; the VM, device alias,
@@ -39,46 +37,61 @@ pub const HELP: &str = "Watch options (read-only live dashboard):
   --events N                    Journal events shown; default 6.
   --no-guest                    Skip guest-agent reads.
   --once                        Print one plain snapshot.
-Ctrl+C leaves a plain snapshot and the full recent events on the screen to copy.
+Ctrl+C or q leaves a plain snapshot and the full recent events on the screen to copy.
 ";
+
+/// Device samples kept for the history.
+pub const HISTORY_SAMPLES: usize = 300;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
-    vm: String,
-    alias: String,
-    unit: String,
-    telemetry_path: String,
-    connect: String,
-    interval: Duration,
-    guest_interval: Duration,
-    host_floor_bytes: u64,
-    events: usize,
-    guest: bool,
-    once: bool,
+    pub vm: String,
+    pub alias: String,
+    pub unit: String,
+    pub telemetry_path: String,
+    pub connect: String,
+    pub interval: Duration,
+    pub guest_interval: Duration,
+    pub host_floor_bytes: u64,
+    pub events: usize,
+    pub guest: bool,
+    pub once: bool,
+}
+
+impl Command {
+    /// One VM of the configuration, with every default.
+    pub fn from_config(config: &HostConfig, connect: &str) -> Self {
+        Self {
+            vm: config.vm_name.clone(),
+            alias: config.alias.clone(),
+            unit: crate::systemd_unit::CONTROLLER_UNIT.to_owned(),
+            telemetry_path: config.raw_telemetry_path.clone(),
+            connect: connect.to_owned(),
+            interval: Duration::from_secs(1),
+            guest_interval: Duration::from_secs(1),
+            host_floor_bytes: config.host_min_headroom_bytes,
+            events: 6,
+            guest: true,
+            once: false,
+        }
+    }
 }
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut config_path = None;
     let mut vm = None;
-    let mut command = Command {
-        vm: String::new(),
-        alias: String::new(),
-        unit: crate::systemd_unit::CONTROLLER_UNIT.to_owned(),
-        telemetry_path: String::new(),
-        connect: "qemu:///system".to_owned(),
-        interval: Duration::from_secs(1),
-        guest_interval: Duration::from_secs(1),
-        host_floor_bytes: 0,
-        events: 6,
-        guest: true,
-        once: false,
-    };
+    let mut connect = "qemu:///system".to_owned();
+    let mut interval = Duration::from_secs(1);
+    let mut guest_interval = Duration::from_secs(1);
+    let mut events = 6;
+    let mut guest = true;
+    let mut once = false;
     let mut index = 0;
     while index < args.len() {
         let option = args[index].as_str();
         match option {
-            "--no-guest" => command.guest = false,
-            "--once" => command.once = true,
+            "--no-guest" => guest = false,
+            "--once" => once = true,
             _ => {
                 index += 1;
                 let value = args
@@ -95,11 +108,11 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 match option {
                     "--config" => config_path = Some(std::path::PathBuf::from(value)),
                     "--vm" => vm = Some(value.clone()),
-                    "--connect" => command.connect = value.clone(),
-                    "--interval-seconds" => command.interval = seconds()?,
-                    "--guest-interval-seconds" => command.guest_interval = seconds()?,
+                    "--connect" => connect = value.clone(),
+                    "--interval-seconds" => interval = seconds()?,
+                    "--guest-interval-seconds" => guest_interval = seconds()?,
                     "--events" => {
-                        command.events = value
+                        events = value
                             .parse()
                             .ok()
                             .filter(|count| (1..=20).contains(count))
@@ -114,71 +127,20 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     let config_path = config_path.ok_or_else(|| format!("watch requires --config\n\n{HELP}"))?;
     let config = HostConfig::load_vm(&config_path, vm.as_deref())
         .map_err(|error| format!("{}: {error}", config_path.display()))?;
-    command.vm = config.vm_name;
-    command.alias = config.alias;
-    command.telemetry_path = config.raw_telemetry_path;
-    command.host_floor_bytes = config.host_min_headroom_bytes;
+    let mut command = Command::from_config(&config, &connect);
+    command.interval = interval;
+    command.guest_interval = guest_interval;
+    command.events = events;
+    command.guest = guest;
+    command.once = once;
     Ok(command)
 }
 
-pub fn run(command: &Command, cwd: &Path) -> Result<(), String> {
-    let virsh = Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
-    let guest_files = PublicationCopyFirst::new(
-        &command.vm,
-        VirshGuestFiles::new(virsh.clone(), &command.vm),
-    );
-    let mut history = VecDeque::new();
-    let mut guest = GuestView::default();
-    let mut guest_read: Option<Instant> = None;
-    let mut samples = 0u64;
-    let view = LiveView {
-        once: command.once,
-        interval: command.interval,
-        max_width: 120,
-    };
-    run_live(&view, |started, width, interactive| {
-        samples += 1;
-        let device = device_state(&virsh, &command.vm, &command.alias);
-        if let Some(device) = device {
-            history.push_back(device);
-            if history.len() > 300 {
-                history.pop_front();
-            }
-        }
-        if command.guest && guest_read.is_none_or(|read| started - read >= command.guest_interval) {
-            guest = read_guest(&guest_files, &command.telemetry_path);
-            guest_read = Some(started);
-        }
-        let sample = Sample {
-            host: read_meminfo()?,
-            device,
-            guest: &guest,
-            guest_age: guest_read.map(|read| started - read),
-            samples,
-        };
-        let journal = read_journal(command, cwd);
-        // The full events are left on screen too, after the last frame.
-        Ok(draw(
-            width,
-            interactive,
-            &full_events(&journal.events),
-            |frame| build(frame, command, &sample, &history, &journal),
-        ))
-    })
-}
-
-struct Sample<'a> {
-    host: HostMemory,
-    device: Option<VirtioMemState>,
-    guest: &'a GuestView,
-    guest_age: Option<Duration>,
-    samples: u64,
-}
-
-#[derive(Default)]
-struct GuestView {
-    telemetry: Option<RawTelemetryEnvelope>,
-    source: Option<PublicationSource>,
+/// The guest's latest publication, and which route it came by.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GuestView {
+    pub telemetry: Option<RawTelemetryEnvelope>,
+    pub source: Option<PublicationSource>,
 }
 
 /// A missing agent, file or mid-write view simply leaves it empty.
@@ -198,30 +160,37 @@ fn read_guest<R: GuestFileReader>(
     }
 }
 
+/// One controller event, short and in full.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Event {
-    time: String,
+pub struct Event {
+    pub time: String,
     /// Shortened for the panel.
-    text: String,
+    pub text: String,
     /// The journal's own text from `event=`, for copying.
-    full: String,
-    colour: u8,
+    pub full: String,
+    pub tone: Tone,
 }
 
 /// The controller's latest `request_completed` result.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LastResult {
-    outcome: String,
-    detail: String,
-    colour: u8,
+pub struct LastResult {
+    /// The journal's outcome, or "held back" when a limit held it back.
+    pub outcome: String,
+    pub detail: String,
+    pub tone: Tone,
+    /// The journal's own outcome: `Completed`, `Partial`, `PoolEmpty`, ...
+    pub journal_outcome: String,
+    /// What held a grant back, as `grant_limits` names it.
+    pub limiting_factors: Vec<String>,
 }
 
-#[derive(Debug, Default)]
-struct Journal {
-    events: Vec<Event>,
-    last_result: Option<LastResult>,
+/// What the journal says about the VM.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Journal {
+    pub events: Vec<Event>,
+    pub last_result: Option<LastResult>,
     /// Why the journal gave nothing, when it couldn't be read.
-    unreadable: Option<String>,
+    pub unreadable: Option<String>,
 }
 
 /// This VM's events, and the controller's own that name no VM.
@@ -243,7 +212,7 @@ fn read_journal(command: &Command, cwd: &Path) -> Journal {
 }
 
 /// The lines about `vm`, and the controller's own that name no VM.
-fn lines_for<'a>(journal: &'a str, vm: &str) -> Vec<&'a str> {
+pub fn lines_for<'a>(journal: &'a str, vm: &str) -> Vec<&'a str> {
     journal
         .lines()
         .filter(|line| field(line, "vm").is_none_or(|named| named == vm))
@@ -251,18 +220,13 @@ fn lines_for<'a>(journal: &'a str, vm: &str) -> Vec<&'a str> {
 }
 
 /// The newest `request_completed` among `lines`, oldest first.
-fn parse_last_result(lines: &[&str]) -> Option<LastResult> {
+pub fn parse_last_result(lines: &[&str]) -> Option<LastResult> {
     let at = lines
         .iter()
         .rposition(|line| field(line, "event") == Some("request_completed"))?;
     let line = lines[at];
     let bytes = |name: &str| field(line, name)?.parse::<u64>().ok().map(mib);
     let outcome = field(line, "outcome")?;
-    let colour = match outcome {
-        "Completed" => GREEN,
-        "Partial" | "PoolEmpty" => YELLOW,
-        _ => RED,
-    };
     let mut detail = format!(
         "{} {}M -> {}M at {}",
         field(line, "operation")?,
@@ -272,24 +236,28 @@ fn parse_last_result(lines: &[&str]) -> Option<LastResult> {
     );
     // A grant held back says by what: the same request's grant_limits.
     let mut shown = outcome.to_owned();
+    let mut limiting_factors = Vec::new();
     if matches!(outcome, "Partial" | "PoolEmpty") {
         let sequence = field(line, "sequence");
         let limits = lines[..at].iter().rev().find(|earlier| {
             field(earlier, "event") == Some("grant_limits")
                 && field(earlier, "sequence") == sequence
         });
-        if let Some(by) = limits
-            .and_then(|limits| field(limits, "limiting_factors"))
-            .and_then(held_back_by)
-        {
+        let factors = limits.and_then(|limits| field(limits, "limiting_factors"));
+        if let Some(by) = factors.and_then(held_back_by) {
             shown = "held back".to_owned();
             detail = format!("{detail}: {by}");
         }
+        limiting_factors = factors
+            .map(|factors| factors.split(',').map(str::to_owned).collect())
+            .unwrap_or_default();
     }
     Some(LastResult {
         detail,
         outcome: shown,
-        colour,
+        tone: tone::outcome(outcome),
+        journal_outcome: outcome.to_owned(),
+        limiting_factors,
     })
 }
 
@@ -310,7 +278,7 @@ fn held_back_by(factors: &str) -> Option<String> {
 }
 
 /// The recent events with their full journal text, for copying.
-fn full_events(events: &[Event]) -> String {
+pub fn full_events(events: &[Event]) -> String {
     let mut text = String::from("\nRecent controller events (full text, newest first):\n");
     for event in events {
         text.push_str(&format!("{}  {}\n", event.time, event.full));
@@ -319,41 +287,41 @@ fn full_events(events: &[Event]) -> String {
 }
 
 /// Controller events worth showing, by the first matching marker.
-const EVENT_COLOURS: [(&str, u8); 13] = [
-    ("actuation_latched", RED),
-    ("Rejected", RED),
-    ("refuse", RED),
-    ("Uncertain", RED),
-    ("error", RED),
+const EVENT_TONES: [(&str, Tone); 13] = [
+    ("actuation_latched", Tone::Bad),
+    ("Rejected", Tone::Bad),
+    ("refuse", Tone::Bad),
+    ("Uncertain", Tone::Bad),
+    ("error", Tone::Bad),
     // PAUSED (viomem): no longer emitted; kept for older journals.
-    ("usable_region_widened", MAGENTA),
-    ("outcome=Partial", YELLOW),
-    ("settled_short", YELLOW),
-    ("outcome=Completed", GREEN),
-    ("action=grant", CYAN),
-    ("resize_requested", CYAN),
-    ("ownership_conflict", DIM),
-    ("guest_", DIM),
+    ("usable_region_widened", Tone::Accent),
+    ("outcome=Partial", Tone::Warn),
+    ("settled_short", Tone::Warn),
+    ("outcome=Completed", Tone::Good),
+    ("action=grant", Tone::Info),
+    ("resize_requested", Tone::Info),
+    ("ownership_conflict", Tone::Dim),
+    ("guest_", Tone::Dim),
 ];
 
 /// Newest-first events with health samples dropped, byte counts in MiB and
 /// consecutive repeats (ignoring embedded timestamps) collapsed with a count.
-fn parse_events(lines: &[&str], count: usize) -> Vec<Event> {
+pub fn parse_events(lines: &[&str], count: usize) -> Vec<Event> {
     let events = lines.iter().rev().filter_map(|line| {
         let (_, text) = line.split_once("event=")?;
         if text.starts_with("control_health") {
             return None;
         }
         let short = shorten(text);
-        let colour = EVENT_COLOURS
+        let tone = EVENT_TONES
             .iter()
             .find(|(marker, _)| short.contains(marker))
-            .map_or(LABEL, |(_, colour)| *colour);
+            .map_or(Tone::Normal, |(_, tone)| *tone);
         Some(Event {
             time: journal::time(line).to_owned(),
             text: short,
             full: text.to_owned(),
-            colour,
+            tone,
         })
     });
     journal::collapse_repeats(events, count, |newer, older| {
@@ -403,293 +371,119 @@ fn mask_long_numbers(text: &str) -> String {
     masked
 }
 
-fn build(
-    frame: &mut Frame,
-    command: &Command,
-    sample: &Sample,
-    history: &VecDeque<VirtioMemState>,
-    journal: &Journal,
-) {
-    let events = &journal.events;
-    let g = frame.glyphs;
-    frame.bar(
-        &format!(
-            "{} RAMPIRE VM  {}  {}/{}",
-            g.dot,
-            host_name(),
-            command.vm,
-            command.alias
-        ),
-        &clock(),
-    );
-    frame.line();
-    frame.add(
-        format!(
-            " refresh {:.1}s   guest every {:.1}s   samples {}   Ctrl+C stop",
-            command.interval.as_secs_f64(),
-            command.guest_interval.as_secs_f64(),
-            sample.samples
-        ),
-        LABEL,
-    );
-    frame.pad_to(frame.width, BACKGROUND);
-
-    let host = sample.host;
-    let total = host.total.max(1);
-    let floor = command.host_floor_bytes;
-    frame.top("HOST", "MemAvailable vs controller floor");
-    frame.meter(
-        "Used",
-        1.0 - host.available as f64 / total as f64,
-        &format!(
-            "{:.2} / {:.2} GiB",
-            (total - host.available) as f64 / GIB as f64,
-            total as f64 / GIB as f64
-        ),
-        None,
-    );
-    let floor_colour = if host.available < floor {
-        RED
-    } else if host.available < floor + floor / 4 {
-        YELLOW
-    } else {
-        GREEN
-    };
-    frame.metric(
-        "Available",
-        &gib(host.available),
-        &format!(
-            "floor {:.1} GiB, {:+.2} GiB to spare",
-            floor as f64 / GIB as f64,
-            (host.available as f64 - floor as f64) / GIB as f64
-        ),
-        floor_colour,
-    );
-    frame.metric(
-        "Swap used",
-        &gib(host.swap_total.saturating_sub(host.swap_free)),
-        &format!("of {:.1} GiB", host.swap_total as f64 / GIB as f64),
-        VALUE,
-    );
-    frame.bottom();
-
-    frame.top("VIRTIO-MEM DEVICE", "requested / current");
-    match sample.device {
-        None => frame.message("device state unavailable (VM stopped or virsh failed)", RED),
-        Some(device) => {
-            let (requested, current) = (device.requested_bytes, device.current_bytes);
-            let (state, colour) = match requested.cmp(&current) {
-                std::cmp::Ordering::Equal => ("converged".to_owned(), GREEN),
-                std::cmp::Ordering::Greater => (
-                    format!("growing  +{} MiB to go", mib(requested - current)),
-                    CYAN,
-                ),
-                std::cmp::Ordering::Less => (
-                    format!("shrinking  {} MiB to go", mib(current - requested)),
-                    YELLOW,
-                ),
-            };
-            frame.metric(
-                "Requested",
-                &gib(requested),
-                &format!("block {} MiB", mib(device.block_size_bytes)),
-                VALUE,
-            );
-            frame.metric("Current (plugged)", &gib(current), &state, colour);
-            frame.meter(
-                "Plugged",
-                current as f64 / device.size_bytes.max(1) as f64,
-                &format!(
-                    "{:.2} / {:.0} GiB device",
-                    current as f64 / GIB as f64,
-                    device.size_bytes as f64 / GIB as f64
-                ),
-                Some(CYAN),
-            );
-        }
-    }
-    match &journal.last_result {
-        Some(result) => frame.metric(
-            "Last result",
-            &result.outcome,
-            &result.detail,
-            result.colour,
-        ),
-        None => frame.metric(
-            "Last result",
-            "none",
-            journal
-                .unreadable
-                .as_deref()
-                .unwrap_or("no request_completed in the journal"),
-            DIM,
-        ),
-    }
-    frame.bottom();
-
-    let age = sample
-        .guest_age
-        .map_or("never".to_owned(), |age| format!("{}s ago", age.as_secs()));
-    let title = match sample.guest.source {
-        Some(source) => format!("GUEST ({})", source.label()),
-        None => "GUEST".to_owned(),
-    };
-    frame.top(&title, &format!("read {age}"));
-    match &sample.guest.telemetry {
-        None if !command.guest => frame.message("guest reads disabled (--no-guest)", DIM),
-        None => frame.message("guest publication unavailable", RED),
-        Some(telemetry) => guest_rows(frame, telemetry),
-    }
-    frame.bottom();
-
-    history_chart(frame, history);
-
-    frame.top(
-        "CONTROLLER EVENTS",
-        &format!("{}, newest first", command.unit),
-    );
-    for index in 0..command.events {
-        frame.row();
-        match events.get(index) {
-            Some(event) => {
-                frame.add(format!("{}  ", event.time), DIM);
-                frame.add(event.text.as_str(), event.colour);
-            }
-            None if index == 0 => match &journal.unreadable {
-                Some(reason) => frame.add(reason.as_str(), YELLOW),
-                None => frame.add("no controller events in the journal", DIM),
-            },
-            None => {}
-        }
-        frame.end_row();
-    }
-    frame.bottom();
-    frame.bar(
-        "Read-only: virsh --readonly, the guest's publication and the journal",
-        "",
-    );
-}
-
-fn guest_rows(frame: &mut Frame, telemetry: &RawTelemetryEnvelope) {
-    let memory = &telemetry.memory;
-    let total = memory.physical_total_bytes.max(1);
-    let available = memory.physical_available_bytes;
-    frame.meter(
-        "In use",
-        1.0 - available as f64 / total as f64,
-        &format!(
-            "{:.2} / {:.2} GiB",
-            total.saturating_sub(available) as f64 / GIB as f64,
-            total as f64 / GIB as f64
-        ),
-        None,
-    );
-    frame.metric(
-        "Available / commit",
-        &gib(available),
-        &format!(
-            "commit headroom {}",
-            gib(memory
-                .commit_limit_bytes
-                .saturating_sub(memory.commit_total_bytes))
-        ),
-        VALUE,
-    );
-    let (signal, detail, colour) = memory_signal(telemetry);
-    frame.metric("Memory signal", signal, detail, colour);
-    match &telemetry.request {
-        Some(request) => frame.metric(
-            "Pending request",
-            &format!("{:?} {}M", request.operation, mib(request.bytes)),
-            &format!("sequence {}", request.identity.sequence),
-            CYAN,
-        ),
-        None => frame.metric("Pending request", "none", "", DIM),
-    }
-}
-
 /// The guest's memory-pressure signal, what it means for giving memory
-/// back, and its colour. A guest with no signal never returns memory, so
-/// the view says why rather than showing an unknown.
-fn memory_signal(telemetry: &RawTelemetryEnvelope) -> (&'static str, &'static str, u8) {
+/// back, and its tone. A guest with no signal never returns memory, so the
+/// view says why rather than showing an unknown.
+pub fn memory_signal(telemetry: &RawTelemetryEnvelope) -> (&'static str, &'static str, Tone) {
     let no_psi = telemetry
         .diagnostics
         .as_ref()
         .and_then(|diagnostics| diagnostics.environment.get("pressure_signal"))
         .is_some_and(|signal| signal == "none");
     match telemetry.native_pressure {
-        Some(MemoryResourceNotificationState::High) => {
-            ("HIGH", "no memory stalls: memory can be returned", GREEN)
-        }
+        Some(MemoryResourceNotificationState::High) => (
+            "HIGH",
+            "no memory stalls: memory can be returned",
+            Tone::Good,
+        ),
         Some(MemoryResourceNotificationState::Neutral) => (
             "NEUTRAL",
             "some stalls: memory is kept, not returned",
-            YELLOW,
+            Tone::Warn,
         ),
         Some(MemoryResourceNotificationState::Low) => {
-            ("LOW", "stalling on memory: asking for more", RED)
+            ("LOW", "stalling on memory: asking for more", Tone::Bad)
         }
         None if no_psi => (
             "OFF",
             "no PSI in the guest: it never returns memory; boot it with psi=1",
-            RED,
+            Tone::Bad,
         ),
         None => (
             "NONE",
             "the guest sent no signal: it never returns memory",
-            RED,
+            Tone::Bad,
         ),
     }
 }
 
-fn history_chart(frame: &mut Frame, history: &VecDeque<VirtioMemState>) {
-    const HEIGHT: u64 = 5;
-    let g = frame.glyphs;
-    let points: Vec<_> = history.iter().rev().take(frame.width - 12).rev().collect();
-    let peak = points
-        .iter()
-        .map(|point| point.requested_bytes.max(point.current_bytes))
-        .max()
-        .unwrap_or(0);
-    let scale = peak.div_ceil(GIB).max(1);
-    frame.top(
-        "DEVICE HISTORY",
-        &format!(
-            "last {} samples  {}=requested  {}=plugged  0..{scale} GiB",
-            points.len(),
-            g.mark,
-            g.full
-        ),
-    );
-    let level =
-        |bytes: u64| ((bytes as f64 / GIB as f64) / scale as f64 * HEIGHT as f64).round() as u64;
-    for y in (0..=HEIGHT).rev() {
-        frame.row();
-        frame.add(
-            format!("{:5.1} {}", (scale * y) as f64 / HEIGHT as f64, g.axis),
-            DIM,
-        );
-        for point in &points {
-            let requested = level(point.requested_bytes);
-            if y == requested && point.requested_bytes != point.current_bytes {
-                frame.add(g.mark, YELLOW);
-            } else if y <= level(point.current_bytes) {
-                frame.add(g.full, CYAN);
-            } else if y == requested {
-                frame.add(g.mark, DIM);
-            } else {
-                frame.add(" ", LABEL);
+/// Everything one refresh of a VM shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VmSnapshot {
+    pub command: Command,
+    pub host: HostMemory,
+    pub device: Option<VirtioMemState>,
+    pub guest: GuestView,
+    /// How long ago the guest was read; `None` before the first read.
+    pub guest_age: Option<Duration>,
+    /// Device samples, oldest first.
+    pub history: Vec<VirtioMemState>,
+    pub journal: Journal,
+    pub samples: u64,
+}
+
+/// Reads one VM at each refresh, keeping its device history and reading
+/// the guest no more often than `guest_interval`.
+pub struct VmReader {
+    command: Command,
+    virsh: Virsh,
+    files: PublicationCopyFirst<VirshGuestFiles<Virsh>>,
+    history: VecDeque<VirtioMemState>,
+    guest: GuestView,
+    guest_read: Option<Instant>,
+    samples: u64,
+}
+
+impl VmReader {
+    pub fn new(command: Command) -> Self {
+        let virsh = Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
+        Self {
+            files: PublicationCopyFirst::new(
+                &command.vm,
+                VirshGuestFiles::new(virsh.clone(), &command.vm),
+            ),
+            virsh,
+            command,
+            history: VecDeque::new(),
+            guest: GuestView::default(),
+            guest_read: None,
+            samples: 0,
+        }
+    }
+
+    pub fn command(&self) -> &Command {
+        &self.command
+    }
+
+    pub fn read(&mut self, cwd: &Path) -> Result<VmSnapshot, String> {
+        let started = Instant::now();
+        self.samples += 1;
+        let device = device_state(&self.virsh, &self.command.vm, &self.command.alias);
+        if let Some(device) = device {
+            self.history.push_back(device);
+            if self.history.len() > HISTORY_SAMPLES {
+                self.history.pop_front();
             }
         }
-        frame.end_row();
+        if self.command.guest
+            && self
+                .guest_read
+                .is_none_or(|read| started - read >= self.command.guest_interval)
+        {
+            self.guest = read_guest(&self.files, &self.command.telemetry_path);
+            self.guest_read = Some(started);
+        }
+        Ok(VmSnapshot {
+            command: self.command.clone(),
+            host: read_meminfo()?,
+            device,
+            guest: self.guest.clone(),
+            guest_age: self.guest_read.map(|read| started - read),
+            history: self.history.iter().copied().collect(),
+            journal: read_journal(&self.command, cwd),
+            samples: self.samples,
+        })
     }
-    frame.row();
-    frame.add(
-        format!("      {}{}", g.corner, g.rule.repeat(points.len())),
-        DIM,
-    );
-    frame.end_row();
-    frame.bottom();
 }
 
 #[cfg(test)]
@@ -737,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn events_are_newest_first_shortened_coloured_and_collapsed() {
+    fn events_are_newest_first_shortened_toned_and_collapsed() {
         let journal = "\
 2026-10-27T09:50:31+00:00 kvm-host rampire[1]: rampire: vm=w event=guest_input_invalid reason=raw telemetry observation 1793093751508 is stale at 1793094631000
 2026-10-27T09:50:37+00:00 kvm-host rampire[1]: rampire: vm=w event=guest_input_invalid reason=raw telemetry observation 1793093751508 is stale at 1793094637000
@@ -753,12 +547,12 @@ mod tests {
             "controller_decision action=grant session_id=s-1 operation=Remove bytes=3221225472"
         );
         assert_eq!(events[0].time, "09:57:40");
-        assert_eq!(events[0].colour, RED);
+        assert_eq!(events[0].tone, Tone::Bad);
         assert_eq!(
             events[1].text,
             "controller_decision action=grant operation=Remove bytes=3072M"
         );
-        assert_eq!(events[1].colour, CYAN);
+        assert_eq!(events[1].tone, Tone::Info);
         assert!(events[2].text.starts_with("(x2) guest_input_invalid"));
         assert!(events[2].full.ends_with("is stale at 1793094637000"));
         assert_eq!(parse_events(&lines, 1).len(), 1);
@@ -791,7 +585,9 @@ mod tests {
             Some(LastResult {
                 outcome: "Completed".to_owned(),
                 detail: "Add 1024M -> 1024M at 10:03:21".to_owned(),
-                colour: GREEN,
+                tone: Tone::Good,
+                journal_outcome: "Completed".to_owned(),
+                limiting_factors: vec![],
             })
         );
         assert_eq!(parse_last_result(&["no completions"]), None);
@@ -808,7 +604,9 @@ mod tests {
             Some(LastResult {
                 outcome: "held back".to_owned(),
                 detail: "Add 122M -> 0M at 16:12:59: the host reserve (host_reserve)".to_owned(),
-                colour: YELLOW,
+                tone: Tone::Warn,
+                journal_outcome: "PoolEmpty".to_owned(),
+                limiting_factors: vec!["host_headroom".to_owned()],
             })
         );
         assert_eq!(
@@ -819,58 +617,9 @@ mod tests {
     }
 
     #[test]
-    fn plain_frames_keep_every_line_within_the_width() {
-        let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/config");
-        let command =
-            parse(&["--config".to_owned(), config.to_string_lossy().into_owned()]).unwrap();
-        let device = VirtioMemState {
-            size_bytes: 20 * GIB,
-            block_size_bytes: 2 * MIB,
-            requested_bytes: GIB,
-            current_bytes: 3 * GIB,
-        };
-        let history: VecDeque<_> = std::iter::repeat_n(device, 400).collect();
-        let journal = Journal {
-            events: vec![Event {
-                time: "09:00:00".to_owned(),
-                text: "x".repeat(500),
-                full: "x".repeat(500),
-                colour: RED,
-            }],
-            last_result: None,
-            unreadable: None,
-        };
-        let sample = Sample {
-            host: HostMemory {
-                total: 32 * GIB,
-                available: 3 * GIB,
-                swap_total: GIB,
-                swap_free: GIB,
-            },
-            device: Some(device),
-            guest: &GuestView::default(),
-            guest_age: None,
-            samples: 1,
-        };
-        for width in [80, 120] {
-            let mut frame = Frame::new(width, false);
-            build(&mut frame, &command, &sample, &history, &journal);
-            let text = frame.render();
-            assert!(text.contains("shrinking  2048 MiB to go"));
-            assert!(text.contains("guest publication unavailable"));
-            for line in text.lines() {
-                assert!(line.chars().count() <= width, "{width}: {line}");
-            }
-        }
-    }
-
-    /// The first RHEL 10 guest's publication (pc101, 2026-11-14): RHEL
-    /// boots with PSI off, so it sends no memory signal.
-    const RHEL_WITHOUT_PSI: &str = r#"{"schema":"rampire.publication","version":1,"vm_name":"rhel10_rampire","service_name":"rampire-guest","session_id":"session-18e80a0f31b5d14c-335","observed_unix_millis":1794696509346,"monotonic_millis":997464,"sequence":9863,"memory":{"physical_total_bytes":2147631104,"physical_available_bytes":1741979648,"memory_load_percent":18,"commit_total_bytes":405651456,"commit_limit_bytes":2147631104,"commit_peak_bytes":485294080,"system_cache_bytes":155414528,"kernel_paged_bytes":14053376,"kernel_nonpaged_bytes":37240832},"diagnostics":{"build_id":"ab447c26ff67","driver_file_version":{"Ok":"linux 6.12.0-211.74.1.el10_2.x86_64"},"boot_uptime_millis":1003190,"policy":{"reason":"no_change","desired_bytes":427819008,"safe_floor_bytes":427819008,"history_ready":false,"retry_remaining_millis":0,"physical_deficit_bytes":0,"commit_deficit_bytes":0},"last_consumed_result":null,"result_consumed_unix_millis":null,"environment":{"auto_online_blocks":"offline","pressure_signal":"none","pressure_trigger":"none","virtio_mem_driver":"bound"}}}"#;
-
-    #[test]
     fn a_guest_without_a_memory_signal_says_why_instead_of_unknown() {
-        let mut telemetry: RawTelemetryEnvelope = serde_json::from_str(RHEL_WITHOUT_PSI).unwrap();
+        let text = include_str!("../../../fixtures/publication.json");
+        let mut telemetry: RawTelemetryEnvelope = serde_json::from_str(text).unwrap();
         let (signal, detail, _) = memory_signal(&telemetry);
         assert_eq!(signal, "OFF");
         assert!(detail.contains("psi=1"), "{detail}");
@@ -878,49 +627,5 @@ mod tests {
         assert_eq!(memory_signal(&telemetry).0, "NONE");
         telemetry.native_pressure = Some(MemoryResourceNotificationState::High);
         assert_eq!(memory_signal(&telemetry).0, "HIGH");
-
-        let guest = GuestView {
-            telemetry: serde_json::from_str(RHEL_WITHOUT_PSI).ok(),
-            source: Some(PublicationSource::ControllerCopy),
-        };
-        let sample = Sample {
-            host: HostMemory {
-                total: 32 * GIB,
-                available: 3 * GIB,
-                swap_total: GIB,
-                swap_free: GIB,
-            },
-            device: None,
-            guest: &guest,
-            guest_age: Some(Duration::ZERO),
-            samples: 1,
-        };
-        let journal = Journal {
-            events: Vec::new(),
-            last_result: None,
-            unreadable: None,
-        };
-        let command = Command {
-            vm: "rhel10_rampire".to_owned(),
-            alias: "ua-virtiomem0".to_owned(),
-            unit: crate::systemd_unit::CONTROLLER_UNIT.to_owned(),
-            telemetry_path: String::new(),
-            connect: "qemu:///system".to_owned(),
-            interval: Duration::from_secs(1),
-            guest_interval: Duration::from_secs(1),
-            host_floor_bytes: 0,
-            events: 2,
-            guest: true,
-            once: true,
-        };
-        for width in [80, 120] {
-            let mut frame = Frame::new(width, false);
-            build(&mut frame, &command, &sample, &VecDeque::new(), &journal);
-            let text = frame.render();
-            assert!(text.contains("GUEST (controller copy)"), "{text}");
-            assert!(text.contains("OFF"), "{text}");
-            assert!(!text.contains("UNKNOWN"), "{text}");
-            assert!(!text.contains("guest agent"), "{text}");
-        }
     }
 }

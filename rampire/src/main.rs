@@ -2,23 +2,19 @@
 //! here with clap so `--help`, completions and man pages share one source
 //! (decision D16).
 
-mod apply;
 mod controller;
 mod daemon;
 mod reporting;
-mod vm_lifecycle;
 
-use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use rampire_host::operator_actions::Target;
+use rampire_ops::context::Context;
+use rampire_ops::flows::{apply, controller as flows, lifecycle};
 use rampire_ops::process;
+use rampire_ops::ui::Terminal;
 
-/// The account the controller runs as. Recovery writes the controller's
-/// state as this account, so the daemon can still write it afterwards.
-const SERVICE_ACCOUNT: &str = "rampire";
 /// The build this binary came from, stamped by the build (`RAMPIRE_BUILD_ID`).
 const BUILD_ID: &str = match option_env!("RAMPIRE_BUILD_ID") {
     Some(id) => id,
@@ -37,25 +33,14 @@ mod exit {
     pub const CHANGED: u8 = 2;
 }
 
-/// The draft people and tools edit.
-const DRAFT: &str = "/etc/rampire";
-
-/// The configuration to change or check: `--config`, or the draft.
-fn draft(cli: &Cli) -> PathBuf {
-    cli.config.clone().unwrap_or_else(|| PathBuf::from(DRAFT))
-}
-
-/// The configuration the controller runs: `--config`, or the applied copy,
-/// or the draft before anything has been applied.
-fn running(cli: &Cli) -> PathBuf {
-    if let Some(config) = &cli.config {
-        return config.clone();
-    }
-    let current = applied_root().join(rampire_ops::applied::CURRENT);
-    if current.exists() {
-        current
-    } else {
-        PathBuf::from(DRAFT)
+/// What the command line names: the configuration, the connection and the
+/// build, for the flows in `rampire_ops`.
+fn context(cli: &Cli) -> Context {
+    Context {
+        config: cli.config.clone(),
+        connect: cli.connect.clone(),
+        build: version(),
+        via: "command",
     }
 }
 
@@ -64,6 +49,10 @@ fn version() -> String {
 }
 
 /// Share a pool of RAM between the VMs on a KVM host.
+///
+/// Run with no command on a terminal, `rampire` opens the TUI: the pool,
+/// each VM, adding and removing VMs and the doctor, over SSH with
+/// `ssh -t HOST sudo rampire`.
 #[derive(Debug, Parser)]
 #[command(name = "rampire", version = version(), propagate_version = true)]
 struct Cli {
@@ -82,7 +71,7 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -161,10 +150,18 @@ enum Command {
         #[arg(long)]
         no_apply: bool,
     },
-    /// Check what the host needs for RAMpire, with the fix for each problem.
-    Doctor,
-    /// Show the controller's journal.
+    /// Check what the host needs for RAMpire, with the fix for each problem,
+    /// and one line per managed VM; or everything about one VM.
+    Doctor {
+        /// The VM to check: its definition, attestation, latch, guest and
+        /// last request.
+        vm: Option<String>,
+    },
+    /// Show the controller's journal, and the changes people made.
     Logs {
+        /// Only the lines about this VM.
+        #[arg(long, value_name = "VM")]
+        vm: Option<String>,
         /// Keep showing new entries.
         #[arg(short, long)]
         follow: bool,
@@ -195,10 +192,29 @@ enum Command {
         #[arg(long)]
         apply: bool,
     },
+    /// Write the man pages or shell completions, as the packages are built.
+    #[command(hide = true)]
+    Generate {
+        what: Generated,
+        /// Where to write them.
+        directory: PathBuf,
+    },
+}
+
+/// What `generate` writes.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum Generated {
+    /// rampire(8) and a page per subcommand.
+    Man,
+    /// bash, zsh and fish completions.
+    Completions,
 }
 
 #[derive(Debug, Subcommand)]
 enum VmCommand {
+    /// List every VM on the libvirt connection: managed, parked or not
+    /// managed, with what `vm add` would change for one that isn't.
+    List,
     /// Start managing a VM: check its definition, review it, write its
     /// settings and apply.
     ///
@@ -293,7 +309,17 @@ fn main() -> ExitCode {
     match &cli.command {
         // The unit runs the daemon as the service account, and recovery
         // runs its own step as that account too.
-        Command::Daemon | Command::ClearLatch { .. } => {}
+        Some(Command::Daemon | Command::ClearLatch { .. } | Command::Generate { .. }) => {}
+        // The TUI, or the help when nothing is a terminal.
+        None if process::effective_uid() != 0 => {
+            use std::io::IsTerminal;
+            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                eprintln!(
+                    "rampire: the TUI runs as root: start it with sudo rampire, or over SSH with ssh -t HOST sudo rampire"
+                );
+                return ExitCode::from(exit::FAILURE);
+            }
+        }
         _ if process::effective_uid() != 0 => {
             eprintln!("rampire: run this as root, for example with sudo");
             return ExitCode::from(exit::FAILURE);
@@ -309,16 +335,32 @@ fn main() -> ExitCode {
     }
 }
 
+/// The result of a flow that may change the applied configuration, as
+/// `--detailed-exitcode` reports it.
+fn changed_code(changed: bool, detailed: bool) -> ExitCode {
+    ExitCode::from(if changed && detailed {
+        exit::CHANGED
+    } else {
+        exit::SUCCESS
+    })
+}
+
 fn run(cli: &Cli) -> Result<ExitCode, String> {
     let cwd = Path::new("/");
-    match &cli.command {
-        Command::Daemon => Ok(daemon::run(&running(cli))),
+    let context = context(cli);
+    let mut terminal = Terminal::stdio(cli.yes);
+    let ui = &mut terminal;
+    let Some(command) = &cli.command else {
+        return tui_or_help(cli);
+    };
+    match command {
+        Command::Daemon => Ok(daemon::run(&context.running())),
         Command::Status { vm } => reporting::status(cli, vm.as_deref()),
-        Command::Init => controller::init(cli),
+        Command::Init => flows::init(&context, ui).map(|_| ExitCode::SUCCESS),
         Command::Top { view, events } => {
-            let mut args = view_args(cli, view)?;
+            let mut args = view_args(&context, view)?;
             args.extend(["--events".to_owned(), events.to_string()]);
-            rampire_ops::top::run(&rampire_ops::top::parse(&args)?, cwd)?;
+            rampire_ops::tui::live::top(rampire_ops::top::parse(&args)?, cwd)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Watch {
@@ -328,7 +370,7 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
             guest_interval_seconds,
             no_guest,
         } => {
-            let mut args = view_args(cli, view)?;
+            let mut args = view_args(&context, view)?;
             args.extend([
                 "--events".to_owned(),
                 events.to_string(),
@@ -341,14 +383,16 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
             if *no_guest {
                 args.push("--no-guest".to_owned());
             }
-            rampire_ops::watch::run(&rampire_ops::watch::parse(&args)?, cwd)?;
+            rampire_ops::tui::live::watch(rampire_ops::watch::parse(&args)?, cwd)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Check => reporting::check(cli),
-        Command::Doctor => reporting::doctor(cli),
-        Command::Diff => apply::diff(cli),
-        Command::Apply { detailed_exitcode } => apply::apply(cli, *detailed_exitcode),
-        Command::Rollback => apply::rollback(cli),
+        Command::Doctor { vm } => reporting::doctor(cli, vm.as_deref()),
+        Command::Diff => apply::diff(&context, ui).map(|()| ExitCode::SUCCESS),
+        Command::Apply { detailed_exitcode } => {
+            apply::apply(&context, ui).map(|changed| changed_code(changed, *detailed_exitcode))
+        }
+        Command::Rollback => apply::rollback(&context, ui).map(|()| ExitCode::SUCCESS),
         Command::Set {
             target,
             changes,
@@ -358,23 +402,23 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                 .iter()
                 .map(|change| rampire_ops::set::parse_assignment(change))
                 .collect::<Result<Vec<_>, _>>()?;
-            let path = rampire_ops::set::set(&draft(cli), target, &changes)?;
-            println!("changed {}", path.display());
-            if *no_apply {
-                println!("not applied: run rampire apply when ready");
-                return Ok(ExitCode::SUCCESS);
-            }
-            apply::apply(cli, false)
+            lifecycle::set(&context, ui, target, &changes, *no_apply).map(|_| ExitCode::SUCCESS)
         }
-        Command::Logs { follow, since } => controller::logs(*follow, since.as_deref()),
-        Command::Recover { vm, reason } => controller::recover(cli, vm, reason),
+        Command::Logs { follow, since, vm } => {
+            controller::logs(*follow, since.as_deref(), vm.as_deref())
+        }
+        Command::Recover { vm, reason } => {
+            flows::recover(&context, ui, vm, reason).map(|()| ExitCode::SUCCESS)
+        }
         Command::Vm { command } => match command {
+            VmCommand::List => reporting::vm_list(cli),
             VmCommand::Attest {
                 vm,
                 drifted,
                 restart,
                 no_apply,
-            } => vm_lifecycle::vm_attest(cli, vm.as_deref(), *drifted, *restart, *no_apply),
+            } => lifecycle::vm_attest(&context, ui, vm.as_deref(), *drifted, *restart, *no_apply)
+                .map(|()| ExitCode::SUCCESS),
             VmCommand::Add {
                 vm,
                 fix_xml,
@@ -384,23 +428,27 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                 min_ram,
                 max_ram,
                 free_ram,
-            } => vm_lifecycle::vm_add(
-                cli,
-                &vm_lifecycle::AddOptions {
-                    vm,
+            } => lifecycle::vm_add(
+                &context,
+                ui,
+                &lifecycle::AddOptions {
+                    vm: vm.clone(),
                     fix_xml: *fix_xml,
-                    review: review.as_deref(),
-                    kernel: kernel.as_deref(),
+                    review: review.clone(),
+                    kernel: kernel.clone(),
                     priority: *priority,
-                    min_ram: min_ram.as_deref(),
-                    max_ram: max_ram.as_deref(),
-                    free_ram: free_ram.as_deref(),
+                    min_ram: min_ram.clone(),
+                    max_ram: max_ram.clone(),
+                    free_ram: free_ram.clone(),
                 },
-            ),
-            VmCommand::Remove { vm, forget } => vm_lifecycle::vm_remove(cli, vm, *forget),
+            )
+            .map(|_| ExitCode::SUCCESS),
+            VmCommand::Remove { vm, forget } => {
+                lifecycle::vm_remove(&context, ui, vm, *forget).map(|()| ExitCode::SUCCESS)
+            }
         },
         Command::ClearLatch { vm, reason, apply } => {
-            let target = target(cli, Some(vm))?;
+            let target = context.target(Some(vm))?;
             rampire_host::operator_actions::clear_latch(
                 reason,
                 &target,
@@ -409,16 +457,84 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
             )?;
             Ok(ExitCode::SUCCESS)
         }
+        Command::Generate { what, directory } => generate(*what, directory),
     }
 }
 
+/// `rampire` alone: the TUI on a terminal, else the help.
+fn tui_or_help(cli: &Cli) -> Result<ExitCode, String> {
+    use clap::CommandFactory;
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        let mut context = context(cli);
+        context.via = "tui";
+        rampire_ops::tui::run(context)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    Cli::command()
+        .print_long_help()
+        .map_err(|error| error.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `rampire generate`: what the packages install beside the binary, made
+/// from the same command definitions as `--help`.
+fn generate(what: Generated, directory: &Path) -> Result<ExitCode, String> {
+    use clap::CommandFactory;
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let mut command = Cli::command();
+    match what {
+        Generated::Man => {
+            command.build();
+            man_pages(&command, "rampire", directory)?;
+        }
+        Generated::Completions => {
+            for shell in [
+                clap_complete::Shell::Bash,
+                clap_complete::Shell::Zsh,
+                clap_complete::Shell::Fish,
+            ] {
+                clap_complete::generate_to(shell, &mut command, "rampire", directory)
+                    .map_err(|error| format!("write {shell} completion: {error}"))?;
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `name(8)` for `command`, and a page for each of its visible
+/// subcommands, named after the words that run it (`rampire-vm-add`).
+fn man_pages(command: &clap::Command, name: &str, directory: &Path) -> Result<(), String> {
+    let page = command
+        .clone()
+        .name(name.to_owned())
+        .bin_name(name.replace('-', " "));
+    let path = directory.join(format!("{name}.8"));
+    let mut text = Vec::new();
+    clap_mangen::Man::new(page)
+        .section("8")
+        .manual("RAMpire")
+        .source(format!("RAMpire {}", env!("CARGO_PKG_VERSION")))
+        .render(&mut text)
+        .map_err(|error| format!("render {}: {error}", path.display()))?;
+    std::fs::write(&path, text).map_err(|error| format!("write {}: {error}", path.display()))?;
+    for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+        if sub.get_name() == "help" {
+            continue;
+        }
+        man_pages(sub, &format!("{name}-{}", sub.get_name()), directory)?;
+    }
+    Ok(())
+}
+
 /// The views' own options, from the shared ones.
-fn view_args(cli: &Cli, view: &View) -> Result<Vec<String>, String> {
+fn view_args(context: &Context, view: &View) -> Result<Vec<String>, String> {
     let mut args = vec![
         "--config".to_owned(),
-        path_text(&running(cli))?,
+        path_text(&context.running())?,
         "--connect".to_owned(),
-        connection(cli)?,
+        context.connection()?,
         "--interval-seconds".to_owned(),
         view.interval_seconds.to_string(),
     ];
@@ -434,110 +550,11 @@ fn path_text(path: &Path) -> Result<String, String> {
         .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
 }
 
-/// `--connect`, or the configuration's libvirt connection.
-fn connection(cli: &Cli) -> Result<String, String> {
-    match &cli.connect {
-        Some(uri) => Ok(uri.clone()),
-        None => Ok(rampire_core::settings::load_globals(&running(cli))?.libvirt_uri),
-    }
-}
-
-fn target(cli: &Cli, vm: Option<&str>) -> Result<Target, String> {
-    Ok(Target {
-        config: running(cli),
-        vm: vm.map(str::to_owned),
-        connection: connection(cli)?,
-    })
-}
-
-fn applied_root() -> &'static Path {
-    Path::new(rampire_ops::applied::APPLIED_ROOT)
-}
-
-fn libvirt(cli: &Cli) -> Result<rampire_ops::attest::Libvirt, String> {
-    Ok(rampire_ops::attest::Libvirt {
-        connection: connection(cli)?,
-        timeout: std::time::Duration::from_secs(60),
-    })
-}
-
-/// Ask on a terminal; with `--yes` the answer is yes. Without a terminal and
-/// without `--yes` nothing is changed.
-fn confirm(cli: &Cli, question: &str) -> Result<bool, String> {
-    if cli.yes {
-        return Ok(true);
-    }
-    if !std::io::stdin().is_terminal() {
-        return Err("no terminal to ask on: pass --yes to go ahead".to_owned());
-    }
-    print!("{question} [y/N] ");
-    std::io::stdout()
-        .flush()
-        .map_err(|error| error.to_string())?;
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .map_err(|error| error.to_string())?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
-}
-
-/// A private temporary directory, removed when dropped. The commands run as
-/// root, so it is always a new directory that only its owner can enter: no
-/// other user can plant, read or swap a file in it.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(label: &str) -> Result<Self, String> {
-        use std::os::unix::fs::DirBuilderExt;
-        for attempt in 0..100_u32 {
-            let path = std::env::temp_dir()
-                .join(format!("rampire-{label}-{}-{attempt}", std::process::id()));
-            match std::fs::DirBuilder::new().mode(0o700).create(&path) {
-                Ok(()) => return Ok(Self(path)),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(format!("create {}: {error}", path.display())),
-            }
-        }
-        Err(format!(
-            "no free temporary directory name for {label} in {}",
-            std::env::temp_dir().display()
-        ))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        // Best effort: a leftover private directory harms nothing.
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::CommandFactory;
     use rampire_ops::reports::{CheckReport, CheckSchema};
-
-    #[test]
-    fn temporary_directories_are_new_private_and_removed() {
-        use std::os::unix::fs::PermissionsExt;
-        let first = TempDir::new("test").unwrap();
-        let second = TempDir::new("test").unwrap();
-        assert_ne!(first.path(), second.path());
-        let mode = std::fs::metadata(first.path())
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o700);
-        let path = first.path().to_path_buf();
-        std::fs::write(path.join("file"), "x").unwrap();
-        drop(first);
-        assert!(!path.exists());
-    }
 
     #[test]
     fn the_command_line_is_consistent() {
@@ -548,15 +565,18 @@ mod tests {
     fn options_go_before_or_after_the_command() {
         let cli = Cli::try_parse_from(["rampire", "status", "--config", "/tmp/x", "web"]).unwrap();
         assert_eq!(cli.config, Some(PathBuf::from("/tmp/x")));
-        assert_eq!(running(&cli), PathBuf::from("/tmp/x"));
-        assert!(matches!(cli.command, Command::Status { vm: Some(ref vm) } if vm == "web"));
+        assert_eq!(context(&cli).running(), PathBuf::from("/tmp/x"));
+        assert!(matches!(cli.command, Some(Command::Status { vm: Some(ref vm) }) if vm == "web"));
         let cli = Cli::try_parse_from(["rampire", "--yes", "recover", "web", "checked"]).unwrap();
         assert!(cli.yes);
         assert!(Cli::try_parse_from(["rampire", "recover", "web"]).is_err());
-        assert!(Cli::try_parse_from(["rampire"]).is_err());
+        // No command opens the TUI on a terminal, or prints the help.
+        assert!(Cli::try_parse_from(["rampire"]).unwrap().command.is_none());
         let cli =
             Cli::try_parse_from(["rampire", "set", "web", "priority=150", "max_ram=12GB"]).unwrap();
-        assert!(matches!(cli.command, Command::Set { ref changes, .. } if changes.len() == 2));
+        assert!(
+            matches!(cli.command, Some(Command::Set { ref changes, .. }) if changes.len() == 2)
+        );
         assert!(Cli::try_parse_from(["rampire", "set", "web"]).is_err());
         assert!(Cli::try_parse_from(["rampire", "vm", "attest", "web", "--restart"]).is_ok());
         assert!(Cli::try_parse_from(["rampire", "vm", "attest", "--drifted"]).is_ok());
@@ -575,14 +595,22 @@ mod tests {
         .unwrap();
         assert!(matches!(
             cli.command,
-            Command::Vm {
+            Some(Command::Vm {
                 command: VmCommand::Add {
                     fix_xml: true,
                     priority: 50,
                     ..
                 }
-            }
+            })
         ));
+        assert!(matches!(
+            Cli::try_parse_from(["rampire", "doctor", "web"])
+                .unwrap()
+                .command,
+            Some(Command::Doctor { vm: Some(_) })
+        ));
+        assert!(Cli::try_parse_from(["rampire", "vm", "list", "--json"]).is_ok());
+        assert!(Cli::try_parse_from(["rampire", "logs", "--vm", "web"]).is_ok());
         assert!(Cli::try_parse_from(["rampire", "vm", "remove", "web"]).is_ok());
         assert!(Cli::try_parse_from(["rampire", "vm", "attest", "web", "--drifted"]).is_err());
     }
@@ -611,7 +639,7 @@ mod tests {
     fn the_default_configuration_is_etc_rampire() {
         let cli = Cli::try_parse_from(["rampire", "check"]).unwrap();
         if std::env::var_os("RAMPIRE_CONFIG").is_none() {
-            assert_eq!(draft(&cli), PathBuf::from("/etc/rampire"));
+            assert_eq!(context(&cli).draft(), PathBuf::from("/etc/rampire"));
         }
     }
 }

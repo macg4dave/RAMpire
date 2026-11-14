@@ -1,24 +1,23 @@
-//! The read-only reports: `status`, `check` and `doctor`, as text for a
-//! person or as a versioned JSON document with `--json`.
+//! The read-only reports: `status`, `check`, `doctor` and `vm list`, as
+//! text for a person or as a versioned JSON document with `--json`.
 
 use std::process::ExitCode;
 
-use rampire_core::{ControlHealth, ControllerStatusSnapshot};
 use rampire_host::config::HostSettings;
+use rampire_ops::context::{applied_root, SERVICE_ACCOUNT};
 use rampire_ops::reports::{
-    CheckReport, CheckSchema, CheckedVm, DoctorReport, DoctorSchema, StatusReport,
+    status_line, CheckReport, CheckSchema, CheckedVm, DoctorReport, DoctorSchema, StatusReport,
     StatusReportSchema,
 };
 use serde::Serialize;
 
-use crate::{
-    applied_root, connection, draft, exit, libvirt, running, target, Cli, SERVICE_ACCOUNT,
-};
+use crate::{context, exit, Cli};
 
 pub(crate) fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
+    let context = context(cli);
     let names = match vm {
         Some(vm) => vec![vm.to_owned()],
-        None => HostSettings::load(&running(cli))
+        None => HostSettings::load(&context.running())
             .map_err(|error| error.to_string())?
             .vms
             .into_iter()
@@ -30,16 +29,12 @@ pub(crate) fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
     let mut vms = Vec::new();
     let mut unavailable = Vec::new();
     for name in &names {
-        let mut bytes = Vec::new();
-        let read = rampire_host::operator_actions::status(&target(cli, Some(name))?, &mut bytes)
-            .and_then(|()| {
-                rampire_core::parse_controller_status(&bytes).map_err(|error| error.to_string())
-            });
-        match read {
+        match rampire_ops::inventory::read_status(&context, name) {
             Ok(status) => vms.push(status),
             Err(reason) => unavailable.push(rampire_ops::reports::UnavailableVm {
                 vm_name: name.clone(),
-                state: libvirt(cli)
+                state: context
+                    .libvirt()
                     .and_then(|libvirt| libvirt.state(name))
                     .unwrap_or_else(|_| "unknown".to_owned()),
                 reason,
@@ -76,52 +71,6 @@ pub(crate) fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// One VM's status in a line a person can read.
-pub(crate) fn status_line(status: &ControllerStatusSnapshot) -> String {
-    let state = if status.actuation_latched {
-        format!(
-            "latched: {}",
-            status
-                .latch_reason
-                .as_deref()
-                .unwrap_or("no reason recorded")
-        )
-    } else {
-        match status.control_health {
-            ControlHealth::Converged => "steady".to_owned(),
-            ControlHealth::Growing => "growing".to_owned(),
-            ControlHealth::Shrinking => "shrinking".to_owned(),
-            ControlHealth::RecoveryRequired => "needs recovery: see rampire recover".to_owned(),
-            ControlHealth::Latched => "latched".to_owned(),
-        }
-    };
-    let guest = match &status.guest_input.error {
-        Some(error) => format!("; guest: {error}"),
-        None => String::new(),
-    };
-    format!(
-        "{}: {} of at most {}, {state}{}{guest}",
-        status.vm_name,
-        size(status.current_bytes),
-        size(status.maximum_target_bytes),
-        if status.observe_only {
-            " (observe only)"
-        } else {
-            ""
-        },
-    )
-}
-
-fn size(bytes: u64) -> String {
-    const MIB: u64 = 1 << 20;
-    const GIB: u64 = 1 << 30;
-    if bytes >= GIB {
-        format!("{:.1} GiB", bytes as f64 / GIB as f64)
-    } else {
-        format!("{} MiB", bytes / MIB)
-    }
-}
-
 fn print_json<T: Serialize>(document: &T) -> Result<(), String> {
     let text = serde_json::to_string_pretty(document).map_err(|error| error.to_string())?;
     println!("{text}");
@@ -129,7 +78,7 @@ fn print_json<T: Serialize>(document: &T) -> Result<(), String> {
 }
 
 pub(crate) fn check(cli: &Cli) -> Result<ExitCode, String> {
-    let report = rampire_ops::check::run(&draft(cli))?;
+    let report = rampire_ops::check::run(&context(cli).draft())?;
     let code = ExitCode::from(if report.passed() {
         exit::SUCCESS
     } else {
@@ -163,26 +112,30 @@ pub(crate) fn check(cli: &Cli) -> Result<ExitCode, String> {
     Ok(code)
 }
 
-pub(crate) fn doctor(cli: &Cli) -> Result<ExitCode, String> {
-    let findings = rampire_ops::doctor::run(&connection(cli)?, SERVICE_ACCOUNT, applied_root());
+/// `doctor`: the host's checks and a line per managed VM, or with a VM
+/// everything about it.
+pub(crate) fn doctor(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
+    let context = context(cli);
+    let findings = match vm {
+        Some(vm) => rampire_ops::doctor_vm::run(&context, vm)?,
+        None => {
+            let mut findings =
+                rampire_ops::doctor::run(&context.connection()?, SERVICE_ACCOUNT, applied_root());
+            findings.extend(rampire_ops::doctor_vm::summaries(&context));
+            findings
+        }
+    };
     let passed = findings.iter().all(|finding| finding.ok);
     if cli.json {
         print_json(&DoctorReport {
             schema: DoctorSchema,
             version: 1,
+            vm: vm.map(str::to_owned),
             passed,
             findings,
         })?;
     } else {
-        for finding in &findings {
-            match &finding.fix {
-                None => println!("ok: {}: {}", finding.check, finding.detail),
-                Some(fix) => {
-                    println!("problem: {}: {}", finding.check, finding.detail);
-                    println!("  fix: {fix}");
-                }
-            }
-        }
+        print!("{}", rampire_ops::doctor::text(&findings));
     }
     Ok(ExitCode::from(if passed {
         exit::SUCCESS
@@ -191,14 +144,13 @@ pub(crate) fn doctor(cli: &Cli) -> Result<ExitCode, String> {
     }))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sizes_read_as_a_person_would_write_them() {
-        assert_eq!(size(512 << 20), "512 MiB");
-        assert_eq!(size(3 << 30), "3.0 GiB");
-        assert_eq!(size((3 << 30) + (512 << 20)), "3.5 GiB");
+/// `vm list`.
+pub(crate) fn vm_list(cli: &Cli) -> Result<ExitCode, String> {
+    let report = rampire_ops::inventory::list(&context(cli))?;
+    if cli.json {
+        print_json(&report)?;
+    } else {
+        print!("{}", rampire_ops::inventory::text(&report));
     }
+    Ok(ExitCode::SUCCESS)
 }

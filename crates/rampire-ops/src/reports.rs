@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use rampire_core::ControllerStatusSnapshot;
+use rampire_core::{ControlHealth, ControllerStatusSnapshot};
 
 use crate::doctor::Finding;
 
@@ -24,6 +24,11 @@ rampire_core::schema_name! {
 rampire_core::schema_name! {
     /// `rampire doctor --json`.
     pub struct DoctorSchema = "rampire.doctor";
+}
+
+rampire_core::schema_name! {
+    /// `rampire vm list --json`.
+    pub struct VmListSchema = "rampire.vm-list";
 }
 
 /// `rampire status --json`: every VM's controller status.
@@ -82,14 +87,144 @@ pub struct CheckedVm {
     pub problem: Option<String>,
 }
 
-/// `rampire doctor --json`.
+/// `rampire doctor --json`, for the host or for one VM.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DoctorReport {
     pub schema: DoctorSchema,
     pub version: u16,
+    /// The VM checked, for `rampire doctor VM`; absent for the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm: Option<String>,
     pub passed: bool,
     pub findings: Vec<Finding>,
+}
+
+/// `rampire vm list --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VmListReport {
+    pub schema: VmListSchema,
+    pub version: u16,
+    pub vms: Vec<ListedVm>,
+}
+
+/// What RAMpire does with a VM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Management {
+    /// The controller runs it.
+    Managed,
+    /// `vm remove` kept its settings, for `vm add` to bring it back.
+    Parked,
+    /// `vm add` wrote its settings but didn't apply them.
+    Unfinished,
+    NotManaged,
+}
+
+impl Management {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Managed => "managed",
+            Self::Parked => "parked",
+            Self::Unfinished => "unfinished",
+            Self::NotManaged => "not managed",
+        }
+    }
+}
+
+/// A problem, with its fix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Problem {
+    pub problem: String,
+    pub fix: String,
+}
+
+/// Whether a guest service has published.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Published {
+    /// A publication was read: it is this old, in seconds.
+    #[serde(rename = "published")]
+    Yes { age_seconds: u64 },
+    /// The guest was asked and has no publication.
+    #[serde(rename = "not_published")]
+    No,
+    /// The guest couldn't be asked: not running, or no guest agent.
+    Unknown,
+}
+
+/// One VM in a [`VmListReport`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListedVm {
+    pub vm_name: String,
+    /// libvirt's state: `running`, `shut off`, ...; `missing` for a managed
+    /// VM libvirt no longer has.
+    pub state: String,
+    pub management: Management,
+    /// A managed VM's status, when it could be read.
+    pub status: Option<ControllerStatusSnapshot>,
+    /// One line about it for a person.
+    pub detail: String,
+    /// For a VM that isn't managed: what `vm add --fix-xml` would change.
+    pub to_fix: Vec<String>,
+    /// For a VM that isn't managed: what would still stop `vm add`.
+    pub problems: Vec<Problem>,
+    /// Whether its guest service has published.
+    pub guest: Published,
+    /// The system in the VM as its definition's libosinfo metadata names
+    /// it, such as `http://debian.org/debian/13`, when it does.
+    pub os_id: Option<String>,
+}
+
+/// One VM's status in a line a person can read, as `rampire status`
+/// prints it.
+pub fn status_line(status: &ControllerStatusSnapshot) -> String {
+    let state = if status.actuation_latched {
+        format!(
+            "latched: {}",
+            status
+                .latch_reason
+                .as_deref()
+                .unwrap_or("no reason recorded")
+        )
+    } else {
+        match status.control_health {
+            ControlHealth::Converged => "steady".to_owned(),
+            ControlHealth::Growing => "growing".to_owned(),
+            ControlHealth::Shrinking => "shrinking".to_owned(),
+            ControlHealth::RecoveryRequired => "needs recovery: see rampire recover".to_owned(),
+            ControlHealth::Latched => "latched".to_owned(),
+        }
+    };
+    let guest = match &status.guest_input.error {
+        Some(error) => format!("; guest: {error}"),
+        None => String::new(),
+    };
+    format!(
+        "{}: {} of at most {}, {state}{}{guest}",
+        status.vm_name,
+        size(status.current_bytes),
+        size(status.maximum_target_bytes),
+        if status.observe_only {
+            " (observe only)"
+        } else {
+            ""
+        },
+    )
+}
+
+/// A size as a person writes it: MiB below a GiB, else GiB to one place.
+pub fn size(bytes: u64) -> String {
+    const MIB: u64 = 1 << 20;
+    const GIB: u64 = 1 << 30;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else {
+        format!("{} MiB", bytes / MIB)
+    }
 }
 
 #[cfg(test)]
@@ -105,6 +240,13 @@ mod tests {
     use super::*;
 
     const GIB: u64 = 1 << 30;
+
+    #[test]
+    fn sizes_read_as_a_person_would_write_them() {
+        assert_eq!(size(512 << 20), "512 MiB");
+        assert_eq!(size(3 << 30), "3.0 GiB");
+        assert_eq!(size((3 << 30) + (512 << 20)), "3.5 GiB");
+    }
 
     fn fixtures() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/json")
@@ -179,6 +321,7 @@ mod tests {
         DoctorReport {
             schema: DoctorSchema,
             version: REPORT_VERSION,
+            vm: None,
             passed: false,
             findings: vec![
                 Finding {
@@ -219,11 +362,57 @@ mod tests {
         assert_eq!(&serde_json::from_str::<T>(&text).unwrap(), document);
     }
 
+    fn vm_list_report() -> VmListReport {
+        VmListReport {
+            schema: VmListSchema,
+            version: REPORT_VERSION,
+            vms: vec![
+                ListedVm {
+                    vm_name: "db".to_owned(),
+                    state: "running".to_owned(),
+                    management: Management::NotManaged,
+                    status: None,
+                    detail: "published 4s ago".to_owned(),
+                    to_fix: vec![
+                        "add the control channel org.rampire.control.0".to_owned(),
+                        "add a 6144 MiB virtio-mem device".to_owned(),
+                    ],
+                    problems: vec![],
+                    guest: Published::Yes { age_seconds: 4 },
+                    os_id: Some("http://debian.org/debian/13".to_owned()),
+                },
+                ListedVm {
+                    vm_name: "old".to_owned(),
+                    state: "shut off".to_owned(),
+                    management: Management::Parked,
+                    status: None,
+                    detail: "parked: rampire vm add old brings it back as it was".to_owned(),
+                    to_fix: vec![],
+                    problems: vec![],
+                    guest: Published::Unknown,
+                    os_id: None,
+                },
+                ListedVm {
+                    vm_name: "web".to_owned(),
+                    state: "running".to_owned(),
+                    management: Management::Managed,
+                    detail: "web: 1.0 GiB of at most 15.0 GiB, steady".to_owned(),
+                    status: status_report().vms.into_iter().next(),
+                    to_fix: vec![],
+                    problems: vec![],
+                    guest: Published::Yes { age_seconds: 0 },
+                    os_id: Some("http://redhat.com/rhel/10.0".to_owned()),
+                },
+            ],
+        }
+    }
+
     #[test]
     fn every_report_matches_its_documented_example() {
         matches_fixture("status-report.json", &status_report());
         matches_fixture("check.json", &check_report());
         matches_fixture("doctor.json", &doctor_report());
+        matches_fixture("vm-list.json", &vm_list_report());
     }
 
     #[test]
@@ -241,6 +430,7 @@ mod tests {
             ("status-report.json", json(&status_report())),
             ("check.json", json(&check_report())),
             ("doctor.json", json(&doctor_report())),
+            ("vm-list.json", json(&vm_list_report())),
         ] {
             std::fs::write(fixtures().join(name), text).unwrap();
         }
