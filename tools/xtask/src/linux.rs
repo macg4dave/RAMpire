@@ -33,11 +33,18 @@ const REMOTE_STATE: &str = "/var/lib/rampire-guest";
 const REMOTE_PRIVATE_STATE: &str = "/var/lib/private/rampire-guest";
 const EVIDENCE_SCHEMA_VERSION: u32 = 1;
 
-const HELP: &str = "linux requires one of:
-  build
-  deploy SSH_DESTINATION --output PATH [--apply]
-  status SSH_DESTINATION
-  uninstall SSH_DESTINATION --output PATH [--apply] [--discard-state]";
+pub const HELP: &str = "Linux development guests (over SSH; the account needs passwordless sudo):
+  cargo xtask linux deploy HOST       install this checkout's guest service, unit,
+                                      RAM monitor and test workload on HOST
+  cargo xtask linux status HOST       what is installed there
+  cargo xtask linux uninstall HOST    remove it, keeping its request state
+  cargo xtask linux build             build the stamped guest binary only
+
+deploy and uninstall act at once and record what they did in
+.artifacts/linux/. Options: --dry-run records what they would do and
+changes nothing; --output PATH writes the record there instead;
+uninstall --discard-state also removes the request state.
+";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Action {
@@ -58,6 +65,26 @@ enum Action {
     },
 }
 
+/// Where deploy and uninstall record what they did when no --output is
+/// given: one file per run under .artifacts/linux/.
+fn default_output(command: &str, target: &str) -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    let host: String = target
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(".artifacts/linux/{host}-{command}-{millis}.json")
+}
+
 fn parse(arguments: &[&str]) -> Result<Action, String> {
     let (command, target, options) = match arguments {
         ["build"] => return Ok(Action::Build),
@@ -69,7 +96,7 @@ fn parse(arguments: &[&str]) -> Result<Action, String> {
         _ => return Err(HELP.to_owned()),
     };
     let mut output = None;
-    let mut apply = false;
+    let mut dry_run = false;
     let mut discard_state = false;
     let mut rest = options.iter();
     while let Some(option) = rest.next() {
@@ -82,7 +109,7 @@ fn parse(arguments: &[&str]) -> Result<Action, String> {
                         .to_string(),
                 );
             }
-            ("--apply", "deploy" | "uninstall") if !apply => apply = true,
+            ("--dry-run", "deploy" | "uninstall") if !dry_run => dry_run = true,
             ("--discard-state", "uninstall") if !discard_state => discard_state = true,
             _ => return Err(HELP.to_owned()),
         }
@@ -90,14 +117,14 @@ fn parse(arguments: &[&str]) -> Result<Action, String> {
     match command {
         "status" => Ok(Action::Status { target }),
         "deploy" => Ok(Action::Deploy {
+            output: output.unwrap_or_else(|| default_output("deploy", &target)),
             target,
-            output: output.ok_or("deploy requires --output PATH")?,
-            apply,
+            apply: !dry_run,
         }),
         _ => Ok(Action::Uninstall {
+            output: output.unwrap_or_else(|| default_output("uninstall", &target)),
             target,
-            output: output.ok_or("uninstall requires --output PATH")?,
-            apply,
+            apply: !dry_run,
             discard_state,
         }),
     }
@@ -494,13 +521,24 @@ mod tests {
             })
         );
         assert_eq!(
-            parse(&["deploy", "guest", "--apply", "--output", "e.json"]),
+            parse(&["deploy", "guest", "--output", "e.json"]),
             Ok(Action::Deploy {
                 target: "guest".to_owned(),
                 output: "e.json".to_owned(),
                 apply: true
             })
         );
+        // A person names the guest; the record has a place of its own.
+        match parse(&["deploy", "user@guest.lan", "--dry-run"]) {
+            Ok(Action::Deploy { output, apply, .. }) => {
+                assert!(!apply);
+                assert!(
+                    output.starts_with(".artifacts/linux/user_guest_lan-deploy-"),
+                    "{output}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
         assert_eq!(
             parse(&[
                 "uninstall",
@@ -512,17 +550,17 @@ mod tests {
             Ok(Action::Uninstall {
                 target: "guest".to_owned(),
                 output: "e.json".to_owned(),
-                apply: false,
+                apply: true,
                 discard_state: true
             })
         );
         for bad in [
             &["config", "x.toml"][..],
             &["package", "--output", "dist"],
-            &["deploy", "guest"],
+            &["deploy", "guest", "--apply"],
             &["deploy", "-oProxyCommand=x", "--output", "e.json"],
             &["deploy", "guest; reboot", "--output", "e.json"],
-            &["status", "guest", "--apply"],
+            &["status", "guest", "--dry-run"],
             &["deploy", "guest", "--output", "e.json", "--discard-state"],
             &["deploy", "guest", "--output"],
             &["uninstall", "guest", "--output", "a", "--output", "b"],

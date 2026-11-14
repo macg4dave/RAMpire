@@ -32,7 +32,7 @@ Before testing on a development or test host, upgrade RAMpire there to the
 current build, without asking: in its checkout, at the commit under test,
 
 ```bash
-tools/build.sh package --install
+tools/build.sh install
 ```
 
 builds the packages in the build container and installs the host package

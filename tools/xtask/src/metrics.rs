@@ -50,11 +50,16 @@ const RECENT_EVENTS: usize = 200;
 /// `samples.csv` rows copied into an incident bundle.
 const BUNDLE_ROWS: usize = 60;
 
-pub const HELP: &str = "Metrics options (read-only stress-test recorder):
-  --config DIR                  Required configuration directory: global.toml
-                                and vms.d/NAME.toml. Optional diagnostic
-                                telemetry paths are not needed or read.
-  --vm NAME                     The VM to record; required with several.
+pub const HELP: &str = "Metrics (a read-only recorder of one VM, or all of them):
+  cargo xtask metrics VM        watch VM live and record the run
+  cargo xtask metrics all       every VM: one recorder each and pool.csv
+  cargo xtask metrics           the only VM, when there is one
+
+Options:
+  --config DIR                  The configuration directory; default the one
+                                the controller runs (its applied copy), or
+                                /etc/rampire before anything is applied.
+  --vm NAME                     The VM, as the first argument does.
                                 `--vm all` records every VM: one recorder
                                 per VM in DIR/<vm>/, plus DIR/pool.csv with
                                 every device, the pool and host memory per
@@ -94,10 +99,32 @@ pub struct Command {
 
 /// `metrics` with its arguments: one VM, or every VM with `--vm all`.
 pub fn execute(args: &[String], repo: &Path) -> Result<(), String> {
-    if pool::requested(args) {
-        return pool::run(args, repo);
+    let args = with_defaults(args, Path::new(rampire_ops::applied::APPLIED_ROOT));
+    if pool::requested(&args) {
+        return pool::run(&args, repo);
     }
-    run(&parse(args)?, repo)
+    run(&parse(&args)?, repo)
+}
+
+/// What a person leaves out: `metrics VM` names the VM (or `all`) without
+/// `--vm`, and the configuration is the one the controller runs, its
+/// applied copy, or the draft before anything is applied.
+fn with_defaults(args: &[String], applied_root: &Path) -> Vec<String> {
+    let mut args = args.to_vec();
+    if args.first().is_some_and(|first| !first.starts_with("--")) {
+        let vm = args.remove(0);
+        args.splice(0..0, ["--vm".to_owned(), vm]);
+    }
+    if !args.iter().any(|arg| arg == "--config") {
+        let current = applied_root.join(rampire_ops::applied::CURRENT);
+        let config = if current.exists() {
+            current
+        } else {
+            PathBuf::from("/etc/rampire")
+        };
+        args.extend(["--config".to_owned(), config.display().to_string()]);
+    }
+    args
 }
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
@@ -1697,6 +1724,25 @@ fn compact_utc(unix_millis: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vm_name_and_the_controllers_configuration_are_defaults() {
+        let strings = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+        let nowhere = Path::new("/nonexistent-applied-root");
+        assert_eq!(
+            with_defaults(&strings(&["web"]), nowhere),
+            strings(&["--vm", "web", "--config", "/etc/rampire"])
+        );
+        assert_eq!(
+            with_defaults(&strings(&["all", "--plain"]), nowhere),
+            strings(&["--vm", "all", "--plain", "--config", "/etc/rampire"])
+        );
+        // Given options are left as they are.
+        assert_eq!(
+            with_defaults(&strings(&["--config", "c", "--vm", "w"]), nowhere),
+            strings(&["--config", "c", "--vm", "w"])
+        );
+    }
 
     fn tracked_config() -> String {
         crate::repo_root()

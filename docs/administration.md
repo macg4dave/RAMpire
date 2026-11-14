@@ -398,7 +398,7 @@ sudo rampire status [VM]    # the controller's status, as JSON
 sudo rampire check          # settings and attestations against the live VMs
 sudo rampire doctor         # what the host needs, with the fix for each problem
 sudo rampire logs --follow  # the controller's journal
-cargo xtask metrics --config /etc/rampire
+cargo xtask metrics VM      # from a checkout: record a VM live
 ```
 
 Each round the controller writes Prometheus metrics to

@@ -77,8 +77,11 @@ site value: pass `-HostName`, set `RAMPIRE_TOP_HOST`, or copy
 ## Recording a run
 
 ```bash
-cargo xtask metrics --config CONFIG [--duration-seconds N]
+cargo xtask metrics VM [--duration-seconds N]
 ```
+
+`--config DIR` picks the configuration; by default it is the one the
+controller runs. With one VM, `cargo xtask metrics` alone records it.
 
 Read-only, like `watch`. On a terminal it opens a live UI: host, device and
 guest panels, a memory chart (host available, guest available, device
@@ -92,7 +95,7 @@ instead. It records until `q`/Ctrl+C or `--duration-seconds`.
 ### Recording every VM
 
 ```bash
-cargo xtask metrics --config CONFIG --vm all [--duration-seconds N]
+cargo xtask metrics all [--duration-seconds N]
 ```
 
 Starts one plain recorder per VM, each in `DIR/<vm>/` with its own
@@ -253,16 +256,20 @@ powershell -ExecutionPolicy Bypass -File tools\windows\Watch-Ram.ps1
 tools/linux/watch-ram.sh
 ```
 
-cargo xtask linux deploy SSH_DESTINATION --output PATH [--apply]
-cargo xtask linux status SSH_DESTINATION
-cargo xtask linux uninstall SSH_DESTINATION --output PATH [--apply] [--discard-state]
+```bash
+cargo xtask linux deploy HOST
+cargo xtask linux status HOST
+cargo xtask linux uninstall HOST [--discard-state]
+```
 
 Install, inspect or remove the Linux guest service on a development guest
 over SSH (the account needs passwordless `sudo`). Deploy builds the stamped
 binary first, installs it with the unit, the RAM monitor
 (`rampire-watch-ram`) and the qualification workload
 (`rampire-workload`), restarts the service and checks what it reads back.
-Without `--apply` they only record what they would do. Uninstall keeps the
+Deploy and uninstall act at once and record what they did in
+`.artifacts/linux/`; `--dry-run` records what they would do and changes
+nothing, and `--output PATH` puts the record elsewhere. Uninstall keeps the
 durable request state unless told to discard it.
 
 cargo xtask linux build
@@ -270,3 +277,18 @@ cargo xtask linux build
 Release-builds the Linux guest service with the checkout's build identity
 (`<commit>` or `<commit>-dirty.<source digest>`) compiled in, and checks that
 the binary reports it.
+
+## API commands
+
+These are for `tools/build.sh`, scripts and recorded evidence runs, not
+for typing: their options are explicit and mostly required, and `cargo
+xtask --help` lists them under "API". They will get man pages; until then
+`--help` is their reference.
+
+| Command | Called by |
+|---|---|
+| `cargo xtask gate` | `tools/build.sh` (the gate) |
+| `cargo xtask package` | `tools/build.sh package` and `install` |
+| `cargo xtask host-run` | Live tests that run the daemon in the foreground with a deadline and a host memory floor |
+| `cargo xtask qualification` | Recorded growth and reclaim trials ([Recording a run](#recording-a-run)) |
+| `cargo xtask preflight`, `cargo xtask windows …` | Windows guests, parked |

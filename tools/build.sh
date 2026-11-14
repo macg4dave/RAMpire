@@ -3,7 +3,7 @@
 #
 #   tools/build.sh [--container | --host HOST | --local] [XTASK ARGUMENTS...]
 #   tools/build.sh install-check [DIRECTORY]
-#   tools/build.sh package [--static] --install
+#   tools/build.sh install
 #
 # With no arguments it runs the gate: a whitespace check here, then format,
 # release build, tests, Clippy and shell syntax for every Linux-buildable
@@ -11,10 +11,10 @@
 # for example `tools/build.sh package --static`, and a package's output
 # directory (dist/ unless --output says otherwise) is copied back here.
 #
-# package --install then installs the host package on this machine with
-# its package manager (dnf or apt), upgrading what is installed, and checks
-# that rampire reports the build just made. This is how a development or
-# test host is kept on the current build.
+# install builds the packages, then installs the host package on this
+# machine with its package manager (dnf or apt), upgrading what is
+# installed, and checks that rampire reports the build just made. This is
+# how a development or test host is kept on the current build.
 #
 # install-check installs the host and guest packages in DIRECTORY (default
 # dist/) in a clean container of each supported family: Debian 13
@@ -117,12 +117,12 @@ fi
 # Where `package` writes, to copy back.
 output=
 install=0
+if [[ $1 == install ]]; then
+  install=1
+  shift
+  set -- package "$@"
+fi
 if [[ $1 == package ]]; then
-  arguments=()
-  for argument in "$@"; do
-    if [[ $argument == --install ]]; then install=1; else arguments+=("$argument"); fi
-  done
-  set -- "${arguments[@]}"
   output=dist
   previous=
   for argument in "$@"; do
@@ -236,7 +236,7 @@ if [[ -n $output ]]; then
   echo >&2 "==> packages in $output/"
 fi
 if (( install )); then
-  [[ -n $output ]] || { echo '--install needs packages, not --print-version' >&2; exit 1; }
+  [[ -n $output ]] || { echo 'install builds packages; --print-version builds none' >&2; exit 1; }
   if command -v dnf >/dev/null; then
     packages=("$output"/rampire-[0-9]*.x86_64.rpm)
     (( ${#packages[@]} == 1 )) && [[ -f ${packages[0]} ]] \
@@ -253,7 +253,7 @@ if (( install )); then
     echo >&2 "==> installing $package with apt"
     sudo apt-get install -y --allow-downgrades "./$package"
   else
-    echo 'package --install needs dnf or apt-get on this machine' >&2
+    echo 'install needs dnf or apt-get on this machine' >&2
     exit 1
   fi
   # A development package's version ends in the build rampire reports:

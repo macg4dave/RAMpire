@@ -16,25 +16,27 @@ use std::process::ExitCode;
 
 const HELP: &str = r#"Repository build and test tooling
 
-Usage:
+Commands:
+  cargo xtask testvm                 test VMs: list, up SCENARIO, down NAME
+  cargo xtask linux deploy HOST      put this checkout's guest on a dev VM
+  cargo xtask metrics VM             watch and record one VM (or all)
+Gate and packages: tools/build.sh (it runs gate and package below, in the
+build container).
+
+API: for tools/build.sh, scripts and recorded evidence runs; their options
+are listed below and will move to man pages:
   cargo xtask gate <format|build|test|lint|checks|local|all>
+  cargo xtask package [--output DIR] [--static] | --print-version
   cargo xtask host-run --config DIR --max-run-seconds N [OPTIONS]
-  cargo xtask preflight VM_NAME ALIAS [OPTIONS]
-  cargo xtask linux build
-  cargo xtask linux deploy SSH_DESTINATION --output PATH [--apply]
-  cargo xtask linux status SSH_DESTINATION
-  cargo xtask linux uninstall SSH_DESTINATION --output PATH [--apply] [--discard-state]
-  cargo xtask windows <check|sync|build|test|lint|fetch|all>
+  cargo xtask qualification <start|run|status|review> [OPTIONS]
+  cargo xtask preflight VM_NAME ALIAS [OPTIONS]          (Windows, parked)
+  cargo xtask windows <check|sync|build|test|lint|fetch|all>  (parked)
   cargo xtask windows deploy MANIFEST --output PATH [--apply]
   cargo xtask windows service-cycle SERVICE --output PATH [--apply]
   cargo xtask windows diagnose-service SERVICE --output PATH
   cargo xtask windows build-status SERVICE --output PATH
   cargo xtask windows uninstall SERVICE --output PATH [--apply]
   cargo xtask windows verify EXPECTED_ED25519_FINGERPRINT --runs N
-  cargo xtask qualification <start|run|status|review> [OPTIONS]
-  cargo xtask metrics [OPTIONS]
-  cargo xtask testvm <up|down|list> ...
-  cargo xtask package [--output DIR] [--static] | --print-version
 
 Host run options (the daemon in the foreground instead of systemd):
   --config DIR                  Required configuration directory.
@@ -129,9 +131,10 @@ fn execute(arguments: &[String]) -> Result<(), String> {
     match arguments.first().map(String::as_str) {
         Some("help" | "--help" | "-h") | None => {
             print!(
-                "{HELP}\n{}\n{}\n{}",
-                metrics::HELP,
+                "{HELP}\n{}\n{}\n{}\n{}",
                 testvm::HELP,
+                linux::HELP,
+                metrics::HELP,
                 package::HELP
             );
             Ok(())

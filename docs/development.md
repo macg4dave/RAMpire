@@ -124,13 +124,13 @@ and captures show which build produced each sample.
 
 ## Development guests
 
-`cargo xtask linux deploy SSH_DESTINATION --output PATH --apply` installs the
-stamped Linux guest, its unit, the RAM monitor and the workload on a
-development VM over SSH (the account needs passwordless `sudo`). It runs on
-a Linux checkout that can reach the guest. Without `--apply` it records
+`cargo xtask linux deploy HOST` installs the stamped Linux guest, its unit,
+the RAM monitor and the workload on a development VM over SSH (the account
+needs passwordless `sudo`). It runs on a Linux checkout that can reach the
+guest, and records what it did in `.artifacts/linux/`; `--dry-run` records
 what it would do. `status` and `uninstall` complete it; see
-[tools](tools.md). Hosts and guests that aren't under development
-install packages, built with `cargo xtask package`.
+[tools](tools.md). Hosts and guests that aren't under development install
+packages, built with `tools/build.sh package`.
 
 Windows deployment is `make windows-deploy` with the site's VM settings.
 
@@ -160,7 +160,7 @@ A development host installs the same packages as any other host, built
 from the checkout:
 
 ```bash
-tools/build.sh package --install    # build in the container, install or upgrade with dnf or apt
+tools/build.sh install              # build in the container, install or upgrade with dnf or apt
 sudo rampire init                   # a new host; an existing one keeps its configuration
 ```
 
@@ -170,7 +170,7 @@ identity (`<commit>`, or `<commit>-dirty.<source digest>`), which
 (`packaging/build.sh`). A development version is `VERSION~dev.COUNT.BUILD`, COUNT being the
 commits to `HEAD`, so a later commit's package always upgrades an earlier
 one, and the release sorts after every development version that led to
-it. `--install` checks that the installed `rampire --version` reports the
+it. `install` checks that the installed `rampire --version` reports the
 build just made.
 `--static` adds the musl tarballs a release ships. The guest packages
 (`rampire-guest`) are in `dist/` too.
