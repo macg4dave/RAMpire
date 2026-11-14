@@ -1,5 +1,5 @@
 //! `cargo xtask package`: the host and guest packages from this checkout,
-//! the same ones CI publishes. It stamps both binaries with the checkout's
+//! the same ones a release ships. It stamps both binaries with the checkout's
 //! build identity, builds them, and runs `packaging/build.sh` (nfpm) for the
 //! RPMs, `.deb`s and, with `--static`, the tarballs. A development host
 //! installs what it builds with its package manager, like any other host.

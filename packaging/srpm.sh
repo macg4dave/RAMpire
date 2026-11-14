@@ -5,7 +5,7 @@
 #   packaging/srpm.sh VERSION BUILD_ID OUTPUT_DIRECTORY [--rebuild]
 #
 # --rebuild also builds the binary RPMs from it (without checking build
-# dependencies), so CI can compare them with the nfpm packages.
+# dependencies), to compare them with the nfpm packages.
 set -euo pipefail
 if (( $# < 3 || $# > 4 )) || { (( $# == 4 )) && [[ $4 != --rebuild ]]; }; then
   echo 'usage: packaging/srpm.sh VERSION BUILD_ID OUTPUT_DIRECTORY [--rebuild]' >&2

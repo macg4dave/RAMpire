@@ -74,7 +74,7 @@ sudo rampire top
 
 `vm add` previews necessary VM-definition changes and guides you through the remaining choices. Some VM changes require a restart before memory management can begin.
 
-**Looking for packages?** Check [GitHub Releases](https://github.com/macg4dave/RAMpire/releases) for published builds. The [release and repository installation guide](docs/releasing.md#installing-from-the-repositories) covers RPM, Debian and Ubuntu packaging. If there is no published release yet, follow the [development build instructions](docs/development.md#installing-a-development-build).
+**Looking for packages?** Check [GitHub Releases](https://github.com/macg4dave/RAMpire/releases) for published builds. The [quick start](docs/quick-start.md) covers installing on RPM, Debian and Ubuntu hosts. If there is no published release yet, build the packages yourself with `tools/build.sh package` ([development builds](docs/development.md#installing-a-development-build)).
 
 ### Requirements
 
@@ -151,7 +151,7 @@ Or edit the TOML, preview the change with `sudo rampire diff` and apply it with 
 | **Windows guest via virtio-mem** | Development paused due to an upstream `viomem` driver issue; not supported for deployment |
 | **Windows via Hyper-V Dynamic Memory** | Planned; not implemented |
 
-**Before running on an important host:** RAMpire is still progressing through its first-release validation. Read [administration and recovery](docs/administration.md) and the [remaining validation checklist](docs/roadmap_next.md). Test with non-critical VMs first.
+**Before running on an important host:** RAMpire is still progressing through its first-release validation. Read [administration and recovery](docs/administration.md) and the [remaining validation checklist](docs/roadmap.md). Test with non-critical VMs first.
 
 ## Documentation
 
@@ -164,7 +164,7 @@ Or edit the TOML, preview the change with `sudo rampire diff` and apply it with 
 | Monitor or record memory behaviour | [Tools and metrics](docs/tools.md) |
 | Use automation or manage more than one host | [Fleet guide](docs/fleet.md) |
 | Build, test or contribute code | [Development](docs/development.md) |
-| Understand what is coming next | [Roadmap](docs/roadmap.md) · [Current work](docs/roadmap_next.md) |
+| Understand what is coming next | [Roadmap](docs/roadmap.md) |
 | Integrate structured outputs | [JSON schemas](docs/json.md) · [Journal events](docs/journal.md) |
 
 ## Contributing and getting help
@@ -189,6 +189,6 @@ RAMpire is free and open-source software licensed under **[GPL-3.0-or-later](LIC
 
 **RAMpire** · *Sucking up idle memory. Feeding hungry VMs.*
 
-[Get started](docs/quick-start.md) · [Explore the source](https://github.com/macg4dave/RAMpire) · [See the roadmap](docs/roadmap_next.md)
+[Get started](docs/quick-start.md) · [Explore the source](https://github.com/macg4dave/RAMpire) · [See the roadmap](docs/roadmap.md)
 
 </div>

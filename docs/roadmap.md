@@ -62,8 +62,8 @@ project's tools; if no tool covers a piece, add the tool first.
   second `list` shows only `minecraft101.toml` (kept) and the domains.
   `~/github/rampire` is a fresh clone at `71f1de7` with `site/testvm.env`
   carried across; `~/scratch` is empty; `rampire.service` is still
-  active. The CI packages in `~/scratch/dist` went with it, so S1.3's
-  download command is needed before S2.
+  active. The packages in `~/scratch/dist` went with it; S1.3's build
+  container makes them again.
 
 ## S1: Tooling and the end-user path
 
@@ -106,7 +106,7 @@ added on top of something else instead of replacing it.
   | `xtask controller-status` | `rampire status --json` | Removed. The one thing it added, the unit's state, is now in `rampire status` (a line first) and its JSON (`controller`, [json](json.md)) |
   | `xtask attestation` | `rampire vm attest` | Removed |
   | `xtask host-deploy` (950 lines) | The host package, plus `rampire check` and `apply` (which check attestations and keep the previous copy) | Removed. A development host installs packages from the new `cargo xtask package` ([development](development.md#installing-a-development-build)) |
-  | `xtask linux package` (`debian.rs`) | `packaging/build.sh` (nfpm) | Removed; merged into `cargo xtask package`, which stamps both binaries and runs `build.sh`. CI runs the same command and takes its version from it, so a development package and a CI one are built one way |
+  | `xtask linux package` (`debian.rs`) | `packaging/build.sh` (nfpm) | Removed; merged into `cargo xtask package`, which stamps both binaries and runs `build.sh` |
   | `xtask watch`, `xtask pool` | `rampire watch`, `rampire top` (the same code) | Removed. `tools/windows/Watch-Pool.ps1` now runs the host's `rampire top`, with no checkout, as [names](names.md) already said it should |
   | `deploy/scripts/clone-vm.sh` | `xtask testvm` (image, seed, boot RAM, `device_mib`) | Removed |
   | `xtask host-run` | Nothing: the daemon in the foreground with a deadline and a host memory floor | Kept; its help now says `--config` is a directory |
@@ -127,10 +127,27 @@ added on top of something else instead of replacing it.
     build in the repository that everyone can build and test in):
     `tools/build.sh` runs the gate, `package` or any `cargo xtask` command
     in the build container (`tools/container/Containerfile`, Docker or
-    Podman), and copies packages back to `dist/`. CI runs the gate and
-    builds the packages with the same command, so a workstation, pc101 and
-    CI build one way. It replaces `tools/gate.sh`; its SSH build host
-    mode stays as `--host`.
+    Podman), and copies packages back to `dist/`, so every workstation and
+    pc101 build one way. It replaces `tools/gate.sh`; its SSH build host
+    mode stays as `--host`. CI is removed (owner, 2026-11-14: too hard to
+    manage); see [After this roadmap](#after-this-roadmap) for what it
+    published. `tools/build.sh install-check` installs the packages on
+    clean Debian 13, Rocky Linux 10 and Fedora 45 containers.
+
+    Built on each system on 2026-11-14:
+
+    | System | Gate | Packages | Notes |
+    |---|---|---|---|
+    | Windows 11, Docker 29.9 | Passed (35 s warm; the first run, with the image, about 13 min) | Built, `install-check` passed on all three | The Windows guest's native checks pass too |
+    | pc101, rootless Podman 5.8 | Passed (7 min 21 s cold) | Built, owned by the user | |
+    | pc101 over SSH (`--host`) | Passed | Stops at "nfpm is required", as documented | pc101 has no nfpm; use the container there |
+
+    Gaps found and fixed: Git for Windows broke the gate's temporary
+    index once `MSYS_NO_PATHCONV` was set for the whole script;
+    `package --print-version` printed nothing to stdout; a link for
+    `target/` on the SSH host counted as an untracked file and broke the
+    build identity. Not a gap: `xtask` doesn't link on Windows, as before
+    this roadmap; the container is the way to run it there.
 - [ ] **S1.4** The docs: one place for each fact. Check that the README,
   quick start, administration and usage pages don't repeat each other or
   disagree, and that each page says who it is for.
@@ -202,5 +219,16 @@ package manager, configuration management, repeatable runs. Each uses its
 
 ## After this roadmap
 
-The first release (signing key, GitHub Pages, COPR, tagging `v0.1.0`) is in
-[releasing](releasing.md#one-time-setup) and is the owner's to set up.
+The first release. CI used to build, sign and publish it on a tag; with
+CI removed, [releasing](releasing.md) builds it with `tools/build.sh` and
+the publishing is the owner's to decide:
+
+- signing the RPMs and `SHA256SUMS`;
+- the GitHub release itself;
+- the apt repository (`packaging/apt-repo.sh` builds it; it was served
+  from GitHub Pages);
+- COPR (`packaging/srpm.sh` makes the source RPM it builds from).
+
+Until the repositories exist, the [quick start](quick-start.md)'s
+`dnf copr` and apt lines have nothing behind them, and a host installs
+the package files from `dist/` or the release page.

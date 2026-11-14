@@ -1,7 +1,7 @@
 # The host and guest RPMs built from source, for COPR (roadmap O2.7).
 # packaging/srpm.sh fills in @VERSION@ and @BUILD_ID@ and builds the
 # source RPM. The files and scripts match the nfpm packages in
-# rampire.nfpm.yaml and rampire-guest.nfpm.yaml; CI compares the two.
+# rampire.nfpm.yaml and rampire-guest.nfpm.yaml; keep the two in step.
 #
 # The build fetches the crates named in Cargo.lock (--locked), so the COPR
 # project needs network access during builds.

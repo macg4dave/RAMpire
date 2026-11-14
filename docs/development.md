@@ -1,12 +1,12 @@
 # Development
 
 How to build, check and test this repository, and which checks need which
-platform. [The roadmap](roadmap.md) holds intended design; open work is in
-[the next roadmap](roadmap_next.md);
+platform. Open work is in [the roadmap](roadmap.md);
 [the Rust standards](../.github/prompts/rust.md) hold coding rules;
 [administration](administration.md) covers installing and running the
-product; the roadmap also holds
-[the rule for importing third-party code](roadmap.md#importing-third-party-code).
+product. The rule for importing third-party code is in the previous
+roadmap (`git show 71f1de7~1:docs/roadmap.md`, "Importing third-party
+code").
 
 ## Workspace
 
@@ -32,7 +32,7 @@ workstation with Docker or Podman, Windows and macOS included:
 ```bash
 tools/build.sh                       # the gate
 tools/build.sh package --static      # the packages, into dist/
-tools/build.sh test -p rampire-ops   # any cargo xtask command
+tools/build.sh install-check         # install dist/ on clean Debian 13, Rocky 10 and Fedora 45
 ```
 
 It checks whitespace in the working tree against `HEAD`, then runs
@@ -40,17 +40,26 @@ It checks whitespace in the working tree against `HEAD`, then runs
 release build, all tests and Clippy with warnings denied for every
 Linux-buildable crate, and `bash -n` on every shell script. On a Windows
 workstation with Rust it also runs the Windows guest's tests and Clippy
-natively. CI runs the gate and builds the packages with the same command.
+natively.
 
 The build container is
 [tools/container/Containerfile](../tools/container/Containerfile): Rust,
 rustfmt, Clippy, the musl target, nfpm and rpm at fixed versions. It is
 built on first use and again whenever that file changes; Cargo's registry
 and `target/` stay in the volumes `rampire-cargo` and `rampire-target`.
+The first run downloads the Rust image and compiles everything, about ten
+minutes; later runs take seconds to a few minutes. `docker volume rm
+rampire-cargo rampire-target` starts it cold again.
 The container gets the working tree as it is, uncommitted and untracked
 (not ignored) files included, with `.git`, so a package built there is
 stamped with the checkout's build identity. Nothing else on the
 workstation is visible to it.
+
+`install-check` installs the host and guest packages from `dist/` in a
+clean container of each family and checks that each installs with its
+dependencies, reports the build, and leaves the service account and both
+units. It doesn't start anything: that is what the `testvm` scenarios are
+for.
 
 Two other builders, for a machine without a container engine:
 
@@ -161,7 +170,7 @@ identity (`<commit>`, or `<commit>-dirty.<source digest>`), which
 `rampire --version` reports, and builds the RPMs and `.deb`s with nfpm
 (`packaging/build.sh`). A development version is `VERSION~dev.BUILD`, so
 it sorts before the release and an upgrade to that release replaces it.
-`--static` adds the musl tarballs CI publishes. The guest packages
+`--static` adds the musl tarballs a release ships. The guest packages
 (`rampire-guest`) are in `dist/` too.
 
 Upgrading a running host is the package manager's upgrade: the package
