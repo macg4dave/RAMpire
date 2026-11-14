@@ -148,6 +148,14 @@ if (( gate )); then
   git diff --check HEAD "$tree"
 fi
 
+# Before new packages are copied back, remove what an earlier build left in
+# the output directory, so it holds one version (as cargo xtask package
+# does in the builder).
+clear_output() {
+  [[ -d $output ]] || return 0
+  find "$output" -maxdepth 1 -type f \( -name SHA256SUMS -o     \( -name 'rampire*' \( -name '*.rpm' -o -name '*.deb' -o -name '*.tar.gz' \) \) \) -delete
+}
+
 # The files sent to a builder, as a tar stream on stdout.
 payload() {
   {
@@ -189,7 +197,7 @@ case $builder in
         cargo run --quiet --locked -p xtask -- "$@"
         if [ -n "$RAMPIRE_BUILD_OUTPUT" ]; then tar -c -f - "$RAMPIRE_BUILD_OUTPUT" >&3; fi
       ' bash "$@" |
-      if [[ -n $output ]]; then tar -x -f -; else cat; fi
+      if [[ -n $output ]]; then clear_output; tar -x -f -; else cat; fi
     ;;
   host)
     remote_dir=${RAMPIRE_BUILD_DIR:-}
@@ -218,6 +226,7 @@ case $builder in
       . \"\$HOME/.cargo/env\" 2>/dev/null || true
       cargo run --quiet --locked -p xtask --$quoted"
     if [[ -n $output ]]; then
+      clear_output
       "$ssh" -o BatchMode=yes "$host" "tar -c -C '$remote_dir/src' -f - '$output'" | tar -x -f -
     fi
     ;;
@@ -229,12 +238,16 @@ fi
 if (( install )); then
   [[ -n $output ]] || { echo '--install needs packages, not --print-version' >&2; exit 1; }
   if command -v dnf >/dev/null; then
-    package=$(ls "$output"/rampire-[0-9]*.x86_64.rpm)
+    packages=("$output"/rampire-[0-9]*.x86_64.rpm)
+    (( ${#packages[@]} == 1 )) && [[ -f ${packages[0]} ]]       || { echo "expected one host package in $output/, found: ${packages[*]}" >&2; exit 1; }
+    package=${packages[0]}
     # dnf install of a local file installs it, or upgrades the installed one.
     echo >&2 "==> installing $package with dnf"
     sudo dnf install -y "./$package"
   elif command -v apt-get >/dev/null; then
-    package=$(ls "$output"/rampire_*_amd64.deb)
+    packages=("$output"/rampire_*_amd64.deb)
+    (( ${#packages[@]} == 1 )) && [[ -f ${packages[0]} ]]       || { echo "expected one host package in $output/, found: ${packages[*]}" >&2; exit 1; }
+    package=${packages[0]}
     echo >&2 "==> installing $package with apt"
     sudo apt-get install -y --allow-downgrades "./$package"
   else
