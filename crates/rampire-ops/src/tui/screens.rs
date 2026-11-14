@@ -282,7 +282,7 @@ fn published_span<'a>(theme: &Theme, guest: &Published) -> Span<'a> {
         Published::No => widgets::marked(
             theme,
             Icon::Problem,
-            "guest not published".to_owned(),
+            "guest service not installed".to_owned(),
             Tone::Warn,
         ),
         Published::Unknown => Span::styled("guest unknown", theme.dim()),
@@ -605,39 +605,39 @@ fn doctor_screen(area: Rect, buf: &mut Buffer, app: &App) {
             ));
         }
     }
-    // Keep the chosen finding in view.
-    let at = lines
+    // Each line wrapped to the screen, the chosen finding's rows marked.
+    let mut rows: Vec<(Line, bool)> = Vec::new();
+    for (line, selected) in lines {
+        let prefix = if selected {
+            Span::styled(format!("{} ", theme.icon(Icon::Pointer)), theme.selected())
+        } else {
+            Span::styled("  ", theme.base())
+        };
+        let spans: Vec<Span> = std::iter::once(prefix)
+            .chain(line.spans.into_iter().map(|span| {
+                if selected {
+                    span.style(theme.selected())
+                } else {
+                    span
+                }
+            }))
+            .collect();
+        for row in hard_wrap(Line::from(spans), inner.width as usize) {
+            rows.push((row, selected));
+        }
+    }
+    // Keep the chosen finding, and the fix beneath it, in view.
+    let last = rows
         .iter()
-        .position(|(_, selected)| *selected)
+        .rposition(|(_, selected)| *selected)
         .unwrap_or(0);
     let height = inner.height as usize;
-    let start = (at + 2).saturating_sub(height);
-    let shown: Vec<Line> = lines
+    let start = (last + 3).saturating_sub(height);
+    let shown: Vec<Line> = rows
         .into_iter()
         .skip(start)
         .take(height)
-        .map(|(line, selected)| {
-            if selected {
-                Line::from(
-                    std::iter::once(Span::styled(
-                        format!("{} ", theme.icon(Icon::Pointer)),
-                        theme.selected(),
-                    ))
-                    .chain(
-                        line.spans
-                            .into_iter()
-                            .map(|span| span.style(theme.selected())),
-                    )
-                    .collect::<Vec<_>>(),
-                )
-            } else {
-                Line::from(
-                    std::iter::once(Span::styled("  ", theme.base()))
-                        .chain(line.spans)
-                        .collect::<Vec<_>>(),
-                )
-            }
-        })
+        .map(|(line, _)| line)
         .collect();
     Paragraph::new(shown).style(theme.base()).render(inner, buf);
 }
@@ -902,27 +902,48 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
 /// style.
 fn hard_wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     let width = width.max(1);
+    // Words with the spaces after them, each with its span's style.
+    let mut words: Vec<(String, ratatui::style::Style)> = Vec::new();
+    for span in line.spans {
+        let mut word = String::new();
+        for character in span.content.chars() {
+            if character != ' ' && word.ends_with(' ') {
+                words.push((std::mem::take(&mut word), span.style));
+            }
+            word.push(character);
+        }
+        if !word.is_empty() {
+            words.push((word, span.style));
+        }
+    }
+    let cells = |text: &str| Span::raw(text.to_owned()).width();
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut row: Vec<Span<'static>> = Vec::new();
     let mut used = 0;
-    for span in line.spans {
-        let style = span.style;
+    for (word, style) in words {
+        let trimmed = cells(word.trim_end());
+        if used > 0 && used + trimmed > width {
+            rows.push(Line::from(std::mem::take(&mut row)));
+            used = 0;
+        }
+        if trimmed <= width {
+            used += cells(&word);
+            row.push(Span::styled(word, style));
+            continue;
+        }
+        // A word wider than a row is cut where the row ends.
         let mut piece = String::new();
-        for character in span.content.chars() {
-            let cell = Span::raw(character.to_string()).width();
+        for character in word.chars() {
+            let cell = cells(&character.to_string());
             if used + cell > width {
-                if !piece.is_empty() {
-                    row.push(Span::styled(std::mem::take(&mut piece), style));
-                }
+                row.push(Span::styled(std::mem::take(&mut piece), style));
                 rows.push(Line::from(std::mem::take(&mut row)));
                 used = 0;
             }
             piece.push(character);
             used += cell;
         }
-        if !piece.is_empty() {
-            row.push(Span::styled(piece, style));
-        }
+        row.push(Span::styled(piece, style));
     }
     rows.push(Line::from(row));
     rows
@@ -1212,6 +1233,11 @@ mod tests {
         let rows = hard_wrap(Line::from("abcdef"), 4);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].to_string(), "ef");
+        let rows = hard_wrap(Line::from("one two three"), 8);
+        assert_eq!(
+            rows.iter().map(|row| row.to_string()).collect::<Vec<_>>(),
+            ["one two ", "three"]
+        );
     }
 
     #[test]
