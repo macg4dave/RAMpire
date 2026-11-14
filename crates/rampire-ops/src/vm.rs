@@ -214,15 +214,16 @@ pub fn inspect(xml: &str) -> Result<Inspection, String> {
                     };
                     inspection.memory_bytes = libvirt_bytes(raw.trim(), &unit)?;
                 }
-                if let Some((current, Some(field), unit)) = device.as_mut() {
-                    let raw = text.decode().map_err(|error| error.to_string())?;
-                    let bytes = libvirt_bytes(raw.trim(), unit)?;
-                    match *field {
-                        "size" => current.size_bytes = bytes,
-                        "block" => current.block_bytes = bytes,
-                        _ => current.requested_bytes = bytes,
+                if let Some((current, field, unit)) = device.as_mut() {
+                    if let Some(field) = field.take() {
+                        let raw = text.decode().map_err(|error| error.to_string())?;
+                        let bytes = libvirt_bytes(raw.trim(), unit)?;
+                        match field {
+                            "size" => current.size_bytes = bytes,
+                            "block" => current.block_bytes = bytes,
+                            _ => current.requested_bytes = bytes,
+                        }
                     }
-                    device.as_mut().unwrap().1 = None;
                 }
             }
             Event::End(element) => {

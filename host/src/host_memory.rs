@@ -1,10 +1,10 @@
 //! Host-side (not guest-side) available-memory gate. Growing the virtio-mem
-//! device consumes RHEL host RAM; a grow request must never be sent unless
-//! the host itself has enough free memory left over after the reserved
-//! headroom, shared with `cargo xtask live-resize --host-reserve-bytes`
-//! safety check.
+//! device consumes host RAM; a grow request must never be sent unless the
+//! host itself has enough free memory left over after the reserved headroom.
 
 use std::fs;
+
+use rampire_core::meminfo_bytes;
 
 /// Admission leaves slack above the hard reserve for host activity between
 /// observations. The final effect-boundary check still enforces the reserve.
@@ -58,51 +58,9 @@ impl HostMemorySource for ProcMeminfoSource {
     }
 }
 
-/// One `/proc/meminfo` field (`MemAvailable`, `SwapFree`, ...) in bytes.
-pub fn meminfo_bytes(contents: &str, field: &str) -> Result<u64, String> {
-    for line in contents.lines() {
-        let Some(rest) = line
-            .strip_prefix(field)
-            .and_then(|rest| rest.strip_prefix(':'))
-        else {
-            continue;
-        };
-        let value_kib: u64 = rest
-            .trim()
-            .strip_suffix("kB")
-            .unwrap_or(rest.trim())
-            .trim()
-            .parse()
-            .map_err(|_| format!("{field} line is not a decimal kB value: {line}"))?;
-        return value_kib
-            .checked_mul(1024)
-            .ok_or_else(|| format!("{field} value overflows canonical bytes: {line}"));
-    }
-    Err(format!("{field} field was not found"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_mem_available_in_kib() {
-        let contents = "MemTotal:       16777216 kB\nMemAvailable:    8388608 kB\n";
-        assert_eq!(
-            meminfo_bytes(contents, "MemAvailable").expect("valid"),
-            8388608 * 1024
-        );
-    }
-
-    #[test]
-    fn rejects_missing_field() {
-        assert!(meminfo_bytes("MemTotal: 100 kB\n", "MemAvailable").is_err());
-    }
-
-    #[test]
-    fn rejects_kibibyte_overflow() {
-        assert!(meminfo_bytes("MemAvailable: 18446744073709551615 kB\n", "MemAvailable").is_err());
-    }
 
     #[test]
     fn grow_headroom_accepts_exact_reserve_and_shrinks() {

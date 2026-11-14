@@ -26,11 +26,10 @@ pub use config::ServiceConfig;
 #[cfg(windows)]
 pub use demand::{native_memory_resource_notifications, WindowsMemoryResourceNotificationApi};
 pub use demand::{
-    process_session_id, DemandError, MemoryResourceNotificationApi,
-    MemoryResourceNotificationCollector, MemoryResourceNotificationKind,
-    MemoryResourceNotificationState, MemoryResourceNotificationTelemetry, MemoryTelemetry,
-    MemoryTelemetrySnapshot, NativeMemoryTelemetry, RawTelemetryEnvelope, SystemTelemetryClock,
-    TelemetryClock, UnavailableMemoryResourceNotifications,
+    DemandError, MemoryResourceNotificationApi, MemoryResourceNotificationCollector,
+    MemoryResourceNotificationKind, MemoryResourceNotificationState,
+    MemoryResourceNotificationTelemetry, MemoryTelemetry, MemoryTelemetrySnapshot,
+    NativeMemoryTelemetry, RawTelemetryEnvelope, UnavailableMemoryResourceNotifications,
 };
 pub use error::{ConfigurationError, RuntimeWiringError, ServiceHostError};
 pub use event_log::{

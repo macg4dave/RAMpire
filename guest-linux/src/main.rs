@@ -5,7 +5,8 @@ use std::sync::Arc;
 use rampire_core::settings::{LINUX_CONTROL_PATH, LINUX_SERVICE_NAME};
 use rampire_guest::requests::GuestIdentity;
 use rampire_guest::serve::{serve, Platform, Sources};
-use rampire_guest_linux::clock::SystemClock;
+use rampire_guest::worker::SystemClock;
+use rampire_guest_linux::clock::boot_uptime_millis;
 use rampire_guest_linux::meminfo::ProcMeminfo;
 use rampire_guest_linux::pressure::ProcPressure;
 use rampire_guest_linux::{channel, kernel_release, readiness, BUILD_ID};
@@ -102,7 +103,7 @@ fn run(control_path: &str, channel_path: Option<&str>) -> Result<(), String> {
         Ok(Sources {
             memory: ProcMeminfo::with_cache_floor(settings.policy.grow_step_bytes),
             pressure: ProcPressure::open(),
-            clock: SystemClock::default(),
+            clock: SystemClock::new(boot_uptime_millis),
         })
     })
 }

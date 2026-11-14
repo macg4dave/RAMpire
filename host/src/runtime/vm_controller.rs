@@ -188,7 +188,13 @@ where
                     let result = serde_json::to_vec(&envelope)
                         .map_err(|error| error.to_string())
                         .and_then(|bytes| {
-                            crate::guest_channel::write_local(std::path::Path::new(path), &bytes)
+                            crate::files::replace_file(
+                                std::path::Path::new(path),
+                                &bytes,
+                                None,
+                                false,
+                            )
+                            .map_err(|error| format!("write {path}: {error}"))
                         });
                     if let Err(error) = result {
                         self.log(&format!("event=optional_telemetry_failed reason={error}"));

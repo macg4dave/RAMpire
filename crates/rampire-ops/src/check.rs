@@ -3,10 +3,10 @@
 
 use std::path::Path;
 
-use rampire_host::attestation::{AttestedCompatibilitySource, CompatibilityAttestation};
+use rampire_host::attestation::AttestedCompatibilitySource;
 use rampire_host::compatibility_source::CompatibilitySource;
 use rampire_host::config::{HostConfig, HostSettings};
-use rampire_host::virsh::Virsh;
+use rampire_host::virsh::{Virsh, VirshCommand, VirshError};
 
 /// What `check` found for one VM.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,26 +45,24 @@ pub fn run(directory: &Path) -> Result<Report, String> {
 }
 
 fn check_vm(config: &HostConfig) -> Result<(), String> {
-    if !domain_exists(config)? {
+    let virsh = Virsh::with_connection(
+        &config.virsh_binary,
+        config.command_timeout,
+        &config.libvirt_uri,
+    );
+    if !domain_exists(&virsh, &config.vm_name)? {
         return Err(format!(
             "libvirt has no domain {name}; stop managing it with: rampire vm remove {name}",
             name = config.vm_name
         ));
     }
-    let path = Path::new(&config.compatibility_attestation_path);
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("read attestation {}: {error}", path.display()))?;
-    CompatibilityAttestation::parse(&text)?;
+    // Reads the attestation, then compares it with the live evidence.
     AttestedCompatibilitySource::new(
-        Virsh::with_connection(
-            &config.virsh_binary,
-            config.command_timeout,
-            &config.libvirt_uri,
-        ),
+        &virsh,
         &config.vm_name,
         &config.alias,
         config.guest_os,
-        path,
+        &config.compatibility_attestation_path,
     )
     .compatibility()?
     .validate_for_resize()
@@ -72,19 +70,11 @@ fn check_vm(config: &HostConfig) -> Result<(), String> {
 }
 
 /// Whether libvirt knows the VM. Any other failure to ask is an error.
-fn domain_exists(config: &HostConfig) -> Result<bool, String> {
-    let output = std::process::Command::new(&config.virsh_binary)
-        .args(["-c", &config.libvirt_uri, "domstate", &config.vm_name])
-        .output()
-        .map_err(|error| format!("run virsh: {error}"))?;
-    if output.status.success() {
-        return Ok(true);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if is_missing_domain(&stderr) {
-        Ok(false)
-    } else {
-        Err(format!("ask libvirt about the domain: {}", stderr.trim()))
+fn domain_exists(virsh: &Virsh, vm: &str) -> Result<bool, String> {
+    match virsh.run(&["domstate".to_owned(), vm.to_owned()]) {
+        Ok(_) => Ok(true),
+        Err(VirshError::Failed { stderr, .. }) if is_missing_domain(&stderr) => Ok(false),
+        Err(error) => Err(format!("ask libvirt about the domain: {error}")),
     }
 }
 

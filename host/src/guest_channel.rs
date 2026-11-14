@@ -128,7 +128,9 @@ impl<Q, T> GuestChannel<Q, T> {
             .map_err(|error| error.to_string())
             .and_then(|mut bytes| {
                 bytes.push(b'\n');
-                write_shared(path, &bytes)
+                // The unit's umask makes new files private; publications are not.
+                crate::files::replace_file(path, &bytes, Some(0o644), false)
+                    .map_err(|error| format!("write {}: {error}", path.display()))
             });
         match written {
             Ok(()) => self.copy_failed.set(false),
@@ -340,25 +342,6 @@ impl<Q: GuestFileReader + GuestFileWriter, T: UnixClock> GuestLink for GuestChan
     }
 }
 
-/// Replace a host-local file that other local users may read, by rename.
-fn write_shared(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
-    let written = std::fs::write(&temporary, bytes).and_then(|()| {
-        // The unit's umask makes new files private; publications are not.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o644))?;
-        }
-        std::fs::rename(&temporary, path)
-    });
-    written.map_err(|error| {
-        // Best effort: the error below is the failure reported.
-        let _ = std::fs::remove_file(&temporary);
-        format!("write {}: {error}", path.display())
-    })
-}
-
 /// A reader for host tools: the controller's copy of the guest's latest
 /// publication while the controller runs, otherwise the guest's own file
 /// through the guest agent. A guest on the control channel writes no file,
@@ -392,18 +375,6 @@ impl<R: GuestFileReader> GuestFileReader for PublicationCopyFirst<R> {
             Err(error) => Err(format!("read {}: {error}", self.copy.display())),
         }
     }
-}
-
-/// Replace a host-local file by rename, so readers never see it partial.
-pub(crate) fn write_local(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
-    std::fs::write(&temporary, bytes)
-        .and_then(|()| std::fs::rename(&temporary, path))
-        .map_err(|error| {
-            // Best effort: the publish error below is the failure reported.
-            let _ = std::fs::remove_file(&temporary);
-            format!("publish host memory status {}: {error}", path.display())
-        })
 }
 
 fn validate_contents(

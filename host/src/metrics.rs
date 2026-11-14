@@ -3,7 +3,7 @@
 //! collector, or anything else, reads `/run/rampire/metrics.prom`.
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Where the daemon writes its metrics.
 pub const METRICS_PATH: &str = "/run/rampire/metrics.prom";
@@ -107,20 +107,12 @@ fn escape(value: &str) -> String {
         .replace('\n', "\\n")
 }
 
-/// Write the file in one step, so a reader never sees half of it.
+/// Write the file in one step, so a reader never sees half of it. It is
+/// readable by the rampire group, so a collector added to it can read it;
+/// the unit's UMask would make it the service account's alone.
 pub fn write(path: &Path, text: &str) -> Result<(), String> {
-    let temporary: PathBuf = path.with_extension("prom.tmp");
-    std::fs::write(&temporary, text)
-        .map_err(|error| format!("write {}: {error}", temporary.display()))?;
-    // Readable by the rampire group, so a collector added to it can read
-    // the file; the unit's UMask would make it the service account's alone.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o640))
-            .map_err(|error| format!("set mode of {}: {error}", temporary.display()))?;
-    }
-    std::fs::rename(&temporary, path).map_err(|error| format!("write {}: {error}", path.display()))
+    crate::files::replace_file(path, text.as_bytes(), Some(0o640), false)
+        .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 #[cfg(test)]

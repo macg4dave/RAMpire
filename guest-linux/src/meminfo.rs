@@ -26,7 +26,7 @@
 
 use std::path::Path;
 
-use rampire_core::MemoryTelemetrySnapshot;
+use rampire_core::{meminfo_bytes, MemoryTelemetrySnapshot};
 
 pub const MEMINFO_PATH: &str = "/proc/meminfo";
 /// `/proc/meminfo` is a few kilobytes; anything larger is not that file.
@@ -115,19 +115,9 @@ impl MemorySource for ProcMeminfo {
 /// File-backed page cache: `Active(file)` plus `Inactive(file)`. Zero when
 /// the kernel does not report them.
 pub fn file_cache_bytes(meminfo: &str) -> u64 {
-    ["Active(file):", "Inactive(file):"]
+    ["Active(file)", "Inactive(file)"]
         .into_iter()
-        .filter_map(|name| {
-            meminfo
-                .lines()
-                .find_map(|line| line.strip_prefix(name))?
-                .trim()
-                .strip_suffix("kB")?
-                .trim()
-                .parse::<u64>()
-                .ok()?
-                .checked_mul(1024)
-        })
+        .filter_map(|name| meminfo_bytes(meminfo, name).ok())
         .fold(0, u64::saturating_add)
 }
 
@@ -159,22 +149,7 @@ pub fn snapshot_from_meminfo(
     commit: CommitModel,
     previous_peak_bytes: u64,
 ) -> Result<MemoryTelemetrySnapshot, String> {
-    let field = |name: &str| -> Result<u64, String> {
-        let value = text
-            .lines()
-            .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
-            .ok_or_else(|| format!("meminfo has no {name}"))?;
-        let kibibytes = value
-            .trim()
-            .strip_suffix("kB")
-            .ok_or_else(|| format!("meminfo {name} is not in kB"))?
-            .trim()
-            .parse::<u64>()
-            .map_err(|error| format!("meminfo {name} is invalid: {error}"))?;
-        kibibytes
-            .checked_mul(1024)
-            .ok_or_else(|| format!("meminfo {name} overflows"))
-    };
+    let field = |name: &str| meminfo_bytes(text, name);
     let add = |left: u64, right: u64| {
         left.checked_add(right)
             .ok_or_else(|| "meminfo counters overflow".to_owned())

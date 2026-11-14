@@ -48,6 +48,44 @@ pub trait Clock {
     }
 }
 
+/// The system's clocks: wall time, time since this service started, and the
+/// platform's own time since boot, which each guest reads its own way.
+#[derive(Debug)]
+pub struct SystemClock {
+    started: Instant,
+    boot_uptime_millis: fn() -> Option<u64>,
+}
+
+impl SystemClock {
+    /// `boot_uptime_millis` reads the platform's time since boot; `None`
+    /// when it can't.
+    pub fn new(boot_uptime_millis: fn() -> Option<u64>) -> Self {
+        Self {
+            started: Instant::now(),
+            boot_uptime_millis,
+        }
+    }
+}
+
+impl Clock for SystemClock {
+    fn unix_millis(&self) -> Result<u64, String> {
+        let duration = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?;
+        u64::try_from(duration.as_millis())
+            .map_err(|_| "system Unix timestamp does not fit in u64 milliseconds".to_owned())
+    }
+
+    fn monotonic_millis(&self) -> Result<u64, String> {
+        u64::try_from(self.started.elapsed().as_millis())
+            .map_err(|_| "process monotonic timestamp does not fit in u64 milliseconds".to_owned())
+    }
+
+    fn boot_uptime_millis(&self) -> Option<u64> {
+        (self.boot_uptime_millis)()
+    }
+}
+
 /// A per-process identity for this service run's publications. Every call
 /// differs, so a worker restarted with new settings is a new session.
 pub fn process_session_id() -> Result<String, String> {
@@ -410,6 +448,17 @@ mod tests {
             // Best effort: leftovers are removed by the next run.
             let _ = std::fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[test]
+    fn the_system_clock_reads_boot_time_from_its_platform() {
+        let clock = SystemClock::new(|| Some(42_000));
+        assert_eq!(clock.boot_uptime_millis(), Some(42_000));
+        assert_eq!(SystemClock::new(|| None).boot_uptime_millis(), None);
+        let first = clock.monotonic_millis().unwrap();
+        assert!(clock.monotonic_millis().unwrap() >= first);
+        // Any time after 2020 means the wall clock is the system's.
+        assert!(clock.unix_millis().unwrap() > 1_577_836_800_000);
     }
 
     #[test]

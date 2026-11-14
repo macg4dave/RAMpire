@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use rampire_core::{RawTelemetryEnvelope, VirtioMemState};
 use rampire_host::config::HostSettings;
@@ -209,7 +209,7 @@ pub fn run(command: &Command, cwd: &Path) -> Result<(), String> {
         let sample = Sample {
             host: read_meminfo()?,
             vms,
-            now_unix_millis: unix_millis(),
+            now_unix_millis: process::unix_millis()?,
             samples,
         };
         let charged = sample.vms.iter().map(VmSample::charge).sum::<u64>();
@@ -237,12 +237,6 @@ fn read_publication(path: &Path) -> Option<RawTelemetryEnvelope> {
         return None;
     }
     serde_json::from_slice(&bytes).ok()
-}
-
-fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

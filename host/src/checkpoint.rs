@@ -3,8 +3,7 @@
 //! flushed before any effect it authorises, so one file is the authority for
 //! the daemon, `status` and `clear-latch`.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use rampire_core::{
@@ -430,25 +429,8 @@ fn persist(path: &Path, file: &CheckpointFile) -> Result<(), String> {
         .ok_or("control checkpoint path has no parent directory")?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("create control checkpoint directory: {error}"))?;
-    let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
-    let written = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temporary)
-        .and_then(|mut file| {
-            file.write_all(&bytes)?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&temporary, path));
-    if let Err(error) = written {
-        // Best effort: the write error is the failure reported.
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("persist control checkpoint: {error}"));
-    }
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("flush control checkpoint directory: {error}"))
+    crate::files::replace_file(path, &bytes, None, true)
+        .map_err(|error| format!("persist control checkpoint: {error}"))
 }
 
 #[cfg(test)]

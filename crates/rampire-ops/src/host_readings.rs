@@ -4,9 +4,9 @@
 
 use std::time::Duration;
 
-use rampire_core::{parse_virtio_mem_xml_for_alias, VirtioMemState};
-use rampire_host::host_memory::meminfo_bytes;
-use rampire_host::virsh::{Virsh, VirshCommand};
+use rampire_core::{meminfo_bytes, VirtioMemState};
+use rampire_host::virsh::Virsh;
+use rampire_host::xml_source::{MemoryStateSource, VirshXmlSource};
 
 /// The largest guest publication a view reads.
 pub const MAX_TELEMETRY_BYTES: usize = 64 * 1024;
@@ -37,11 +37,10 @@ fn parse_meminfo(text: &str) -> HostMemory {
     }
 }
 
+/// The device's live state; `None` when the VM or its device can't be read,
+/// which a view shows as no device.
 pub fn device_state(virsh: &Virsh, vm: &str, alias: &str) -> Option<VirtioMemState> {
-    let xml = virsh.run(&["dumpxml".to_owned(), vm.to_owned()]).ok()?;
-    parse_virtio_mem_xml_for_alias(&xml, alias)
-        .ok()
-        .map(|state| state.memory)
+    VirshXmlSource::new(virsh, vm, alias).memory_state().ok()
 }
 
 #[cfg(test)]

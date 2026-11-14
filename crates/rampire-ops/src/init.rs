@@ -6,9 +6,6 @@
 //! keeps all its memory, so all of it is set aside. The pool is what is left
 //! of the host's memory after the host's own reserve.
 
-use quick_xml::events::{BytesStart, Event};
-use quick_xml::{Reader, XmlVersion};
-
 const GIB: u64 = 1 << 30;
 
 /// The memory one domain needs, read from its definition.
@@ -94,112 +91,18 @@ pub fn global_toml(suggestion: &Suggestion, domains: &[DomainMemory]) -> String 
     text
 }
 
-/// Read a domain's memory from its XML definition.
+/// Read a domain's memory from its XML definition, as `vm add` reads it.
 pub fn parse_domain(name: &str, xml: &str) -> Result<DomainMemory, String> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut buffer = Vec::new();
-    let mut path: Vec<Vec<u8>> = Vec::new();
-    let mut memory_unit = None;
-    let mut memory_bytes = None;
-    let mut boot_bytes = 0_u64;
-    let mut resizable = false;
-    let error = |error: &dyn std::fmt::Display| format!("domain {name}: {error}");
-    loop {
-        let event = reader.read_event_into(&mut buffer).map_err(|e| error(&e))?;
-        match event {
-            Event::Start(element) => {
-                inspect(&element, &path, &mut resizable, &mut boot_bytes, name)?;
-                let element_name = element.name().as_ref().to_vec();
-                if path == [b"domain".to_vec()] && element_name == b"memory" {
-                    memory_unit = Some(attribute(&element, b"unit", name)?);
-                }
-                path.push(element_name);
-            }
-            Event::Empty(element) => {
-                inspect(&element, &path, &mut resizable, &mut boot_bytes, name)?;
-            }
-            Event::Text(text) => {
-                if let Some(unit) = memory_unit.take() {
-                    let raw = text.decode().map_err(|e| error(&e))?;
-                    let value = raw
-                        .trim()
-                        .parse::<u64>()
-                        .map_err(|_| error(&format!("<memory> {raw:?} is not a number")))?;
-                    memory_bytes = Some(libvirt_bytes(value, unit.as_deref(), name)?);
-                }
-            }
-            Event::End(_) => {
-                path.pop();
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-        buffer.clear();
+    let inspection = crate::vm::inspect(xml).map_err(|error| format!("{name}: {error}"))?;
+    if inspection.memory_bytes == 0 {
+        return Err(format!("{name}: domain XML has no <memory>"));
     }
     Ok(DomainMemory {
         name: name.to_owned(),
-        resizable,
-        memory_bytes: memory_bytes.ok_or_else(|| error(&"no <memory>"))?,
-        boot_bytes,
+        resizable: !inspection.devices.is_empty(),
+        memory_bytes: inspection.memory_bytes,
+        boot_bytes: inspection.boot_bytes,
     })
-}
-
-/// Note a virtio-mem device or a NUMA cell.
-fn inspect(
-    element: &BytesStart<'_>,
-    path: &[Vec<u8>],
-    resizable: &mut bool,
-    boot_bytes: &mut u64,
-    name: &str,
-) -> Result<(), String> {
-    let element_name = element.name().as_ref().to_vec();
-    let parent = path.last().map(Vec::as_slice);
-    if element_name == b"memory" && parent == Some(b"devices") {
-        *resizable |= attribute(element, b"model", name)?.as_deref() == Some("virtio-mem");
-    }
-    if element_name == b"cell" && parent == Some(b"numa") {
-        if let Some(memory) = attribute(element, b"memory", name)? {
-            let value = memory
-                .parse::<u64>()
-                .map_err(|_| format!("domain {name}: NUMA cell memory {memory:?}"))?;
-            let unit = attribute(element, b"unit", name)?;
-            *boot_bytes += libvirt_bytes(value, unit.as_deref(), name)?;
-        }
-    }
-    Ok(())
-}
-
-fn attribute(element: &BytesStart<'_>, key: &[u8], name: &str) -> Result<Option<String>, String> {
-    for attribute in element.attributes().with_checks(false) {
-        let attribute = attribute.map_err(|error| format!("domain {name}: {error}"))?;
-        if attribute.key.as_ref() == key {
-            let value = attribute
-                .normalized_value(XmlVersion::Explicit1_0)
-                .map_err(|error| format!("domain {name}: {error}"))?;
-            return Ok(Some(value.into_owned()));
-        }
-    }
-    Ok(None)
-}
-
-/// libvirt's memory units; without one, KiB.
-fn libvirt_bytes(value: u64, unit: Option<&str>, name: &str) -> Result<u64, String> {
-    let multiplier: u64 = match unit.unwrap_or("KiB") {
-        "b" | "bytes" => 1,
-        "KB" => 1_000,
-        "k" | "KiB" => 1 << 10,
-        "MB" => 1_000_000,
-        "M" | "MiB" => 1 << 20,
-        "GB" => 1_000_000_000,
-        "G" | "GiB" => 1 << 30,
-        "TB" => 1_000_000_000_000,
-        "T" | "TiB" => 1 << 40,
-        other => return Err(format!("domain {name}: unknown memory unit {other:?}")),
-    };
-    value
-        .checked_mul(multiplier)
-        .ok_or_else(|| format!("domain {name}: memory size overflows"))
 }
 
 #[cfg(test)]

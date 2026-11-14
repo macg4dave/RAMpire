@@ -1,7 +1,7 @@
 //! Windows' side of the shared guest service: its memory counters, its
-//! memory-resource notifications as the pressure signal, its clock, and how
-//! the control channel is opened. The request protocol, worker and service
-//! loop are the shared guest crate's, as for Linux.
+//! memory-resource notifications as the pressure signal, its time since boot,
+//! and how the control channel is opened. The request protocol, worker,
+//! clock and service loop are the shared guest crate's, as for Linux.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,11 +12,9 @@ use rampire_core::{MemoryResourceNotificationState, MemoryTelemetrySnapshot};
 use rampire_guest::requests::GuestIdentity;
 use rampire_guest::serve::{serve, Platform, Sources};
 use rampire_guest::transport::{FileTransport, Transport};
-use rampire_guest::worker::{Clock, MemorySource, PressureSource};
+use rampire_guest::worker::{MemorySource, PressureSource, SystemClock};
 
-use crate::demand::{
-    MemoryResourceNotificationTelemetry, MemoryTelemetry, SystemTelemetryClock, TelemetryClock,
-};
+use crate::demand::{boot_uptime_millis, MemoryResourceNotificationTelemetry, MemoryTelemetry};
 use crate::service_host::{ServiceWorker, StopSignal};
 
 /// Windows' performance counters.
@@ -66,24 +64,6 @@ impl<N: MemoryResourceNotificationTelemetry> PressureSource for Pressure<N> {
     }
 }
 
-/// The shared worker's clock, from Windows' own.
-#[derive(Debug, Default)]
-pub struct WindowsClock(pub SystemTelemetryClock);
-
-impl Clock for WindowsClock {
-    fn unix_millis(&self) -> Result<u64, String> {
-        self.0.now_unix_millis()
-    }
-
-    fn monotonic_millis(&self) -> Result<u64, String> {
-        self.0.monotonic_millis()
-    }
-
-    fn boot_uptime_millis(&self) -> Option<u64> {
-        self.0.boot_uptime_millis()
-    }
-}
-
 /// The control channel when the VM has the port, else the control files
 /// that the host reaches through the guest agent.
 #[cfg(windows)]
@@ -125,7 +105,7 @@ impl ServiceWorker for ProtocolWorker {
             Ok(Sources {
                 memory: Memory(crate::demand::NativeMemoryTelemetry),
                 pressure: Pressure::new(notifications(), stop.clone()),
-                clock: WindowsClock::default(),
+                clock: SystemClock::new(boot_uptime_millis),
             })
         })
     }

@@ -1,18 +1,7 @@
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::time::Duration;
-
-pub fn command_exists(name: &str) -> bool {
-    Command::new(name)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
-}
 
 pub fn run(program: &str, args: &[&str], cwd: &Path) -> Result<(), String> {
     let status = Command::new(program)
@@ -27,16 +16,45 @@ pub fn run(program: &str, args: &[&str], cwd: &Path) -> Result<(), String> {
     }
 }
 
-pub fn output(program: &str, args: &[OsString], cwd: &Path) -> Result<Output, String> {
-    Command::new(program)
+pub fn checked_output(program: &str, args: &[OsString], cwd: &Path) -> Result<Vec<u8>, String> {
+    let output = Command::new(program)
         .args(args)
         .current_dir(cwd)
         .output()
-        .map_err(|error| format!("failed to start {program}: {error}"))
+        .map_err(|error| format!("failed to start {program}: {error}"))?;
+    succeeded(program, output)
 }
 
-pub fn checked_output(program: &str, args: &[OsString], cwd: &Path) -> Result<Vec<u8>, String> {
-    let output = output(program, args, cwd)?;
+pub fn checked_text(program: &str, args: &[OsString], cwd: &Path) -> Result<String, String> {
+    text(program, checked_output(program, args, cwd)?)
+}
+
+/// Like [`checked_text`], with the output and descendant lifetime bounds of
+/// the host's own commands.
+pub fn bounded_text(
+    program: &str,
+    args: &[OsString],
+    cwd: &Path,
+    timeout: Duration,
+) -> Result<String, String> {
+    let output = bounded_output(program, args, cwd, timeout)?;
+    text(program, succeeded(program, output)?)
+}
+
+fn bounded_output(
+    program: &str,
+    args: &[OsString],
+    cwd: &Path,
+    timeout: Duration,
+) -> Result<Output, String> {
+    let mut command = Command::new(program);
+    command.args(args).current_dir(cwd);
+    rampire_host::virsh::bounded_output(&mut command, timeout)
+        .map_err(|error| format!("{program}: {error}"))
+}
+
+/// The output's stdout, or the failure with its stderr.
+fn succeeded(program: &str, output: Output) -> Result<Vec<u8>, String> {
     if !output.status.success() {
         return Err(format!(
             "{program} failed with status {}: {}",
@@ -47,123 +65,12 @@ pub fn checked_output(program: &str, args: &[OsString], cwd: &Path) -> Result<Ve
     Ok(output.stdout)
 }
 
-pub fn checked_text(program: &str, args: &[OsString], cwd: &Path) -> Result<String, String> {
-    String::from_utf8(checked_output(program, args, cwd)?)
-        .map_err(|error| format!("{program} returned invalid UTF-8: {error}"))
-}
-
-pub fn bounded_text(
-    program: &str,
-    args: &[OsString],
-    cwd: &Path,
-    timeout: Duration,
-) -> Result<String, String> {
-    let output = bounded_output(program, args, cwd, timeout)?;
-    if !output.status.success() {
-        return Err(format!(
-            "{program} failed with status {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    String::from_utf8(output.stdout)
-        .map_err(|error| format!("{program} returned invalid UTF-8: {error}"))
-}
-
-pub fn elevated_text(args: &[OsString], cwd: &Path, timeout: Duration) -> Result<String, String> {
-    let mut command = Command::new("sudo");
-    command.args(args).current_dir(cwd);
-    let output = rampire_host::virsh::bounded_interactive_output(&mut command, timeout)
-        .map_err(|error| format!("elevated command: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("elevated command failed with {}", output.status));
-    }
-    String::from_utf8(output.stdout)
-        .map_err(|error| format!("elevated command returned invalid UTF-8: {error}"))
-}
-
-pub fn bounded_output(
-    program: &str,
-    args: &[OsString],
-    cwd: &Path,
-    timeout: Duration,
-) -> Result<Output, String> {
-    let mut command = Command::new(program);
-    command.args(args).current_dir(cwd);
-    bounded(command, program, timeout)
-}
-
-/// Runs `program` with only the supplied environment and a fixed system PATH.
-pub fn bounded_output_with_env<I, K, V>(
-    program: &Path,
-    args: &[OsString],
-    cwd: &Path,
-    timeout: Duration,
-    environment: I,
-) -> Result<Output, String>
-where
-    I: IntoIterator<Item = (K, V)>,
-    K: AsRef<OsStr>,
-    V: AsRef<OsStr>,
-{
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .env(
-            "PATH",
-            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        )
-        .envs(environment);
-    bounded(command, &program.display().to_string(), timeout)
-}
-
-/// Use the same output and descendant lifetime bounds as host commands.
-fn bounded(mut command: Command, name: &str, timeout: Duration) -> Result<Output, String> {
-    rampire_host::virsh::bounded_output(&mut command, timeout)
-        .map_err(|error| format!("{name}: {error}"))
-}
-
-pub fn run_with_input(
-    program: &str,
-    args: &[&str],
-    cwd: &Path,
-    input: &[u8],
-) -> Result<(), String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("failed to start {program}: {error}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| format!("failed to open {program} stdin"))?
-        .write_all(input)
-        .map_err(|error| format!("failed to write {program} input: {error}"))?;
-    let status = child
-        .wait()
-        .map_err(|error| format!("failed to wait for {program}: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{program} failed with status {status}"))
-    }
+fn text(program: &str, bytes: Vec<u8>) -> Result<String, String> {
+    String::from_utf8(bytes).map_err(|error| format!("{program} returned invalid UTF-8: {error}"))
 }
 
 pub fn os(value: impl AsRef<OsStr>) -> OsString {
     value.as_ref().to_os_string()
-}
-
-pub fn read_file(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
-    let mut value = String::new();
-    file.read_to_string(&mut value)
-        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    Ok(value)
 }
 
 /// Wall-clock Unix time in milliseconds, for evidence and log names.

@@ -1,5 +1,5 @@
-use std::io::{self, Read};
-use std::process::{Command, Output, Stdio};
+use std::io;
+use std::process::{Command, Output};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -22,6 +22,13 @@ pub enum VirshError {
 
 pub trait VirshCommand {
     fn run(&self, arguments: &[String]) -> Result<String, VirshError>;
+}
+
+/// A borrowed runner, so a reader can share one that its caller keeps.
+impl<T: VirshCommand + ?Sized> VirshCommand for &T {
+    fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
+        (**self).run(arguments)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -219,64 +226,36 @@ fn process_identity() -> io::Result<String> {
     ))
 }
 
-pub fn bounded_output(command: &mut Command, timeout: Duration) -> io::Result<Output> {
-    capture_output(command, timeout, false)
-}
-
-/// Capture stdout while keeping terminal input and diagnostics available to
-/// explicitly requested interactive commands such as operator elevation.
-pub fn bounded_interactive_output(command: &mut Command, timeout: Duration) -> io::Result<Output> {
-    capture_output(command, timeout, true)
-}
-
 /// Capture at most 4 MiB per stream. The deadline includes descendants holding
 /// inherited pipes, rather than just waiting for the direct child.
 #[cfg(unix)]
-fn capture_output(
-    command: &mut Command,
-    timeout: Duration,
-    interactive: bool,
-) -> io::Result<Output> {
+pub fn bounded_output(command: &mut Command, timeout: Duration) -> io::Result<Output> {
+    use std::io::Read;
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
     use std::time::Instant;
 
-    // Elevated inventory can contain 32 escaped 256 KiB text files.
-    let output_limit = if interactive {
-        64 * 1024 * 1024
-    } else {
-        4 * 1024 * 1024
-    };
+    const OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
     let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "command timeout is too large")
     })?;
-    // An interactive child (sudo) must stay in the terminal's foreground
-    // process group: in a new group its password prompt cannot read the tty
-    // and PAM reports a failed conversation.
-    if !interactive {
-        command.process_group(0);
-    }
     let mut child = command
-        .stdin(if interactive {
-            Stdio::inherit()
-        } else {
-            Stdio::null()
-        })
+        .process_group(0)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(if interactive {
-            Stdio::inherit()
-        } else {
-            Stdio::piped()
-        })
+        .stderr(Stdio::piped())
         .spawn()?;
     let result = (|| {
         let mut stdout = child
             .stdout
             .take()
             .ok_or_else(|| io::Error::other("stdout unavailable"))?;
-        let mut stderr = child.stderr.take();
-        for fd in std::iter::once(stdout.as_raw_fd()).chain(stderr.as_ref().map(AsRawFd::as_raw_fd))
-        {
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("stderr unavailable"))?;
+        for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
             // SAFETY: both descriptors are owned and open throughout this call.
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
             if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
@@ -287,7 +266,7 @@ fn capture_output(
         let mut out = Vec::new();
         let mut err = Vec::new();
         let mut out_done = false;
-        let mut err_done = stderr.is_none();
+        let mut err_done = false;
         let mut status = None;
         loop {
             if Instant::now() >= deadline {
@@ -295,18 +274,14 @@ fn capture_output(
             }
             // One chunk per stream per turn: a continuously writing child
             // cannot starve the clock, other stream, or exit check.
-            fn read_chunk(
-                input: &mut impl Read,
-                bytes: &mut Vec<u8>,
-                limit: usize,
-            ) -> io::Result<bool> {
+            fn read_chunk(input: &mut impl Read, bytes: &mut Vec<u8>) -> io::Result<bool> {
                 let mut chunk = [0; 16 * 1024];
                 match input.read(&mut chunk) {
                     Ok(0) => Ok(true),
                     Ok(count) => {
-                        if bytes.len() + count > limit {
+                        if bytes.len() + count > OUTPUT_LIMIT {
                             return Err(io::Error::other(format!(
-                                "command output exceeds {limit} byte stream limit"
+                                "command output exceeds {OUTPUT_LIMIT} byte stream limit"
                             )));
                         }
                         bytes.extend_from_slice(&chunk[..count]);
@@ -324,12 +299,10 @@ fn capture_output(
                 }
             }
             if !out_done {
-                out_done = read_chunk(&mut stdout, &mut out, output_limit)?;
+                out_done = read_chunk(&mut stdout, &mut out)?;
             }
             if !err_done {
-                if let Some(stderr) = stderr.as_mut() {
-                    err_done = read_chunk(stderr, &mut err, output_limit)?;
-                }
+                err_done = read_chunk(&mut stderr, &mut err)?;
             }
             if status.is_none() {
                 status = child.try_wait()?;
@@ -349,17 +322,12 @@ fn capture_output(
         }
     })();
     // Always clean up the owned process group, including descendants after the
-    // direct child exits. Dropping the pipes cannot strand reader threads. An
-    // interactive child shares our group, so only it is killed.
-    let kill_error = if interactive {
-        child.kill().err()
-    } else {
-        // SAFETY: spawn placed this child in a new process group with its own PID.
-        let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-        (killed < 0)
-            .then(io::Error::last_os_error)
-            .filter(|error| error.raw_os_error() != Some(libc::ESRCH))
-    };
+    // direct child exits. Dropping the pipes cannot strand reader threads.
+    // SAFETY: spawn placed this child in a new process group with its own PID.
+    let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    let kill_error = (killed < 0)
+        .then(io::Error::last_os_error)
+        .filter(|error| error.raw_os_error() != Some(libc::ESRCH));
     let reaped = child.wait();
     match result {
         Err(error) => Err(io::Error::new(
@@ -386,7 +354,7 @@ fn capture_output(
 }
 
 #[cfg(not(unix))]
-fn capture_output(_: &mut Command, _: Duration, _: bool) -> io::Result<Output> {
+pub fn bounded_output(_: &mut Command, _: Duration) -> io::Result<Output> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "bounded host subprocesses require Unix",

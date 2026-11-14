@@ -6,6 +6,7 @@ pub mod compatibility_source;
 pub mod config;
 #[cfg(unix)]
 pub mod control_channel;
+pub mod files;
 pub mod guest_channel;
 pub mod host_memory;
 #[cfg(unix)]

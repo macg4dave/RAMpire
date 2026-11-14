@@ -13,6 +13,24 @@ pub fn bytes_to_kibibytes(value_bytes: u64) -> Option<u64> {
         .then_some(value_bytes / BYTES_PER_KIB)
 }
 
+/// One `/proc/meminfo` field (`MemAvailable`, `SwapFree`, ...) in bytes.
+/// Linux reports these fields in KiB, written `kB`; a field without that
+/// unit is an error rather than a guess.
+pub fn meminfo_bytes(meminfo: &str, field: &str) -> Result<u64, String> {
+    let (line, value) = meminfo
+        .lines()
+        .find_map(|line| Some((line, line.strip_prefix(field)?.strip_prefix(':')?)))
+        .ok_or_else(|| format!("meminfo has no {field}"))?;
+    let kibibytes = value
+        .trim()
+        .strip_suffix("kB")
+        .ok_or_else(|| format!("meminfo {field} is not in kB: {line}"))?
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| format!("meminfo {field} is not a decimal kB value: {line}"))?;
+    kibibytes_to_bytes(kibibytes).ok_or_else(|| format!("meminfo {field} overflows: {line}"))
+}
+
 const SIZE_EXAMPLES: &str = "write a size such as \"512MB\", \"128MiB\" or \"3GB\"";
 
 /// Parse a human-written size such as `"8GB"`, `"8.5 GiB"`, `"1024MB"` or
@@ -103,6 +121,22 @@ pub mod byte_size {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_meminfo_fields_in_kib_as_bytes() {
+        let meminfo = "MemTotal:       16777216 kB\nMemAvailable:    8388608 kB\n\
+                       Active(file):  1 kB\nHugePages_Total:       0\n";
+        assert_eq!(meminfo_bytes(meminfo, "MemAvailable"), Ok(8_388_608 * 1024));
+        assert_eq!(meminfo_bytes(meminfo, "Active(file)"), Ok(1024));
+        // A field is matched whole, not by prefix.
+        assert!(meminfo_bytes(meminfo, "Mem").is_err());
+        assert!(meminfo_bytes(meminfo, "SwapFree").is_err());
+        assert!(meminfo_bytes(meminfo, "HugePages_Total").is_err());
+        let invalid =
+            |value: &str| meminfo_bytes(&format!("MemAvailable: {value}\n"), "MemAvailable");
+        assert!(invalid("x kB").is_err());
+        assert!(invalid("18446744073709551615 kB").is_err());
+    }
 
     #[test]
     fn parses_human_sizes_as_binary_units() {

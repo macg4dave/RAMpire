@@ -11,13 +11,12 @@ use std::time::{Duration, Instant};
 
 use rampire_core::settings::{self, VmSettings, VMS_DIRECTORY};
 use rampire_host::attestation::{
-    read_review, CompatibilityAttestation, VirshCompatibilityEvidenceSource,
+    read_attestation, read_review, CompatibilityAttestation, VirshCompatibilityEvidenceSource,
 };
 use rampire_host::config::{attestation_path, ATTESTATION_DIRECTORY};
-use rampire_host::virsh::Virsh;
+use rampire_host::virsh::{Virsh, VirshCommand};
 
 use crate::applied::REVIEW_DIRECTORY;
-use crate::process;
 
 /// What the commands need to reach libvirt.
 #[derive(Debug, Clone)]
@@ -27,11 +26,17 @@ pub struct Libvirt {
 }
 
 impl Libvirt {
+    /// The host's `virsh` runner on this connection.
+    pub fn runner(&self) -> Virsh {
+        Virsh::with_connection("virsh", self.timeout, &self.connection)
+    }
+
     /// Run `virsh` on this connection.
     pub fn virsh(&self, args: &[&str]) -> Result<String, String> {
-        let mut arguments = vec![process::os("-c"), process::os(&self.connection)];
-        arguments.extend(args.iter().map(process::os));
-        process::bounded_text("virsh", &arguments, Path::new("/"), self.timeout)
+        let arguments: Vec<String> = args.iter().map(|&argument| argument.to_owned()).collect();
+        self.runner()
+            .run(&arguments)
+            .map_err(|error| error.to_string())
     }
 
     /// The VM's state as `virsh domstate` names it: "running", "shut off".
@@ -71,8 +76,8 @@ pub fn attest(directory: &Path, vm: &str, libvirt: &Libvirt) -> Result<PathBuf, 
     if state != "running" {
         return Err(format!("{vm} is {state}: a VM is attested while it runs"));
     }
-    let virsh = Virsh::with_connection("virsh", libvirt.timeout, &libvirt.connection);
-    let live = VirshCompatibilityEvidenceSource::new(virsh, vm, &settings.alias).collect()?;
+    let live =
+        VirshCompatibilityEvidenceSource::new(libvirt.runner(), vm, &settings.alias).collect()?;
     let document = CompatibilityAttestation::new(live, review)?;
     let path = attestation_path(directory, vm);
     write_atomically(
@@ -108,16 +113,12 @@ pub fn drifted(directory: &Path, libvirt: &Libvirt) -> Result<Vec<(String, Strin
     let mut found = Vec::new();
     for vm in vms {
         let path = attestation_path(directory, &vm.vm_name);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if libvirt.state(&vm.vm_name).ok().as_deref() != Some("running") {
+        if !path.exists() || libvirt.state(&vm.vm_name).ok().as_deref() != Some("running") {
             continue;
         }
-        let attestation = CompatibilityAttestation::parse(&text)?;
-        let virsh = Virsh::with_connection("virsh", libvirt.timeout, &libvirt.connection);
-        let live =
-            VirshCompatibilityEvidenceSource::new(virsh, &vm.vm_name, &vm.alias).collect()?;
+        let attestation = read_attestation(&path)?;
+        let live = VirshCompatibilityEvidenceSource::new(libvirt.runner(), &vm.vm_name, &vm.alias)
+            .collect()?;
         if let Err(change) = attestation.validate_live(&live, vm.guest_os) {
             found.push((vm.vm_name, change));
         }
@@ -151,10 +152,8 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .ok_or_else(|| format!("{} has no folder", path.display()))?;
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("create {}: {error}", parent.display()))?;
-    let temporary = parent.join(format!(".attestation-{}.tmp", std::process::id()));
-    std::fs::write(&temporary, bytes)
-        .map_err(|error| format!("write {}: {error}", temporary.display()))?;
-    std::fs::rename(&temporary, path).map_err(|error| format!("write {}: {error}", path.display()))
+    rampire_host::files::replace_file(path, bytes, None, false)
+        .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 /// The attestations folder, for messages.

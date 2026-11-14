@@ -1,66 +1,19 @@
 use crate::service_host::StopSignal;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 pub use rampire_core::{
     DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot, RawTelemetryEnvelope,
 };
 
-pub trait TelemetryClock {
-    fn now_unix_millis(&self) -> Result<u64, String>;
-    fn monotonic_millis(&self) -> Result<u64, String>;
-    fn boot_uptime_millis(&self) -> Option<u64> {
-        None
+/// Time since boot, for the shared worker's clock.
+pub fn boot_uptime_millis() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        // SAFETY: GetTickCount64 takes no pointers or handles.
+        Some(unsafe { winapi::um::sysinfoapi::GetTickCount64() })
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct SystemTelemetryClock {
-    started_at: Instant,
-}
-
-impl Default for SystemTelemetryClock {
-    fn default() -> Self {
-        Self {
-            started_at: Instant::now(),
-        }
-    }
-}
-
-impl TelemetryClock for SystemTelemetryClock {
-    fn boot_uptime_millis(&self) -> Option<u64> {
-        #[cfg(windows)]
-        {
-            // SAFETY: GetTickCount64 takes no pointers or handles.
-            Some(unsafe { winapi::um::sysinfoapi::GetTickCount64() })
-        }
-        #[cfg(not(windows))]
-        None
-    }
-
-    fn now_unix_millis(&self) -> Result<u64, String> {
-        let duration = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?;
-        u64::try_from(duration.as_millis())
-            .map_err(|_| "system Unix timestamp does not fit in u64 milliseconds".to_owned())
-    }
-
-    fn monotonic_millis(&self) -> Result<u64, String> {
-        u64::try_from(self.started_at.elapsed().as_millis())
-            .map_err(|_| "process monotonic timestamp does not fit in u64 milliseconds".to_owned())
-    }
-}
-
-/// A per-process identity for this service run's publications.
-pub fn process_session_id() -> Result<String, String> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?;
-    Ok(format!(
-        "session-{:x}-{:x}",
-        duration.as_nanos(),
-        std::process::id()
-    ))
+    #[cfg(not(windows))]
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
