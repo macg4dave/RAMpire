@@ -201,9 +201,23 @@ knowledge of the repository, no Ansible. The goal is the experience, not
 just a working controller: anything that would stop or confuse a hobbyist
 is a finding, fixed in the product or the docs.
 
-- [ ] **S2.1** A clean Debian 13 host (`clean-host-debian13`) goes from
+- [x] **S2.1** A clean Debian 13 host (`clean-host-debian13`) goes from
   nothing to a running controller, managing no VMs, with the host `.deb`
   and `rampire init`.
+
+  Done 2026-11-14 with `cargo xtask testvm up
+  tools/testvm/clean-host-debian13.toml --name clean-debian13 --packages
+  --apply`: all seven steps passed, `doctor` passed every check (libvirt
+  11.3.0, QEMU 10.0.13). Evidence on pc101:
+  `.artifacts/testvm/clean-debian13-1794669872923.json`. Found on the way:
+
+  | Finding | Fixed |
+  |---|---|
+  | `init` stopped on Debian: `doctor` read `rampire.service` but not the `.deb`'s drop-in that swaps `qemu` for `libvirt-qemu`, so every Debian and Ubuntu host failed its socket-group check | `doctor` reads the unit's drop-ins in systemd's order |
+  | Running a scenario took four commands and sourcing a site file, and was done once with a scratch script | `testvm` elevates itself, reads `site/testvm.env`, and `--packages` builds the packages first |
+  | `init` said "an eighth of its 1 GiB" on a 1.9 GiB host | Shown to a tenth of a GiB |
+  | During `init`, apply said the controller "will use the new copy when it starts" just before `init` started it | Reworded: nothing was restarted |
+  | `status` with no VMs said "Add one to /etc/rampire/vms.d", pointing a hobbyist at editing files | It names `rampire vm add VM --fix-xml` |
 - [ ] **S2.2** A VM with no virtio-mem device goes from `vm add` to managed
   in one guided command. Make the guest with `linux-guest-debian13 --keep`,
   then run the quick start's `rampire vm add t-guest --fix-xml` on a

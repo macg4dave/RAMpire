@@ -478,12 +478,7 @@ fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
         controller.unit, controller.active_state, controller.sub_state, controller.unit_file_state
     );
     if vms.is_empty() {
-        println!(
-            "RAMpire manages no VMs yet. Add one to {}.",
-            draft(cli)
-                .join(rampire_core::settings::VMS_DIRECTORY)
-                .display()
-        );
+        println!("RAMpire manages no VMs yet. Add one with: rampire vm add VM --fix-xml");
     }
     for status in &vms {
         println!("{}", status_line(status));
@@ -1344,7 +1339,9 @@ fn refresh_controller(unit: &str, from: Option<&Path>, to: &Path) -> Result<Refr
     )
     .is_ok_and(|state| state.trim() == "active");
     if !active {
-        println!("{unit} is not running; it will use the new copy when it starts");
+        println!(
+            "{unit} isn't running, so nothing was restarted; it runs this copy when it starts"
+        );
         return Ok(Refreshed::NotRunning);
     }
     let reload = from

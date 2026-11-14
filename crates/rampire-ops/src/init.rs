@@ -67,9 +67,11 @@ pub fn global_toml(suggestion: &Suggestion, domains: &[DomainMemory]) -> String 
          # file and run `rampire apply`.\n\n",
     );
     text.push_str(&format!(
-        "# Memory the host keeps for itself: an eighth of its {} GiB, between\n\
+        "# Memory the host keeps for itself: an eighth of its {:.1} GiB, between\n\
          # 2 and 8 GiB.\nhost_reserve = \"{}GB\"\n\n",
-        gib(suggestion.host_bytes),
+        // To a tenth: a host's memory is rarely whole GiB, and rounding down
+        // would say a 1.9 GiB host has 1 GiB.
+        suggestion.host_bytes as f64 / GIB as f64,
         gib(suggestion.host_reserve_bytes)
     ));
     text.push_str("# The pool every managed VM grows from: the host's memory, less the\n# reserve, less what each VM below needs whatever happens:\n");
