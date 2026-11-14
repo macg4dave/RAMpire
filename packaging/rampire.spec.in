@@ -34,6 +34,8 @@ limits and the host's own reserve.
 %package guest
 Summary:        The guest side of RAMpire
 Requires:       systemd >= 253
+# rampire vm add reads the guest's kernel release through the agent.
+Recommends:     qemu-guest-agent
 
 %description guest
 The guest side of RAMpire: asks the KVM host's RAMpire controller for

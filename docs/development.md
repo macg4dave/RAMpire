@@ -114,7 +114,8 @@ stamped Linux guest, its unit, the RAM monitor and the workload on a
 development VM over SSH (the account needs passwordless `sudo`). It runs on
 a Linux checkout that can reach the guest. Without `--apply` it records
 what it would do. `status` and `uninstall` complete it; see
-[tools](tools.md). Production installs use packages (roadmap M4).
+[tools](tools.md). Hosts and guests that aren't under development
+install packages, built with `cargo xtask package`.
 
 Windows deployment is `make windows-deploy` with the site's VM settings.
 
@@ -140,22 +141,22 @@ configuration; in a checkout, the untracked `site/` directory. The tracked
 
 ## Installing a development build
 
-Until there are packages (roadmap O2), a development host installs from a
-checkout:
+A development host installs the same packages as any other host, built
+from the checkout:
 
 ```bash
-export RAMPIRE_BUILD_ID=$(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- || echo -dirty)
-cargo build --release --locked -p rampire -p xtask
-sudo systemctl stop rampire 2>/dev/null; sudo systemctl reset-failed rampire 2>/dev/null
-target/release/xtask host-deploy --config CONFIG_DIR --attestation-dir CONFIG_DIR/attestations \
-  --output .artifacts/deploy/host-deploy-$(date +%Y%m%dT%H%M%S).json \
-  --command-timeout-seconds 60 --apply --elevate
-sudo /usr/bin/rampire apply --yes
-sudo systemctl enable --now rampire
+cargo xtask package                                  # into dist/
+sudo dnf install ./dist/rampire-*.x86_64.rpm         # or: sudo apt install ./dist/rampire_*_amd64.deb
+sudo rampire init                                    # a new host; an existing one keeps its configuration
 ```
 
-`host-deploy` checks every attestation against the live VMs and installs
-the binary as `/usr/bin/rampire`, `rampire.service`, the polkit
-rule and the draft configuration in `/etc/rampire`, keeping a backup of
-what it replaces. `rampire apply` then makes the copy the unit runs.
-`RAMPIRE_BUILD_ID` is what `rampire --version` reports.
+`package` stamps the host and guest binaries with the checkout's build
+identity (`<commit>`, or `<commit>-dirty.<source digest>`), which
+`rampire --version` reports, and builds the RPMs and `.deb`s with nfpm
+(`packaging/build.sh`). A development version is `VERSION~dev.BUILD`, so
+it sorts before the release and an upgrade to that release replaces it.
+`--static` adds the musl tarballs CI publishes. The guest packages
+(`rampire-guest`) are in `dist/` too.
+
+Upgrading a running host is the package manager's upgrade: the package
+restarts a running controller onto the new binary.

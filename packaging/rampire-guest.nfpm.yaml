@@ -31,6 +31,9 @@ scripts:
   postinstall: "./packaging/scripts/guest-postinstall.sh"
   preremove: "./packaging/scripts/guest-preremove.sh"
   postremove: "./packaging/scripts/guest-postremove.sh"
+# rampire vm add reads the guest's kernel release through the agent.
+recommends:
+  - qemu-guest-agent
 # The unit opens the control channel with OpenFile=, new in systemd 253.
 overrides:
   rpm:

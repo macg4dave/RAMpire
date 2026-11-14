@@ -60,26 +60,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools rpm apt-utils
-          curl -sSfL -o nfpm.deb \
+          # Outside the checkout: an untracked file would make the build dirty.
+          curl -sSfL -o "$RUNNER_TEMP/nfpm.deb" \
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb"
-          sudo dpkg -i nfpm.deb
+          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
+      # The same version and build identity a development package gets from
+      # `cargo xtask package`. A tag must match the crate's version.
       - name: Version
         run: |
-          crate=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "rampire") | .version')
+          VERSION=$(cargo xtask package --print-version)
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            test "${GITHUB_REF_NAME#v}" = "$crate" \
-              || { echo "tag $GITHUB_REF_NAME but rampire is $crate" >&2; exit 1; }
-            echo "VERSION=$crate" >> "$GITHUB_ENV"
-          else
-            # Untagged builds sort before the release they lead to.
-            echo "VERSION=$crate~dev.${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+            test "${GITHUB_REF_NAME#v}" = "$VERSION" \
+              || { echo "tag $GITHUB_REF_NAME but the packages would be $VERSION" >&2; exit 1; }
           fi
-      - name: Build
-        run: |
-          export RAMPIRE_BUILD_ID=${GITHUB_SHA::12}
-          cargo build --release --locked -p rampire -p rampire-guest-linux
-          cargo build --release --locked --target x86_64-unknown-linux-musl -p rampire -p rampire-guest-linux
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
       # A release signs with the project key. A run by hand signs with a
       # throwaway key, so it tests the signing and the apt repository too.
       - name: Signing key
@@ -102,8 +96,8 @@ jobs:
           bash packaging/srpm.sh "$VERSION" "${GITHUB_SHA::12}" srpm --rebuild
           mkdir -p dist
           cp srpm/*.src.rpm dist/
-      - name: Package
-        run: bash packaging/build.sh "$VERSION" dist
+      - name: Build and package
+        run: cargo xtask package --static --output dist
       - name: The packages are signed, and apt installs from the repository
         run: |
           bash packaging/apt-repo.sh dist public

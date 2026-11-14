@@ -5,7 +5,7 @@
 //!
 //! The guest is named by an SSH destination the caller supplies, so nothing
 //! here knows any site's machines. The remote account needs passwordless
-//! `sudo`. `package` builds the Debian package production installs use.
+//! `sudo`. Packages come from `cargo xtask package`.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -35,7 +35,6 @@ const EVIDENCE_SCHEMA_VERSION: u32 = 1;
 
 const HELP: &str = "linux requires one of:
   build
-  package --output DIRECTORY
   deploy SSH_DESTINATION --output PATH [--apply]
   status SSH_DESTINATION
   uninstall SSH_DESTINATION --output PATH [--apply] [--discard-state]";
@@ -43,9 +42,6 @@ const HELP: &str = "linux requires one of:
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Action {
     Build,
-    Package {
-        output: String,
-    },
     Deploy {
         target: String,
         output: String,
@@ -65,11 +61,6 @@ enum Action {
 fn parse(arguments: &[&str]) -> Result<Action, String> {
     let (command, target, options) = match arguments {
         ["build"] => return Ok(Action::Build),
-        ["package", "--output", output] if !output.is_empty() => {
-            return Ok(Action::Package {
-                output: (*output).to_owned(),
-            })
-        }
         [command @ ("deploy" | "status" | "uninstall"), target, options @ ..]
             if valid_destination(target) =>
         {
@@ -126,7 +117,6 @@ pub fn run(arguments: &[String], repo: &Path) -> Result<(), String> {
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
     match parse(&arguments)? {
         Action::Build => build(repo).map(|_| ()),
-        Action::Package { output } => package(&repo.join(output), repo),
         Action::Status { target } => {
             let installed = remote_status(&target, repo)?;
             for (key, value) in &installed {
@@ -178,61 +168,6 @@ fn build(repo: &Path) -> Result<String, String> {
     }
     println!("Built {} as build {}", binary.display(), identity.build_id);
     Ok(identity.build_id)
-}
-
-/// Build the stamped guest and its Debian package in `output`.
-fn package(output: &Path, repo: &Path) -> Result<(), String> {
-    let build_id = build(repo)?;
-    let binary = read_binary(repo, GUEST_BINARY)?;
-    let unit = read_source(repo, UNIT_SOURCE)?;
-    let monitor = unix_text(&read_source(repo, MONITOR_SOURCE)?);
-    std::fs::create_dir_all(output)
-        .map_err(|error| format!("create {}: {error}", output.display()))?;
-    let path = crate::debian::build(
-        &crate::debian::Contents {
-            build_id: &build_id,
-            cargo_version: env!("CARGO_PKG_VERSION"),
-            architecture: crate::debian::architecture()?,
-            maintainer: &maintainer(repo)?,
-            binary: &binary,
-            unit: &unit,
-            monitor: &monitor,
-        },
-        output,
-        repo,
-    )?;
-    let bytes =
-        std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    println!(
-        "Built {} (build {build_id}, sha256 {})",
-        path.display(),
-        sha256(&bytes, repo)?
-    );
-    Ok(())
-}
-
-/// Who built the package: `DEBFULLNAME` and `DEBEMAIL` as Debian tools take
-/// them, else the checkout's Git identity.
-fn maintainer(repo: &Path) -> Result<String, String> {
-    let setting = |variable: &str, git_key: &str| -> Result<String, String> {
-        match std::env::var(variable) {
-            Ok(value) if !value.trim().is_empty() => Ok(value.trim().to_owned()),
-            _ => process::checked_text("git", &[process::os("config"), process::os(git_key)], repo)
-                .map(|value| value.trim().to_owned())
-                .map_err(|_| {
-                    format!("set {variable} or git {git_key} to name the package's maintainer")
-                }),
-        }
-    };
-    let name = setting("DEBFULLNAME", "user.name")?;
-    let email = setting("DEBEMAIL", "user.email")?;
-    if [&name, &email]
-        .iter()
-        .any(|value| value.contains(['<', '>', '\n']))
-    {
-        return Err("maintainer name and email must not contain <, > or newlines".to_owned());
-    }
-    Ok(format!("{name} <{email}>"))
 }
 
 /// Prints `key=value` lines describing the installation. Every probe is
@@ -553,12 +488,6 @@ mod tests {
     fn commands_need_a_destination_and_reject_unsafe_ones() {
         assert_eq!(parse(&["build"]), Ok(Action::Build));
         assert_eq!(
-            parse(&["package", "--output", "dist"]),
-            Ok(Action::Package {
-                output: "dist".to_owned()
-            })
-        );
-        assert_eq!(
             parse(&["status", "user@guest.lan"]),
             Ok(Action::Status {
                 target: "user@guest.lan".to_owned()
@@ -589,8 +518,7 @@ mod tests {
         );
         for bad in [
             &["config", "x.toml"][..],
-            &["package"],
-            &["package", "--output", ""],
+            &["package", "--output", "dist"],
             &["deploy", "guest"],
             &["deploy", "-oProxyCommand=x", "--output", "e.json"],
             &["deploy", "guest; reboot", "--output", "e.json"],

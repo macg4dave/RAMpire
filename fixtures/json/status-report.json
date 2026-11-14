@@ -1,6 +1,12 @@
 {
   "schema": "rampire.status-report",
   "version": 1,
+  "controller": {
+    "unit": "rampire.service",
+    "active_state": "active",
+    "sub_state": "running",
+    "unit_file_state": "enabled"
+  },
   "vms": [
     {
       "schema": "rampire.status",

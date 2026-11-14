@@ -1,12 +1,12 @@
 # Tools
 
-Observation and development tools. Run `watch`, `metrics` and
-`qualification` on the KVM host; they read the controller's journal,
-libvirt and each guest's publication. `CONFIG` below is the configuration
-directory the controller runs (installed as `/etc/rampire`); with
-several VMs, `--vm NAME` picks one. They follow the controller unit,
-`rampire.service`. On the host, `rampire top` and `rampire watch` are the
-same views without a checkout.
+Observation and development tools. The live views are `rampire watch`
+and `rampire top`, from the installed package. `metrics` and
+`qualification` run from a checkout on the KVM host. All of them read the
+controller's journal, libvirt and each guest's publication. `CONFIG` below
+is the configuration directory the controller runs (installed as
+`/etc/rampire`); with several VMs, `--vm NAME` picks one. They follow the
+controller unit, `rampire.service`.
 
 ## Guest publications
 
@@ -20,7 +20,7 @@ the control channel writes no file, so only the controller's copy shows it.
 ## Watching the controller
 
 ```bash
-cargo xtask watch --config CONFIG
+rampire watch [VM]
 ```
 
 A live view of one VM: device size, requested and current memory, the
@@ -29,7 +29,7 @@ guest's latest publication and the controller's events.
 ## Watching the pool
 
 ```bash
-cargo xtask pool --config CONFIG
+rampire top
 ```
 
 A live view of every VM in the configuration on one screen, read-only like
@@ -64,17 +64,14 @@ plain snapshot. Ctrl+C leaves the last view on the screen as plain text.
 From a Windows workstation, open it over SSH:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\windows\Watch-Pool.ps1 [-NewWindow] [-Update]
+powershell -ExecutionPolicy Bypass -File tools\windows\Watch-Pool.ps1 [-NewWindow]
 ```
 
-`Watch-Pool.ps1` connects with `ssh -t`, builds xtask in a checkout of
-this repository on the KVM host as the SSH user, then runs it through
-`sudo` so it can read `/etc/rampire/` and the controller's
-journal. The host and checkout are site values: pass `-HostName` and
-`-Checkout`, set `RAMPIRE_POOL_HOST` and `RAMPIRE_POOL_CHECKOUT`,
-or copy [deploy/examples/pool.env.example](../deploy/examples/pool.env.example)
-to `site/pool.env`. `-NewWindow` opens a separate 140-column window,
-`-Update` fast-forwards the host's checkout before building, and
+`Watch-Pool.ps1` connects with `ssh -t` and runs the host's installed
+`rampire top` through `sudo`, so the host needs no checkout. The host is a
+site value: pass `-HostName`, set `RAMPIRE_TOP_HOST`, or copy
+[deploy/examples/pool.env.example](../deploy/examples/pool.env.example) to
+`site/pool.env`. `-NewWindow` opens a separate 140-column window, and
 `-IntervalSeconds` and `-Events` are passed through.
 
 ## Recording a run
@@ -227,6 +224,28 @@ has its boot RAM and 1 GiB more available.
 | `clean-host-almalinux10`, `-rocky10`, `-fedora45`, `-debian13`, `-ubuntu2404` | A clean host of each supported family goes from nothing to a running controller with the package manager and `rampire init` (roadmap O2 exit) |
 | `linux-guest-debian13` | A guest with the guest package, room for a device but no device and no control channel, for `rampire vm add --fix-xml` (O3 exit); use `--keep` |
 | `ansible-almalinux10` | The example Ansible role on a clean host: "changed", then no change, then "changed" after a settings change (O4 exit) |
+
+## Removing pre-RAMpire leftovers
+
+```bash
+ssh HOST 'bash -s' -- list < tools/linux/legacy.sh            # report only
+ssh HOST 'bash -s' -- remove < tools/linux/legacy.sh          # dry run
+ssh HOST 'bash -s' -- remove --apply < tools/linux/legacy.sh  # remove
+ssh HOST 'bash -s' -- remove --apply --clear-scratch < tools/linux/legacy.sh
+```
+
+A development host or guest that had an install from before the clean
+break may still hold its files. RAMpire has no code for the old names
+(decision D9), so this one-time tool finds them. It looks for the paths,
+units and service account in the "Now" column of [names](names.md), and the
+old guest package. It also finds parked VM files whose domain is gone,
+old-name working folders under `~/scratch` (with `--clear-scratch`,
+everything else there too), and a checkout of this repository still in a
+folder under the old name. `--apply` clones that checkout again as
+`rampire`, carrying its untracked `site/` across, then deletes the old
+folder. It lists every libvirt domain with its control port and whether
+RAMpire manages it, but never undefines a domain or deletes a disk. A parked
+file whose domain still exists is kept for `rampire vm add`.
 
 ## Watching guest RAM
 

@@ -1,4 +1,4 @@
-//! `cargo xtask watch`: a live, read-only host-side dashboard of one
+//! `rampire watch`: a live, read-only host-side dashboard of one
 //! virtio-mem guest. It shows host RAM against the controller floor, the
 //! device, Windows' own view read over the guest agent, a device history
 //! chart and the controller's latest journal events.

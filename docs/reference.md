@@ -21,7 +21,7 @@ a problem found, 2 a wrong command line.
 
 | Command | What it does |
 |---|---|
-| `rampire init` | Suggests `global.toml` from the host's memory and its VMs (never over an existing one), creates the configuration folders and applies |
+| `rampire init` | Checks the host as `doctor` does and stops on a problem; then suggests `global.toml` from the host's memory and its VMs (never over an existing one), creates the configuration folders, applies, and enables and starts the controller |
 | `rampire doctor` | Checks libvirt 10.1+, QEMU 8.2+ with virtio-mem's options, the service account, the socket group, libvirt access and an applied configuration, with the fix for each problem |
 | `rampire check` | Checks the draft and every VM's attestation against the live VMs; changes nothing |
 
@@ -38,7 +38,7 @@ a problem found, 2 a wrong command line.
 
 | Command | What it does |
 |---|---|
-| `rampire vm add VM [--fix-xml] [--review PROFILE] [--kernel RELEASE] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE]` | Starts managing a VM: checks its definition (fixing it with `--fix-xml`, keeping the old one), fills in its review from the definition and asks the rest, writes its settings, restarts it if its definition changed, and applies. A VM with a file in `parked/` gets that file back instead |
+| `rampire vm add VM [--fix-xml] [--review PROFILE] [--kernel RELEASE] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE]` | Starts managing a VM: checks its definition (fixing it with `--fix-xml`, keeping the old one: a NUMA cell, `maxMemory`, the device and the control channel), fills in its review from the definition and the guest agent and asks the rest, writes its settings, restarts it if its definition changed, and applies. A VM with a file in `parked/` gets that file back instead |
 | `rampire vm attest VM [--restart] [--no-apply]` | Attests a running VM again from its review profile, then applies. `--restart` cold-restarts it first |
 | `rampire vm attest --drifted` | Lists every running VM whose live evidence no longer matches its attestation, asks, and attests them again |
 | `rampire vm remove VM` | Stops managing a VM at once. It keeps its memory until its next cold start, which begins on boot RAM alone. Its file is kept in `parked/` |

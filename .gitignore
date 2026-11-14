@@ -39,5 +39,9 @@ logs/
 # Legacy local output may exist in older worktrees. Current tooling never writes here.
 .vscode-artifacts/
 
+# Packages from `cargo xtask package` and packaging/srpm.sh
+/dist/
+/srpm/
+
 # Site configuration (real VM names, hosts and paths); see deploy/examples/
 /site/

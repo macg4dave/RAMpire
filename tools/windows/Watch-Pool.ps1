@@ -1,38 +1,28 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Opens the pool dashboard (`cargo xtask pool`) on the KVM host over SSH.
+Opens the pool dashboard (`rampire top`) on the KVM host over SSH.
 .DESCRIPTION
-Runs on the Windows workstation. Over `ssh -t` it builds the xtask binary in
-a checkout of this repository on the KVM host (as the SSH user; Cargo never
-runs as root), then runs that prebuilt binary through sudo so the dashboard
-can read the controller's configuration and journal. The dashboard is
+Runs on the Windows workstation. Over `ssh -t` it runs the host's installed
+`rampire top` through sudo, so it can read the controller's configuration
+and journal. No checkout or build is needed on the host. The dashboard is
 read-only. Ctrl+C stops it and leaves the last view on screen to copy.
 
-The host and checkout are site values. Pass them, or set them once in the
-environment or in site/pool.env (untracked; copy
-deploy/examples/pool.env.example):
-  RAMPIRE_POOL_HOST      SSH destination of the KVM host
-  RAMPIRE_POOL_CHECKOUT  Path of this repository's checkout on that host
-  RAMPIRE_POOL_CONFIG    Configuration directory; default /etc/rampire
+The host is a site value. Pass it, or set it once in the environment or in
+site/pool.env (untracked; copy deploy/examples/pool.env.example):
+  RAMPIRE_TOP_HOST  SSH destination of the KVM host
 .EXAMPLE
 .\Watch-Pool.ps1
 .EXAMPLE
-.\Watch-Pool.ps1 -NewWindow
-.EXAMPLE
-.\Watch-Pool.ps1 -HostName kvm-host -Checkout '~/src/rampire' -Update
+.\Watch-Pool.ps1 -HostName kvm-host -NewWindow
 #>
 [CmdletBinding()]
 param(
     [string] $HostName,
-    [string] $Checkout,
-    [string] $Config,
     [ValidateRange(0.1, 3600)]
     [double] $IntervalSeconds = 1,
     [ValidateRange(1, 30)]
     [int] $Events = 8,
-    # Fast-forward the host's checkout from its remote before building.
-    [switch] $Update,
     # Open the dashboard in a separate, suitably sized console window.
     [switch] $NewWindow
 )
@@ -40,64 +30,32 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Explicit parameters win, then the environment, then site/pool.env.
-$site = @{}
+# An explicit parameter wins, then the environment, then site/pool.env.
+if (-not $HostName) { $HostName = [Environment]::GetEnvironmentVariable('RAMPIRE_TOP_HOST') }
 $siteFile = Join-Path $PSScriptRoot '..\..\site\pool.env'
-if (Test-Path -LiteralPath $siteFile) {
+if (-not $HostName -and (Test-Path -LiteralPath $siteFile)) {
     foreach ($line in Get-Content -LiteralPath $siteFile) {
-        if ($line -match '^\s*([A-Z_]+)\s*=\s*(.*?)\s*$') { $site[$Matches[1]] = $Matches[2] }
+        if ($line -match '^\s*RAMPIRE_TOP_HOST\s*=\s*(.*?)\s*$') { $HostName = $Matches[1] }
     }
 }
-function Resolve-Setting([string] $Value, [string] $Name, [string] $Default) {
-    if ($Value) { return $Value }
-    $fromEnvironment = [Environment]::GetEnvironmentVariable($Name)
-    if ($fromEnvironment) { return $fromEnvironment }
-    if ($site.ContainsKey($Name) -and $site[$Name]) { return $site[$Name] }
-    return $Default
-}
-$HostName = Resolve-Setting $HostName 'RAMPIRE_POOL_HOST' ''
-$Checkout = Resolve-Setting $Checkout 'RAMPIRE_POOL_CHECKOUT' ''
-$Config = Resolve-Setting $Config 'RAMPIRE_POOL_CONFIG' '/etc/rampire'
-if (-not $HostName -or -not $Checkout) {
-    throw 'Name the KVM host and its checkout: -HostName and -Checkout, ' +
-        'RAMPIRE_POOL_HOST and RAMPIRE_POOL_CHECKOUT, or site/pool.env ' +
+if (-not $HostName) {
+    throw 'Name the KVM host: -HostName, RAMPIRE_TOP_HOST, or site/pool.env ' +
         '(see deploy/examples/pool.env.example).'
 }
-foreach ($value in @($HostName, $Checkout, $Config)) {
-    if ($value -match '[\s''"`$\\;&|<>]') {
-        throw "Refusing a host, checkout or config with spaces or shell characters: $value"
-    }
+if ($HostName -match '[\s''"`$\\;&|<>]') {
+    throw "Refusing a host name with spaces or shell characters: $HostName"
 }
+$interval = $IntervalSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
 
 if ($NewWindow) {
     $arguments = @(
         '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command',
-        ("mode con cols=140 lines=52; & '{0}' -HostName '{1}' -Checkout '{2}' -Config '{3}' " +
-            '-IntervalSeconds {4} -Events {5}{6}') -f $PSCommandPath, $HostName, $Checkout,
-            $Config, $IntervalSeconds.ToString([Globalization.CultureInfo]::InvariantCulture),
-            $Events, $(if ($Update) { ' -Update' } else { '' })
+        ("mode con cols=140 lines=52; & '{0}' -HostName '{1}' -IntervalSeconds {2} -Events {3}" -f
+            $PSCommandPath, $HostName, $interval, $Events)
     )
     Start-Process powershell -ArgumentList $arguments
     return
 }
 
-# A leading ~/ means the SSH user's home; everything else is used as given.
-$remoteCheckout = if ($Checkout -like '~/*') { '$HOME/' + $Checkout.Substring(2) } else { $Checkout }
-$interval = $IntervalSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
-$script = @"
-set -eu
-cd -- "$remoteCheckout"
-if [ -f "`$HOME/.cargo/env" ]; then . "`$HOME/.cargo/env"; fi
-$(if ($Update) { "echo '==> updating the checkout'; git pull --ff-only" })
-echo '==> building xtask'
-cargo build --quiet --release -p xtask
-exec sudo target/release/xtask pool --config '$Config' --interval-seconds $interval --events $Events
-"@
-# Base64 keeps the script clear of Windows PowerShell's native-argument
-# quoting; process substitution keeps the terminal as bash's stdin, so sudo
-# can prompt and Ctrl+C reaches the dashboard.
-$encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script.Replace("`r`n", "`n")))
-& ssh -t $HostName "bash <(echo $encoded | base64 -d)"
-if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 130) {
-    Write-Warning "ssh ended with exit code $LASTEXITCODE"
-}
+& ssh -t $HostName "sudo rampire top --interval-seconds $interval --events $Events"
+exit $LASTEXITCODE

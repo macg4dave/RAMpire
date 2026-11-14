@@ -21,6 +21,11 @@ again (decision D9).
   profiles are TOML, with a source for every answer.
 - One unit, `rampire.service`, ordered after libvirt's single or split
   daemons.
-- Host and guest packages as RPM and `.deb`, and static tarballs.
+- `rampire init` checks the host first, and leaves the controller
+  enabled and running. `rampire vm add --fix-xml` also adds a missing NUMA
+  cell and `maxMemory`, and reads the guest's kernel release from its QEMU
+  guest agent. `rampire status` shows the controller unit's state.
+- Host and guest packages as RPM and `.deb`, and static tarballs. The
+  guest package recommends `qemu-guest-agent`.
 - Every document names its schema and starts at version 1. The control
   channel port is `org.rampire.control.0`.

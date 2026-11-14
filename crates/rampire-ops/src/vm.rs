@@ -39,6 +39,11 @@ pub struct Inspection {
     pub locked_memory: bool,
     /// The memory balloon's model; `None` with no balloon element.
     pub balloon: Option<String>,
+    /// `<vcpu>`: the virtual CPUs a NUMA cell added by `--fix-xml` holds.
+    pub vcpus: u32,
+    /// The domain's `<memory>`: with no NUMA cell, the boot RAM.
+    pub memory_bytes: u64,
+    memory_unit: String,
 }
 
 impl Inspection {
@@ -52,13 +57,13 @@ impl Inspection {
         if self.numa_cells == 0 {
             problems.push((
                 "the domain has no NUMA cell".to_owned(),
-                "a virtio-mem device needs one: add <numa><cell id='0' cpus='0-N' memory='BOOT' unit='KiB'/></numa> inside <cpu>".to_owned(),
+                "rampire vm add --fix-xml adds one, or add <numa><cell id='0' cpus='0-N' memory='BOOT' unit='KiB'/></numa> inside <cpu>".to_owned(),
             ));
         }
         if self.max_memory_slots.is_none() {
             problems.push((
                 "the domain has no <maxMemory>".to_owned(),
-                "add <maxMemory slots='1' unit='KiB'>TOTAL</maxMemory>, TOTAL being boot RAM plus the device".to_owned(),
+                "rampire vm add --fix-xml adds it, or add <maxMemory slots='1' unit='KiB'>TOTAL</maxMemory>, TOTAL being boot RAM plus the device".to_owned(),
             ));
         }
         match self.devices.len() {
@@ -100,9 +105,22 @@ impl Inspection {
                 "save the virtio-mem device's requested size as 0, so the VM starts on boot RAM alone".to_owned(),
             ),
             None if self.can_add_device() => {
+                if self.adds_numa_cell() {
+                    changes.push(format!(
+                        "add a NUMA cell holding the {} vCPUs and the {} MiB boot RAM",
+                        self.vcpus,
+                        self.boot() / MIB
+                    ));
+                }
+                if self.max_memory_slots.is_none() {
+                    changes.push(format!(
+                        "add <maxMemory> with {} slot(s), for boot RAM plus the device",
+                        self.other_memory_devices + 1
+                    ));
+                }
                 changes.push(format!(
                     "add a {} MiB virtio-mem device",
-                    default_device_bytes(self.boot_bytes) / MIB
+                    default_device_bytes(self.boot()) / MIB
                 ));
             }
             _ => {}
@@ -110,11 +128,30 @@ impl Inspection {
         changes
     }
 
+    /// Boot RAM: the NUMA cells' memory, or the domain's `<memory>` when a
+    /// cell is still to be added.
+    fn boot(&self) -> u64 {
+        if self.numa_cells > 0 {
+            self.boot_bytes
+        } else {
+            self.memory_bytes
+        }
+    }
+
+    /// No NUMA cell, but what one needs: the vCPUs and the memory.
+    fn adds_numa_cell(&self) -> bool {
+        self.numa_cells == 0 && self.vcpus > 0 && self.memory_bytes > 0
+    }
+
+    /// A device can be added once there is a NUMA cell and a free memory
+    /// slot, or when `--fix-xml` can add them: a cell when there is none,
+    /// and `<maxMemory>` when it is missing. Too few slots in an existing
+    /// `<maxMemory>` is left to a person.
     fn can_add_device(&self) -> bool {
-        self.numa_cells > 0
+        (self.numa_cells > 0 || self.adds_numa_cell())
             && self
                 .max_memory_slots
-                .is_some_and(|slots| slots as usize > self.other_memory_devices)
+                .is_none_or(|slots| slots as usize > self.other_memory_devices)
     }
 }
 
@@ -143,6 +180,29 @@ pub fn inspect(xml: &str) -> Result<Inspection, String> {
             }
             Event::Empty(element) => look(&element, &path, &mut inspection, &mut device)?,
             Event::Text(text) => {
+                let at = |names: &[&[u8]]| {
+                    path.len() == names.len()
+                        && path
+                            .iter()
+                            .zip(names)
+                            .all(|(seen, name)| seen.as_slice() == *name)
+                };
+                if at(&[b"domain", b"vcpu"]) {
+                    let raw = text.decode().map_err(|error| error.to_string())?;
+                    inspection.vcpus = raw
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("domain XML: vcpu {raw:?}"))?;
+                } else if at(&[b"domain", b"memory"]) {
+                    let raw = text.decode().map_err(|error| error.to_string())?;
+                    let unit = std::mem::take(&mut inspection.memory_unit);
+                    let unit = if unit.is_empty() {
+                        "KiB".to_owned()
+                    } else {
+                        unit
+                    };
+                    inspection.memory_bytes = libvirt_bytes(raw.trim(), &unit)?;
+                }
                 if let Some((current, Some(field), unit)) = device.as_mut() {
                     let raw = text.decode().map_err(|error| error.to_string())?;
                     let bytes = libvirt_bytes(raw.trim(), unit)?;
@@ -181,6 +241,9 @@ fn look(
     let name = element.name().as_ref().to_vec();
     let parent = path.last().map(Vec::as_slice);
     match (name.as_slice(), parent) {
+        (b"memory", Some(b"domain")) => {
+            inspection.memory_unit = attribute(element, b"unit")?.unwrap_or_default();
+        }
         (b"maxMemory", Some(b"domain")) => {
             inspection.max_memory_slots =
                 attribute(element, b"slots")?.and_then(|slots| slots.parse().ok());
@@ -316,7 +379,14 @@ pub fn fix_xml(xml: &str, inspection: &Inspection) -> Result<Option<String>, Str
             text.replace_range(start..end, &fixed);
         }
         None if inspection.can_add_device() => {
-            let size = default_device_bytes(inspection.boot_bytes);
+            let boot = inspection.boot();
+            let size = default_device_bytes(boot);
+            if inspection.adds_numa_cell() {
+                insert_numa_cell(&mut text, inspection.vcpus, boot)?;
+            }
+            if inspection.max_memory_slots.is_none() {
+                insert_max_memory(&mut text, inspection.other_memory_devices + 1, boot + size)?;
+            }
             insert_device(
                 &mut text,
                 &format!(
@@ -336,6 +406,64 @@ pub fn fix_xml(xml: &str, inspection: &Inspection) -> Result<Option<String>, Str
         )?;
     }
     Ok((text != xml).then_some(text))
+}
+
+/// A NUMA cell holding every vCPU and the boot RAM, in `<cpu>`; a domain
+/// with no `<cpu>` gets one before `<devices>`.
+fn insert_numa_cell(text: &mut String, vcpus: u32, boot: u64) -> Result<(), String> {
+    let numa = format!(
+        "<numa>\n      <cell id='0' cpus='0-{}' memory='{}' unit='KiB'/>\n    </numa>",
+        vcpus - 1,
+        boot / 1024
+    );
+    if let Some(start) = text.find("<cpu") {
+        let close = start
+            + text[start..]
+                .find('>')
+                .ok_or("the <cpu> element has no end")?;
+        if text[..close].ends_with('/') {
+            // <cpu .../> becomes <cpu ...>NUMA</cpu>.
+            let open = text[start..close - 1].trim_end().to_owned();
+            text.replace_range(start..=close, &format!("{open}>\n    {numa}\n  </cpu>"));
+        } else {
+            let end = start
+                + text[start..]
+                    .find("</cpu>")
+                    .ok_or("the <cpu> element has no end")?;
+            let line_start = text[..end].rfind('\n').map_or(end, |index| index + 1);
+            text.insert_str(line_start, &format!("    {numa}\n"));
+        }
+        return Ok(());
+    }
+    let devices = text.find("<devices").ok_or("the domain has no <devices>")?;
+    let line_start = text[..devices]
+        .rfind('\n')
+        .map_or(devices, |index| index + 1);
+    text.insert_str(line_start, &format!("  <cpu>\n    {numa}\n  </cpu>\n"));
+    Ok(())
+}
+
+/// `<maxMemory>`, on its own line before the domain's `<memory>`.
+fn insert_max_memory(text: &mut String, slots: usize, total: u64) -> Result<(), String> {
+    let at = text
+        .find("<memory unit")
+        .or_else(|| text.find("<memory>"))
+        .ok_or("the domain has no <memory>")?;
+    let line_start = text[..at].rfind('\n').map_or(at, |index| index + 1);
+    let indent = text[line_start..at].to_owned();
+    let (insert_at, indent) = if indent.trim().is_empty() {
+        (line_start, indent)
+    } else {
+        (at, String::new())
+    };
+    text.insert_str(
+        insert_at,
+        &format!(
+            "{indent}<maxMemory slots='{slots}' unit='KiB'>{}</maxMemory>\n",
+            total / 1024
+        ),
+    );
+    Ok(())
 }
 
 fn insert_device(text: &mut String, device: &str) -> Result<(), String> {
@@ -445,12 +573,21 @@ pub fn question_text(question: &str) -> &'static str {
     }
 }
 
-/// The review profile's text for these answers.
+/// The guest's kernel release from the QEMU guest agent's
+/// `guest-get-osinfo` reply, when it has one.
+pub fn kernel_release_from_osinfo(reply: &str) -> Option<String> {
+    let reply: serde_json::Value = serde_json::from_str(reply).ok()?;
+    let release = reply.get("return")?.get("kernel-release")?.as_str()?.trim();
+    (!release.is_empty()).then(|| release.to_owned())
+}
+
+/// The review profile's text for these answers. `driver` is the guest's
+/// driver version and where it came from.
 pub fn review_toml(
     vm: &str,
     answers: &[(&str, bool, AnswerSource)],
     slots: u32,
-    driver: &str,
+    driver: (&str, AnswerSource),
 ) -> String {
     let source = |source: AnswerSource| match source {
         AnswerSource::Detected => "detected",
@@ -466,7 +603,9 @@ pub fn review_toml(
         ));
     }
     text.push_str(&format!(
-        "memory_slot_budget = {{ value = {slots}, source = \"detected\" }}\nvfio_mapping_budget = {{ value = 1, source = \"detected\" }}\nguest_driver_version = {{ value = \"{driver}\", source = \"confirmed\" }}\n"
+        "memory_slot_budget = {{ value = {slots}, source = \"detected\" }}\nvfio_mapping_budget = {{ value = 1, source = \"detected\" }}\nguest_driver_version = {{ value = \"{}\", source = \"{}\" }}\n",
+        driver.0,
+        source(driver.1)
     ));
     text
 }
@@ -572,9 +711,19 @@ mod tests {
     }
 
     #[test]
-    fn a_domain_without_numa_or_slots_is_reported_not_edited() {
-        let bare = "<domain><memory unit='KiB'>1048576</memory><devices></devices></domain>";
+    fn a_domain_without_numa_or_slots_gets_them() {
+        let bare = "<domain type='kvm'>
+  <name>plain</name>
+  <memory unit='KiB'>2097152</memory>
+  <vcpu placement='static'>2</vcpu>
+  <cpu mode='host-passthrough' check='none'/>
+  <devices>
+    <memballoon model='none'/>
+  </devices>
+</domain>
+";
         let inspection = inspect(bare).unwrap();
+        assert_eq!((inspection.vcpus, inspection.memory_bytes), (2, 2 * GIB));
         let problems: Vec<_> = inspection
             .problems()
             .into_iter()
@@ -582,8 +731,46 @@ mod tests {
             .collect();
         assert!(problems.iter().any(|p| p.contains("NUMA")));
         assert!(problems.iter().any(|p| p.contains("maxMemory")));
-        // Only the channel can be added; no device without NUMA and a slot.
+        assert_eq!(inspection.fixable().len(), 4, "{:?}", inspection.fixable());
+        let text = fix_xml(bare, &inspection).unwrap().unwrap();
+        assert!(
+            text.contains("<cpu mode='host-passthrough' check='none'>\n    <numa>"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  <maxMemory slots='1' unit='KiB'>8388608</maxMemory>\n  <memory"),
+            "{text}"
+        );
+        let fixed = inspect(&text).unwrap();
+        assert_eq!((fixed.numa_cells, fixed.boot_bytes), (1, 2 * GIB));
+        assert_eq!(
+            fixed.device().map(|device| device.size_bytes),
+            Some(6 * GIB)
+        );
+        assert!(fixed.control_channel);
+        assert!(fixed.problems().is_empty(), "{:?}", fixed.problems());
+        assert_eq!(
+            fix_xml(&text, &fixed).unwrap(),
+            None,
+            "fixing is idempotent"
+        );
+    }
+
+    #[test]
+    fn a_domain_with_no_cpu_element_gets_one() {
+        let bare = "<domain>\n  <memory unit='KiB'>1048576</memory>\n  <vcpu>1</vcpu>\n  <devices>\n  </devices>\n</domain>\n";
+        let inspection = inspect(bare).unwrap();
         let fixed = inspect(&fix_xml(bare, &inspection).unwrap().unwrap()).unwrap();
+        assert_eq!(fixed.numa_cells, 1);
+        assert!(fixed.problems().is_empty(), "{:?}", fixed.problems());
+    }
+
+    #[test]
+    fn a_domain_whose_slots_are_all_used_is_reported_not_edited() {
+        let full = "<domain>\n  <maxMemory slots='1' unit='KiB'>4194304</maxMemory>\n  <memory unit='KiB'>2097152</memory>\n  <vcpu>1</vcpu>\n  <cpu><numa><cell id='0' cpus='0' memory='1048576' unit='KiB'/></numa></cpu>\n  <devices>\n    <memory model='dimm'><target><size unit='KiB'>1048576</size><node>0</node></target></memory>\n  </devices>\n</domain>\n";
+        let inspection = inspect(full).unwrap();
+        // Only the channel can be added: there is no free slot for a device.
+        let fixed = inspect(&fix_xml(full, &inspection).unwrap().unwrap()).unwrap();
         assert!(fixed.control_channel && fixed.device().is_none());
     }
 
@@ -626,7 +813,7 @@ mod tests {
                 (a.question, value, source)
             })
             .collect();
-        let text = review_toml("web", &answers, 1, "linux 6.12");
+        let text = review_toml("web", &answers, 1, ("linux 6.12", AnswerSource::Detected));
         let root = std::env::temp_dir().join(format!("rampire-vm-review-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("web.toml");
@@ -636,5 +823,24 @@ mod tests {
         let review = review.expect("valid profile");
         assert_eq!(review.no_vdpa.source, AnswerSource::Detected);
         assert_eq!(review.workload_reviewed.source, AnswerSource::Confirmed);
+        assert_eq!(review.guest_driver_version.source, AnswerSource::Detected);
+    }
+
+    #[test]
+    fn the_kernel_release_is_read_from_the_guest_agent() {
+        assert_eq!(
+            kernel_release_from_osinfo(
+                r#"{"return":{"name":"Debian GNU/Linux","kernel-release":"6.12.86+deb13-amd64"}}"#
+            ),
+            Some("6.12.86+deb13-amd64".to_owned())
+        );
+        for reply in [
+            "",
+            "{}",
+            r#"{"return":{}}"#,
+            r#"{"return":{"kernel-release":" "}}"#,
+        ] {
+            assert_eq!(kernel_release_from_osinfo(reply), None, "{reply}");
+        }
     }
 }

@@ -13,10 +13,10 @@ commands = [
   "dnf install -y libvirt-daemon-kvm qemu-kvm",
   "systemctl enable --now virtqemud.socket",
   "dnf install -y $SEED/rampire-[0-9]*.x86_64.rpm",
-  # Before init the only problem is that nothing is applied yet.
-  "rampire doctor || [ $? -eq 1 ]",
+  # init checks the host, applies and starts the controller (quick start).
   "rampire init --yes",
-  "systemctl enable --now rampire",
+  "systemctl is-active rampire",
+  "systemctl is-enabled rampire",
   "rampire status",
   "rampire doctor",
 ]

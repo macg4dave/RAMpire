@@ -1,4 +1,4 @@
-//! `cargo xtask pool`: a live, read-only dashboard of the whole pool. One
+//! `rampire top`: a live, read-only dashboard of the whole pool. One
 //! screen shows the pool's charge split by VM, every VM's device and guest,
 //! a stacked history of the pool and the controller's pool events for all
 //! VMs.

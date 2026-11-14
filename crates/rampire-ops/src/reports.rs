@@ -32,7 +32,21 @@ rampire_core::schema_name! {
 pub struct StatusReport {
     pub schema: StatusReportSchema,
     pub version: u16,
+    pub controller: ControllerUnit,
     pub vms: Vec<ControllerStatusSnapshot>,
+}
+
+/// The controller's systemd unit, as `systemctl show` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerUnit {
+    pub unit: String,
+    /// `active`, `inactive`, `failed`, ...
+    pub active_state: String,
+    /// `running`, `dead`, ...
+    pub sub_state: String,
+    /// `enabled`, `disabled`, ...
+    pub unit_file_state: String,
 }
 
 /// `rampire check --json`.
@@ -86,6 +100,12 @@ mod tests {
         StatusReport {
             schema: StatusReportSchema,
             version: REPORT_VERSION,
+            controller: ControllerUnit {
+                unit: "rampire.service".to_owned(),
+                active_state: "active".to_owned(),
+                sub_state: "running".to_owned(),
+                unit_file_state: "enabled".to_owned(),
+            },
             vms: vec![ControllerStatusSnapshot {
                 schema: StatusSchema,
                 version: CONTROLLER_STATUS_VERSION,

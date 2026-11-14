@@ -65,14 +65,8 @@ The quick-start guide walks you from installation to your first managed VM, incl
 Once the host package is installed, the main flow is:
 
 ```bash
-# Check that your KVM host meets the requirements
-sudo rampire doctor
-
-# Create a suggested configuration for this host
+# Check the host, write a suggested configuration and start the controller
 sudo rampire init
-
-# Start the controller
-sudo systemctl enable --now rampire
 
 # After installing the Linux guest service inside the VM,
 # add a VM (replace 'webserver' with its libvirt name)
@@ -97,7 +91,7 @@ sudo rampire top
 | **Guest service** | systemd **253+** for the packaged Linux guest service |
 | **Access** | Administrator access to the host and to each VM you want to enrol |
 
-RAMpire has been exercised on **RHEL 10**. Other Linux distributions and packaged installation paths are being qualified; see [current validation work](docs/roadmap_next.md) before deploying on a new distribution.
+RAMpire has been exercised on **RHEL 10**. Other Linux distributions and packaged installation paths are being qualified; see [current validation work](docs/roadmap.md) before deploying on a new distribution.
 
 ## See what's happening
 

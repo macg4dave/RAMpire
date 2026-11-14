@@ -29,6 +29,7 @@ holds the code to it, so the examples are always what the command writes.
 
 | Field | Meaning |
 |---|---|
+| `controller` | The controller's unit: `unit`, and `active_state`, `sub_state` and `unit_file_state` as `systemctl show` reports them (`unknown` when it reports none) |
 | `vms` | One `rampire.status` document per VM, in name order |
 
 ### `rampire.status`

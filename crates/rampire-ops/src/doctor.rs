@@ -123,19 +123,20 @@ pub fn run(connection: &str, account: &str, applied_root: &Path) -> Vec<Finding>
 
     let current = applied_root.join(crate::applied::CURRENT);
     findings.push(if current.exists() {
-        Finding::ok(
-            "applied configuration",
-            format!("{} exists", current.display()),
-        )
+        Finding::ok(APPLIED_CHECK, format!("{} exists", current.display()))
     } else {
         Finding::problem(
-            "applied configuration",
+            APPLIED_CHECK,
             "nothing has been applied, so the controller has nothing to run",
             "rampire init on a new host, or rampire apply",
         )
     });
     findings
 }
+
+/// The check that something is applied: the one `rampire init` itself
+/// satisfies.
+pub const APPLIED_CHECK: &str = "applied configuration";
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 

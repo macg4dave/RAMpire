@@ -81,6 +81,8 @@ QEMU, `virsh` on the path, polkit, and Rust to build the controller.
    sudo systemctl enable --now rampire
    ```
 
+   On a new host `sudo rampire init` does both, after checking the host.
+
    Every VM in `vms.d/` needs its attestation in
    `/etc/rampire/attestations/<vm_name>.attestation.json`.
 
@@ -205,6 +207,8 @@ are what it does, for doing them by hand or in a fleet.
 1. **Device.** Give the domain a virtio-mem device with a stable alias and
    the options the controller requires. The device's `requested` size in
    the saved definition should be zero: the guest asks for what it needs.
+   It needs a NUMA cell holding the boot RAM (`<numa>` in `<cpu>`) and a
+   free slot in `<maxMemory>`; `--fix-xml` adds both when they are missing.
 
    ```xml
    <maxMemory slots='1' unit='GiB'>16</maxMemory>
@@ -229,7 +233,7 @@ are what it does, for doing them by hand or in a fleet.
    ```xml
    <channel type='unix'>
      <target type='virtio' name='org.rampire.control.0'/>
-     <alias name='ua-virtiomem-control'/>
+     <alias name='ua-rampire-control'/>
    </channel>
    ```
 

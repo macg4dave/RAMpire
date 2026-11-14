@@ -7,49 +7,56 @@ unless it says "in the VM".
 
 ## 1. Install
 
+RHEL, AlmaLinux, Rocky Linux and Fedora:
+
 ```bash
-dnf copr enable macg4dave/rampire && dnf install rampire   # RHEL, AlmaLinux, Rocky, Fedora
-apt install rampire                                        # Debian, Ubuntu, after adding the repository
+dnf copr enable macg4dave/rampire
+dnf install rampire
 ```
 
-[Releasing](releasing.md#installing-from-the-repositories) shows how to
-add the apt repository. The packages are also on the
+Debian and Ubuntu:
+
+```bash
+curl -fsSL https://macg4dave.github.io/RAMpire/apt/rampire.asc \
+  | install -D -m 0644 /dev/stdin /etc/apt/keyrings/rampire.asc
+curl -fsSL -o /etc/apt/sources.list.d/rampire.sources \
+  https://macg4dave.github.io/RAMpire/apt/rampire.sources
+apt update && apt install rampire
+```
+
+On RHEL, AlmaLinux and Rocky Linux, `dnf copr` comes from
+`dnf-plugins-core`. The packages are also on the
 [releases page](https://github.com/macg4dave/rampire/releases)
 (`dnf install ./rampire-VERSION.x86_64.rpm`,
 `apt install ./rampire_VERSION_amd64.deb`). For a host without a package,
 the static tarball has its own `INSTALL.md`.
 
-## 2. Check the host
-
-```bash
-rampire doctor
-```
-
-Each `problem` line comes with its `fix`. At this point the only
-problem should be that nothing is applied yet; the next step deals with
-that.
-
-## 3. Set up
+## 2. Set up
 
 ```bash
 rampire init
-systemctl enable --now rampire
 ```
 
-`init` reads the host's memory and its VMs, writes
-`/etc/rampire/global.toml` with a suggested pool and host reserve, and
-applies it. The controller now runs, managing no VMs yet.
+`init` first checks the host: libvirt and QEMU versions, the service
+account and libvirt access. If something is missing it says what and how
+to fix it, and changes nothing. Otherwise it reads the host's memory and
+its VMs, writes `/etc/rampire/global.toml` with a suggested pool and host
+reserve, applies it, and starts the controller, which also starts at boot.
+It now runs, managing no VMs yet.
 
-## 4. Install the guest service, in the VM
+## 3. Install the guest service, in the VM
+
+Add the same repository in the VM as on the host in step 1, then:
 
 ```bash
-dnf install ./rampire-guest-VERSION.x86_64.rpm   # or: apt install ./rampire-guest_VERSION_amd64.deb
+dnf install rampire-guest      # or: apt install rampire-guest
 ```
 
 It needs systemd 253 or later: Debian 13, Ubuntu 24.04, RHEL 10, current
-Fedora.
+Fedora. It also installs the QEMU guest agent, so the host can read the
+VM's kernel release in the next step.
 
-## 5. Add the VM
+## 4. Add the VM
 
 ```bash
 rampire vm add webserver --fix-xml
@@ -57,21 +64,18 @@ rampire vm add webserver --fix-xml
 
 `vm add` reads the VM's definition and:
 
-- adds what it lacks, after showing you the exact change: a virtio-mem
-  device and the control channel. The old definition is kept;
-- asks the few questions the definition can't answer, such as whether
-  the VM's programs cope with memory coming and going, and the guest's
-  kernel release (`uname -r` in the VM);
+- adds what it lacks, after showing you the exact change: a NUMA cell and
+  `maxMemory` if it has none, a virtio-mem device and the control
+  channel. The old definition is kept;
+- asks whether the VM's programs cope with memory coming and going, and
+  the few other questions the definition can't answer;
 - writes `/etc/rampire/vms.d/webserver.toml`, with limits from the VM's
   boot RAM;
 - offers to restart the VM so its new definition takes effect, then
   applies. Applying attests the VM: it records exactly how the VM looks,
   and every resize checks that it still does.
 
-If the VM has no NUMA cell or `maxMemory`, `vm add` says what to add to
-its definition; add it with `virsh edit webserver` and run `vm add` again.
-
-## 6. Watch it work
+## 5. Watch it work
 
 ```bash
 rampire status
@@ -79,7 +83,8 @@ rampire top
 ```
 
 The VM starts small and grows as its programs need memory. When it goes
-quiet it hands memory back for other VMs.
+quiet it hands memory back for other VMs. `rampire doctor` checks the
+whole setup at any time.
 
 ## Next
 

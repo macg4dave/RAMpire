@@ -12,10 +12,10 @@ timeout_minutes = 30
 commands = [
   "apt-get install -y libvirt-daemon-system qemu-system-x86",
   "apt-get install -y $SEED/rampire_*_amd64.deb",
-  # Before init the only problem is that nothing is applied yet.
-  "rampire doctor || [ $? -eq 1 ]",
+  # init checks the host, applies and starts the controller (quick start).
   "rampire init --yes",
-  "systemctl enable --now rampire",
+  "systemctl is-active rampire",
+  "systemctl is-enabled rampire",
   "rampire status",
   "rampire doctor",
 ]

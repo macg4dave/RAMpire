@@ -93,11 +93,12 @@ struct Cli {
 enum Command {
     /// Run the controller. The systemd unit runs this.
     Daemon,
-    /// Set up a new host: suggest global.toml from the host's memory and
-    /// its VMs, create the configuration folders and apply.
+    /// Set up a new host: check it as doctor does, suggest global.toml from
+    /// the host's memory and its VMs, create the configuration folders,
+    /// apply, and enable and start the controller.
     ///
-    /// An existing global.toml is never changed; the suggestion is shown
-    /// instead.
+    /// A host problem stops init before anything is written. An existing
+    /// global.toml is never changed; the suggestion is shown instead.
     Init,
     /// Show the controller's status for one VM, or for every VM.
     Status {
@@ -462,14 +463,20 @@ fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
                 .map_err(|error| format!("status of {name}: {error}"))?,
         );
     }
+    let controller = rampire_ops::units::controller_state();
     if cli.json {
         print_json(&StatusReport {
             schema: StatusReportSchema,
             version: 1,
+            controller,
             vms,
         })?;
         return Ok(ExitCode::SUCCESS);
     }
+    println!(
+        "{}: {} ({}), {}",
+        controller.unit, controller.active_state, controller.sub_state, controller.unit_file_state
+    );
     if vms.is_empty() {
         println!(
             "RAMpire manages no VMs yet. Add one to {}.",
@@ -573,8 +580,27 @@ fn check(cli: &Cli) -> Result<ExitCode, String> {
 
 fn init(cli: &Cli) -> Result<ExitCode, String> {
     use rampire_ops::init;
-    let host = rampire_ops::watch::read_meminfo()?.total;
     let connection = connection(cli)?;
+    // The host checks `doctor` makes, all but the applied configuration
+    // init is about to make, so a host that can't run the controller is
+    // told why before anything is written.
+    let problems: Vec<_> = rampire_ops::doctor::run(&connection, SERVICE_ACCOUNT, applied_root())
+        .into_iter()
+        .filter(|finding| !finding.ok && finding.check != rampire_ops::doctor::APPLIED_CHECK)
+        .collect();
+    if !problems.is_empty() {
+        for finding in &problems {
+            println!("problem: {}: {}", finding.check, finding.detail);
+            if let Some(fix) = &finding.fix {
+                println!("  fix: {fix}");
+            }
+        }
+        return Err(
+            "this host isn't ready for RAMpire; fix the problems above and run init again"
+                .to_owned(),
+        );
+    }
+    let host = rampire_ops::watch::read_meminfo()?.total;
     let timeout = std::time::Duration::from_secs(30);
     let virsh = |args: &[&str]| {
         let mut arguments = vec![process::os("-c"), process::os(&connection)];
@@ -623,7 +649,39 @@ fn init(cli: &Cli) -> Result<ExitCode, String> {
     if suggestion.pool_bytes.is_none() {
         println!("This host has no memory left for a pool once its VMs have theirs.");
     }
-    apply(cli, false)
+    let code = apply(cli, false)?;
+    // The unit runs the default configuration, so only that one starts it.
+    if cli.config.is_none() {
+        start_controller()?;
+    }
+    Ok(code)
+}
+
+/// Enable and start the controller once a configuration is applied, so
+/// `init` leaves it running and starting at boot. One already enabled and
+/// running is left alone: `apply` has moved it onto the new copy.
+fn start_controller() -> Result<(), String> {
+    let unit = controller_unit();
+    if rampire_ops::applied::current(applied_root())?.is_none() {
+        println!("nothing is applied, so {unit} is not started");
+        return Ok(());
+    }
+    let state = rampire_ops::units::controller_state();
+    if state.active_state == "active" && state.unit_file_state == "enabled" {
+        return Ok(());
+    }
+    process::bounded_text(
+        "systemctl",
+        &[
+            process::os("enable"),
+            process::os("--now"),
+            process::os(&unit),
+        ],
+        Path::new("/"),
+        std::time::Duration::from_secs(120),
+    )?;
+    println!("started {unit}; it also starts at boot");
+    Ok(())
 }
 
 fn applied_root() -> &'static Path {
@@ -768,7 +826,14 @@ fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String> {
     if parked.exists() {
         restore_parked(&directory, &parked, &settings_path, &alias, options)?;
     } else {
-        write_vm_settings(&directory, &settings_path, &inspection, &alias, options)?;
+        write_vm_settings(
+            &libvirt,
+            &directory,
+            &settings_path,
+            &inspection,
+            &alias,
+            options,
+        )?;
     }
 
     // A VM is attested while it runs, on the definition it was started
@@ -851,6 +916,7 @@ fn restore_parked(
 /// Write a new VM's settings, with its review profile: the one named, or
 /// one written from the definition and a person's answers.
 fn write_vm_settings(
+    libvirt: &rampire_ops::attest::Libvirt,
     directory: &Path,
     settings_path: &Path,
     inspection: &rampire_ops::vm::Inspection,
@@ -891,9 +957,25 @@ fn write_vm_settings(
                 }
                 answers.push((detected.question, value, source));
             }
-            let kernel = match options.kernel {
-                Some(kernel) => kernel.to_owned(),
-                None => ask("The guest's kernel release (uname -r in the VM):")?,
+            // The kernel release: given, else read from a running guest's
+            // QEMU guest agent, else asked.
+            let (kernel, source) = match options.kernel {
+                Some(kernel) => (kernel.to_owned(), AnswerSource::Confirmed),
+                None => match libvirt
+                    .virsh(&["qemu-agent-command", name, r#"{"execute":"guest-get-osinfo"}"#])
+                    .ok()
+                    .as_deref()
+                    .and_then(vm::kernel_release_from_osinfo)
+                {
+                    Some(kernel) => {
+                        println!("{name} runs Linux {kernel} (read from its guest agent)");
+                        (kernel, AnswerSource::Detected)
+                    }
+                    None => (
+                        ask("The guest's kernel release (uname -r in the VM; its guest agent didn't answer):")?,
+                        AnswerSource::Confirmed,
+                    ),
+                },
             };
             if kernel.is_empty() {
                 return Err("a review needs the guest's kernel release".to_owned());
@@ -902,7 +984,7 @@ fn write_vm_settings(
                 name,
                 &answers,
                 inspection.max_memory_slots.unwrap_or(1),
-                &format!("linux {kernel}"),
+                (&format!("linux {kernel}"), source),
             );
             let path = directory
                 .join(rampire_ops::applied::REVIEW_DIRECTORY)

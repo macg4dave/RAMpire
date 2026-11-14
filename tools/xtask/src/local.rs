@@ -123,21 +123,3 @@ fn lint(repo: &Path) -> Result<(), String> {
     println!("==> clippy (warnings denied)");
     process::run("cargo", &clippy, repo)
 }
-
-pub fn doctor_host() -> Result<(), String> {
-    let required = ["virsh"];
-    let missing: Vec<_> = required
-        .iter()
-        .copied()
-        .filter(|command| !process::command_exists(command))
-        .collect();
-    if missing.is_empty() {
-        println!("Host validation prerequisites are available.");
-        Ok(())
-    } else {
-        Err(format!(
-            "missing required host command(s): {}",
-            missing.join(", ")
-        ))
-    }
-}

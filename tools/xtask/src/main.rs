@@ -1,18 +1,15 @@
-mod attestation;
 mod build_identity;
-mod controller_status;
-mod debian;
-mod host_deploy;
 mod host_run;
 mod linux;
 mod local;
 mod metrics;
+mod package;
 mod preflight;
 mod qualification;
 mod testvm;
 mod windows;
 
-use rampire_ops::{pool, process, watch};
+use rampire_ops::process;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -21,14 +18,9 @@ const HELP: &str = r#"Repository build and test tooling
 
 Usage:
   cargo xtask gate <format|build|test|lint|checks|local|all>
-  cargo xtask doctor host
-  cargo xtask controller-status [OPTIONS]
-  cargo xtask attestation VM_NAME ALIAS REVIEW --output PATH [OPTIONS]
-  cargo xtask host-deploy --config DIR (--attestation-dir DIR | --attestation VM=PATH...) [OPTIONS]
-  cargo xtask host-run --config PATH --max-run-seconds N [OPTIONS]
+  cargo xtask host-run --config DIR --max-run-seconds N [OPTIONS]
   cargo xtask preflight VM_NAME ALIAS [OPTIONS]
   cargo xtask linux build
-  cargo xtask linux package --output DIRECTORY
   cargo xtask linux deploy SSH_DESTINATION --output PATH [--apply]
   cargo xtask linux status SSH_DESTINATION
   cargo xtask linux uninstall SSH_DESTINATION --output PATH [--apply] [--discard-state]
@@ -40,43 +32,16 @@ Usage:
   cargo xtask windows uninstall SERVICE --output PATH [--apply]
   cargo xtask windows verify EXPECTED_ED25519_FINGERPRINT --runs N
   cargo xtask qualification <start|run|status|review> [OPTIONS]
-  cargo xtask watch [OPTIONS]
   cargo xtask metrics [OPTIONS]
-  cargo xtask pool [OPTIONS]
   cargo xtask testvm <up|down|list> ...
-
-Attestation options:
-  --output PATH                 Required generated attestation path.
-  --command-timeout-seconds N   Required external-command bound.
-  --connect URI                 Libvirt URI; default qemu:///system.
-
-Host deployment options (installs rampire.service; settings install under /etc/rampire/):
-  --config DIR                  Reviewed configuration directory (global.toml and
-                                vms.d/NAME.toml), installed exactly as written
-                                (comments and sizes kept).
-  --attestation-dir DIR         Folder holding <vm_name>.attestation.json for each VM.
-  --attestation VM=PATH         One VM's attestation, overriding --attestation-dir.
-                                Every VM needs one; installed as
-                                /etc/rampire/attestations/<vm_name>.attestation.json.
-  --output PATH                 Required structured JSON evidence path.
-  --command-timeout-seconds N   Required external-command bound.
-  --apply                       Install; otherwise validate only.
-  --elevate                     Invoke this prebuilt xtask once through sudo.
+  cargo xtask package [--output DIR] [--static] | --print-version
 
 Host run options (the daemon in the foreground instead of systemd):
-  --config PATH                 Required host config file.
+  --config DIR                  Required configuration directory.
   --max-run-seconds N           Required; the daemon is stopped (SIGTERM) after N seconds.
   --min-host-available-bytes N  Stop the daemon if host MemAvailable falls below N.
   --log PATH                    Default .artifacts/host-run/<unix-millis>.log.
   --sudo                        Run the daemon through sudo (root-only attestation).
-
-Controller status options:
-  --vm NAME                     Select the VM; required when there are several.
-  --host-cli PATH               Required absolute candidate host executable.
-  --output PATH                 Required structured JSON evidence path.
-  --command-timeout-seconds N   Required external-command bound.
-  --connect URI                 Libvirt URI; default qemu:///system.
-  --elevate                     Invoke this prebuilt xtask once through sudo.
 
 No-actuation preflight options:
   --unit UNIT                   Required disabled/inactive rampire.service.
@@ -164,34 +129,21 @@ fn execute(arguments: &[String]) -> Result<(), String> {
     match arguments.first().map(String::as_str) {
         Some("help" | "--help" | "-h") | None => {
             print!(
-                "{HELP}\n{}\n{}\n{}\n{}",
-                watch::HELP,
-                pool::HELP,
+                "{HELP}\n{}\n{}\n{}",
                 metrics::HELP,
-                testvm::HELP
+                testvm::HELP,
+                package::HELP
             );
             Ok(())
         }
         Some("gate") => gate(&arguments[1..], &repo),
-        Some("doctor")
-            if arguments.get(1).map(String::as_str) == Some("host") && arguments.len() == 2 =>
-        {
-            local::doctor_host()
-        }
-        Some("doctor") => Err("doctor requires exactly: host".to_owned()),
-        Some("controller-status") => {
-            controller_status::run(&controller_status::parse(&arguments[1..])?, &repo)
-        }
-        Some("attestation") => attestation::run(&attestation::parse(&arguments[1..])?, &repo),
-        Some("host-deploy") => host_deploy::run(&host_deploy::parse(&arguments[1..])?, &repo),
         Some("host-run") => host_run::run(&host_run::parse(&arguments[1..])?, &repo),
         Some("preflight") => preflight::run(&preflight::parse(&arguments[1..])?, &repo),
         Some("linux") => linux::run(&arguments[1..], &repo),
         Some("windows") => windows::run(windows::parse(&arguments[1..])?, &repo),
         Some("qualification") => qualification::execute(&arguments[1..], &repo),
-        Some("watch") => watch::run(&watch::parse(&arguments[1..])?, &repo),
-        Some("pool") => pool::run(&pool::parse(&arguments[1..])?, &repo),
         Some("metrics") => metrics::execute(&arguments[1..], &repo),
+        Some("package") => package::run(&package::parse(&arguments[1..])?, &repo),
         Some("testvm") => testvm::run(&testvm::parse(&arguments[1..])?, &repo),
         Some(command) => Err(format!("unknown command: {command}\n\n{HELP}")),
     }
