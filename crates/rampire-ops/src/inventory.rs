@@ -144,11 +144,28 @@ pub fn read_guest_publication(
                 format!("{LINUX_CONTROL_PATH} isn't a publication: {error}"),
             ),
         },
-        Err(error) if is_missing_file(&error) => (
-            Published::No,
-            None,
-            "the guest service hasn't published: install rampire-guest in the VM".to_owned(),
-        ),
+        // A guest publishes only once a host gives it settings, so before
+        // RAMpire manages the VM its unit file says it is there.
+        Err(error) if is_missing_file(&error) => {
+            match files.read_file(GUEST_UNIT, MAX_TELEMETRY_BYTES) {
+                Ok(_) => (
+                    Published::Installed,
+                    None,
+                    "its guest service is installed; it publishes once RAMpire manages the VM"
+                        .to_owned(),
+                ),
+                Err(error) if is_missing_file(&error) => (
+                    Published::No,
+                    None,
+                    "its guest service isn't installed: install rampire-guest in the VM".to_owned(),
+                ),
+                Err(error) => (
+                    Published::Unknown,
+                    None,
+                    format!("the guest agent didn't answer: {error}"),
+                ),
+            }
+        }
         Err(error) => (
             Published::Unknown,
             None,
@@ -156,6 +173,9 @@ pub fn read_guest_publication(
         ),
     }
 }
+
+/// The guest service's unit, as the guest package installs it.
+const GUEST_UNIT: &str = "/usr/lib/systemd/system/rampire-guest.service";
 
 fn is_missing_file(error: &str) -> bool {
     error.contains("No such file") || error.contains("cannot find the file")

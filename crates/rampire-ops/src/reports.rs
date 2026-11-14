@@ -148,9 +148,13 @@ pub enum Published {
     /// A publication was read: it is this old, in seconds.
     #[serde(rename = "published")]
     Yes { age_seconds: u64 },
-    /// The guest was asked and has no publication.
+    /// The guest was asked and has no publication; for a VM that isn't
+    /// managed, the guest service isn't installed.
     #[serde(rename = "not_published")]
     No,
+    /// A VM that isn't managed has the guest service installed. It
+    /// publishes once RAMpire manages the VM and sends its settings.
+    Installed,
     /// The guest couldn't be asked: not running, or no guest agent.
     Unknown,
 }

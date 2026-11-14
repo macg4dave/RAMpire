@@ -273,6 +273,12 @@ fn published_span<'a>(theme: &Theme, guest: &Published) -> Span<'a> {
             format!("guest published {age_seconds}s ago"),
             Tone::Good,
         ),
+        Published::Installed => widgets::marked(
+            theme,
+            Icon::Ok,
+            "guest service installed".to_owned(),
+            Tone::Good,
+        ),
         Published::No => widgets::marked(
             theme,
             Icon::Problem,
@@ -418,12 +424,12 @@ fn add_screen(area: Rect, buf: &mut Buffer, app: &App) {
             theme.tone(Tone::Warn),
         )));
     }
-    if !matches!(vm.guest, Published::Yes { .. }) {
+    if matches!(vm.guest, Published::No) {
         lines.push(Line::default());
         lines.push(Line::from(widgets::marked(
             theme,
             Icon::Guest,
-            "Its guest service hasn't published. Install it in the VM first:".to_owned(),
+            "Its guest service isn't installed. Install it in the VM first:".to_owned(),
             Tone::Warn,
         )));
         lines.push(Line::from(Span::styled(
