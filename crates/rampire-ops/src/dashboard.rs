@@ -1,8 +1,12 @@
-//! The coloured terminal frame shared by the live host dashboards
-//! (`watch` and `pool`): boxed panels, meters and bars drawn as ANSI on a
-//! terminal or as plain ASCII when piped.
+//! The terminal side of the live host dashboards (`top` and `watch`): the
+//! session that refreshes a view until Ctrl+C, and the coloured frame it
+//! draws, boxed panels, meters and bars, as ANSI on a terminal or as plain
+//! ASCII when piped.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MIB: u64 = 1 << 20;
 pub const GIB: u64 = 1 << 30;
@@ -334,4 +338,87 @@ pub fn terminal_columns() -> Option<usize> {
 #[cfg(not(unix))]
 pub fn terminal_columns() -> Option<usize> {
     None
+}
+
+/// How a live view refreshes.
+pub struct LiveView {
+    /// Draw one plain snapshot and return.
+    pub once: bool,
+    /// Time from the start of one refresh to the next.
+    pub interval: Duration,
+    /// The widest the frame grows on a wide terminal.
+    pub max_width: usize,
+}
+
+/// One refresh: what is shown now, and the plain text left on the normal
+/// screen to copy once the view closes.
+pub struct Refresh {
+    pub output: String,
+    pub copyable: String,
+}
+
+/// Draw a frame with `build` as plain text followed by `after`, and on a
+/// terminal again in colour to show.
+pub fn draw(width: usize, interactive: bool, after: &str, build: impl Fn(&mut Frame)) -> Refresh {
+    let mut plain = Frame::new(width, false);
+    build(&mut plain);
+    let copyable = format!("{}{after}", plain.render());
+    let output = if interactive {
+        let mut frame = Frame::new(width, true);
+        build(&mut frame);
+        frame.render()
+    } else {
+        copyable.clone()
+    };
+    Refresh { output, copyable }
+}
+
+/// Refresh a view until Ctrl+C or SIGTERM, or once with `view.once`.
+/// `refresh` gets when the refresh started, the frame width and whether
+/// stdout is an interactive terminal. On a terminal the view runs on the
+/// alternate screen and leaves its last frame as plain text when it closes.
+pub fn run_live(
+    view: &LiveView,
+    mut refresh: impl FnMut(Instant, usize, bool) -> Result<Refresh, String>,
+) -> Result<(), String> {
+    let interactive = !view.once && std::io::stdout().is_terminal();
+    let stop = Arc::new(AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        signal_hook::flag::register(signal, Arc::clone(&stop))
+            .map_err(|error| format!("install signal handler: {error}"))?;
+    }
+    let mut stdout = std::io::stdout().lock();
+    if interactive {
+        // Alternate screen, hidden cursor; restored below on every exit.
+        let _ = write!(stdout, "\x1b[?1049h\x1b[?25l");
+    }
+    let mut copyable = String::new();
+    let result = (|| {
+        while !stop.load(Ordering::Acquire) {
+            let started = Instant::now();
+            let width = terminal_columns()
+                .map_or(100, |columns| columns.saturating_sub(1))
+                .clamp(80, view.max_width);
+            let shown = refresh(started, width, interactive)?;
+            copyable = shown.copyable;
+            stdout
+                .write_all(shown.output.as_bytes())
+                .and_then(|()| stdout.flush())
+                .map_err(|error| format!("write dashboard: {error}"))?;
+            if view.once {
+                return Ok(());
+            }
+            // Sleep in short steps so Ctrl+C restores the terminal promptly.
+            while !stop.load(Ordering::Acquire) && started.elapsed() < view.interval {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        Ok(())
+    })();
+    if interactive {
+        // Leave the last view as plain text on the normal screen to copy.
+        let _ = write!(stdout, "\x1b[0m\x1b[?25h\x1b[?1049l{copyable}");
+        let _ = stdout.flush();
+    }
+    result
 }

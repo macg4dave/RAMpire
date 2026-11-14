@@ -36,7 +36,7 @@ pub(crate) fn init(cli: &Cli) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    let host = rampire_ops::watch::read_meminfo()?.total;
+    let host = rampire_ops::host_readings::read_meminfo()?.total;
     let timeout = std::time::Duration::from_secs(30);
     let virsh = |args: &[&str]| {
         let mut arguments = vec![process::os("-c"), process::os(&connection)];

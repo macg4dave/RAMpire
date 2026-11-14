@@ -12,30 +12,23 @@
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::io::{IsTerminal, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rampire_core::{
-    parse_virtio_mem_xml_for_alias, MemoryResourceNotificationState, RawTelemetryEnvelope,
-    VirtioMemState,
-};
+use rampire_core::{MemoryResourceNotificationState, RawTelemetryEnvelope, VirtioMemState};
 use rampire_host::config::HostConfig;
 use rampire_host::guest_channel::PublicationCopyFirst;
-use rampire_host::host_memory::meminfo_bytes;
 use rampire_host::qga::{GuestFileReader, VirshGuestFiles};
-use rampire_host::virsh::{Virsh, VirshCommand};
+use rampire_host::virsh::Virsh;
 
 use crate::dashboard::{
-    clock, gib, host_name, mib, terminal_columns, Frame, BACKGROUND, CYAN, DIM, GIB, GREEN, LABEL,
-    MAGENTA, MIB, RED, VALUE, YELLOW,
+    clock, draw, gib, host_name, mib, run_live, Frame, LiveView, BACKGROUND, CYAN, DIM, GIB, GREEN,
+    LABEL, MAGENTA, MIB, RED, VALUE, YELLOW,
+};
+use crate::host_readings::{
+    device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
 };
 use crate::process;
-
-pub const MAX_TELEMETRY_BYTES: usize = 64 * 1024;
-pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub const HELP: &str = "Watch options (read-only live dashboard):
   --config PATH                 Required host TOML; the VM, device alias,
@@ -130,86 +123,49 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 }
 
 pub fn run(command: &Command, cwd: &Path) -> Result<(), String> {
-    let interactive = !command.once && std::io::stdout().is_terminal();
-    let stop = Arc::new(AtomicBool::new(false));
-    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
-        signal_hook::flag::register(signal, Arc::clone(&stop))
-            .map_err(|error| format!("install signal handler: {error}"))?;
-    }
     let virsh = Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
     let guest_files = PublicationCopyFirst::new(
         &command.vm,
         VirshGuestFiles::new(virsh.clone(), &command.vm),
     );
-    let mut stdout = std::io::stdout().lock();
-    if interactive {
-        // Alternate screen, hidden cursor; restored below on every exit.
-        let _ = write!(stdout, "\x1b[?1049h\x1b[?25l");
-    }
     let mut history = VecDeque::new();
     let mut guest = GuestView::default();
     let mut guest_read: Option<Instant> = None;
     let mut samples = 0u64;
-    // The last frame as plain text and the full events, left on screen at exit.
-    let mut copyable = String::new();
-    let result = (|| {
-        while !stop.load(Ordering::Acquire) {
-            let started = Instant::now();
-            samples += 1;
-            let device = device_state(&virsh, &command.vm, &command.alias);
-            if let Some(device) = device {
-                history.push_back(device);
-                if history.len() > 300 {
-                    history.pop_front();
-                }
-            }
-            if command.guest
-                && guest_read.is_none_or(|read| started - read >= command.guest_interval)
-            {
-                guest = read_guest(&guest_files, &command.telemetry_path);
-                guest_read = Some(started);
-            }
-            let width = terminal_columns()
-                .map_or(100, |columns| columns.saturating_sub(1))
-                .clamp(80, 120);
-            let sample = Sample {
-                host: read_meminfo()?,
-                device,
-                guest: &guest,
-                guest_age: guest_read.map(|read| started - read),
-                samples,
-            };
-            let journal = read_journal(command, cwd);
-            let mut plain = Frame::new(width, false);
-            build(&mut plain, command, &sample, &history, &journal);
-            copyable = format!("{}{}", plain.render(), full_events(&journal.events));
-            let output = if interactive {
-                let mut frame = Frame::new(width, true);
-                build(&mut frame, command, &sample, &history, &journal);
-                frame.render()
-            } else {
-                copyable.clone()
-            };
-            stdout
-                .write_all(output.as_bytes())
-                .and_then(|()| stdout.flush())
-                .map_err(|error| format!("write dashboard: {error}"))?;
-            if command.once {
-                return Ok(());
-            }
-            // Sleep in short steps so Ctrl+C restores the terminal promptly.
-            while !stop.load(Ordering::Acquire) && started.elapsed() < command.interval {
-                std::thread::sleep(Duration::from_millis(50));
+    let view = LiveView {
+        once: command.once,
+        interval: command.interval,
+        max_width: 120,
+    };
+    run_live(&view, |started, width, interactive| {
+        samples += 1;
+        let device = device_state(&virsh, &command.vm, &command.alias);
+        if let Some(device) = device {
+            history.push_back(device);
+            if history.len() > 300 {
+                history.pop_front();
             }
         }
-        Ok(())
-    })();
-    if interactive {
-        // Leave the last view as plain text on the normal screen to copy.
-        let _ = write!(stdout, "\x1b[0m\x1b[?25h\x1b[?1049l{copyable}");
-        let _ = stdout.flush();
-    }
-    result
+        if command.guest && guest_read.is_none_or(|read| started - read >= command.guest_interval) {
+            guest = read_guest(&guest_files, &command.telemetry_path);
+            guest_read = Some(started);
+        }
+        let sample = Sample {
+            host: read_meminfo()?,
+            device,
+            guest: &guest,
+            guest_age: guest_read.map(|read| started - read),
+            samples,
+        };
+        let journal = read_journal(command, cwd);
+        // The full events are left on screen too, after the last frame.
+        Ok(draw(
+            width,
+            interactive,
+            &full_events(&journal.events),
+            |frame| build(frame, command, &sample, &history, &journal),
+        ))
+    })
 }
 
 struct Sample<'a> {
@@ -218,37 +174,6 @@ struct Sample<'a> {
     guest: &'a GuestView,
     guest_age: Option<Duration>,
     samples: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct HostMemory {
-    pub total: u64,
-    pub available: u64,
-    pub swap_total: u64,
-    pub swap_free: u64,
-}
-
-pub fn read_meminfo() -> Result<HostMemory, String> {
-    let text = std::fs::read_to_string("/proc/meminfo")
-        .map_err(|error| format!("read /proc/meminfo: {error}"))?;
-    Ok(parse_meminfo(&text))
-}
-
-fn parse_meminfo(text: &str) -> HostMemory {
-    let field = |name: &str| meminfo_bytes(text, name).unwrap_or(0);
-    HostMemory {
-        total: field("MemTotal"),
-        available: field("MemAvailable"),
-        swap_total: field("SwapTotal"),
-        swap_free: field("SwapFree"),
-    }
-}
-
-pub fn device_state(virsh: &Virsh, vm: &str, alias: &str) -> Option<VirtioMemState> {
-    let xml = virsh.run(&["dumpxml".to_owned(), vm.to_owned()]).ok()?;
-    parse_virtio_mem_xml_for_alias(&xml, alias)
-        .ok()
-        .map(|state| state.memory)
 }
 
 #[derive(Default)]
@@ -783,16 +708,6 @@ mod tests {
         ] {
             assert!(parse(&bad.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
         }
-    }
-
-    #[test]
-    fn reads_meminfo_fields_in_bytes() {
-        let host = parse_meminfo(
-            "MemTotal:       32222876 kB\nMemFree: 1 kB\nMemAvailable:    8068956 kB\nSwapTotal: 4 kB\nSwapFree: 1 kB\n",
-        );
-        assert_eq!(host.total, 32_222_876 * 1024);
-        assert_eq!(host.available, 8_068_956 * 1024);
-        assert_eq!((host.swap_total, host.swap_free), (4096, 1024));
     }
 
     #[test]

@@ -10,11 +10,8 @@
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rampire_core::{RawTelemetryEnvelope, VirtioMemState};
 use rampire_host::config::HostSettings;
@@ -22,11 +19,13 @@ use rampire_host::guest_channel::publication_copy_path;
 use rampire_host::virsh::Virsh;
 
 use crate::dashboard::{
-    clock, gib, host_name, load_colour, mib, terminal_columns, Frame, BACKGROUND, CYAN, DIM, GIB,
-    GREEN, LABEL, RED, TRACK, VALUE, YELLOW,
+    clock, draw, gib, host_name, load_colour, mib, run_live, Frame, LiveView, BACKGROUND, CYAN,
+    DIM, GIB, GREEN, LABEL, RED, TRACK, VALUE, YELLOW,
+};
+use crate::host_readings::{
+    device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
 };
 use crate::process;
-use crate::watch::{self, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES};
 
 pub const HELP: &str = "Pool options (read-only live dashboard of every VM):
   --config PATH                 Required host list; the VMs, pool size and
@@ -188,84 +187,46 @@ impl Session {
 }
 
 pub fn run(command: &Command, cwd: &Path) -> Result<(), String> {
-    let interactive = !command.once && std::io::stdout().is_terminal();
-    let stop = Arc::new(AtomicBool::new(false));
-    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
-        signal_hook::flag::register(signal, Arc::clone(&stop))
-            .map_err(|error| format!("install signal handler: {error}"))?;
-    }
     let virsh = Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
-    let mut stdout = std::io::stdout().lock();
-    if interactive {
-        // Alternate screen, hidden cursor; restored below on every exit.
-        let _ = write!(stdout, "\x1b[?1049h\x1b[?25l");
-    }
     let mut history: VecDeque<Vec<u64>> = VecDeque::new();
     let mut session = Session::default();
     let mut samples = 0u64;
-    let mut copyable = String::new();
-    let result = (|| {
-        while !stop.load(Ordering::Acquire) {
-            let started = Instant::now();
-            samples += 1;
-            let vms: Vec<VmSample> = command
-                .vms
-                .iter()
-                .map(|vm| VmSample {
-                    device: watch::device_state(&virsh, &vm.name, &vm.alias),
-                    guest: read_publication(&publication_copy_path(&vm.name)),
-                })
-                .collect();
-            let sample = Sample {
-                host: watch::read_meminfo()?,
-                vms,
-                now_unix_millis: unix_millis(),
-                samples,
-            };
-            let charged = sample.vms.iter().map(VmSample::charge).sum::<u64>();
-            session.record(
-                charged,
-                command.pool_bytes.map(|pool| pool.saturating_sub(charged)),
-                sample.host.available,
-            );
-            history.push_back(sample.vms.iter().map(VmSample::charge).collect());
-            if history.len() > HISTORY_SAMPLES {
-                history.pop_front();
-            }
-            let events = read_events(command, cwd);
-            let width = terminal_columns()
-                .map_or(100, |columns| columns.saturating_sub(1))
-                .clamp(80, 140);
-            let mut plain = Frame::new(width, false);
-            build(&mut plain, command, &sample, &session, &history, &events);
-            copyable = plain.render();
-            let output = if interactive {
-                let mut frame = Frame::new(width, true);
-                build(&mut frame, command, &sample, &session, &history, &events);
-                frame.render()
-            } else {
-                copyable.clone()
-            };
-            stdout
-                .write_all(output.as_bytes())
-                .and_then(|()| stdout.flush())
-                .map_err(|error| format!("write dashboard: {error}"))?;
-            if command.once {
-                return Ok(());
-            }
-            // Sleep in short steps so Ctrl+C restores the terminal promptly.
-            while !stop.load(Ordering::Acquire) && started.elapsed() < command.interval {
-                std::thread::sleep(Duration::from_millis(50));
-            }
+    let view = LiveView {
+        once: command.once,
+        interval: command.interval,
+        max_width: 140,
+    };
+    run_live(&view, |_started, width, interactive| {
+        samples += 1;
+        let vms: Vec<VmSample> = command
+            .vms
+            .iter()
+            .map(|vm| VmSample {
+                device: device_state(&virsh, &vm.name, &vm.alias),
+                guest: read_publication(&publication_copy_path(&vm.name)),
+            })
+            .collect();
+        let sample = Sample {
+            host: read_meminfo()?,
+            vms,
+            now_unix_millis: unix_millis(),
+            samples,
+        };
+        let charged = sample.vms.iter().map(VmSample::charge).sum::<u64>();
+        session.record(
+            charged,
+            command.pool_bytes.map(|pool| pool.saturating_sub(charged)),
+            sample.host.available,
+        );
+        history.push_back(sample.vms.iter().map(VmSample::charge).collect());
+        if history.len() > HISTORY_SAMPLES {
+            history.pop_front();
         }
-        Ok(())
-    })();
-    if interactive {
-        // Leave the last view as plain text on the normal screen to copy.
-        let _ = write!(stdout, "\x1b[0m\x1b[?25h\x1b[?1049l{copyable}");
-        let _ = stdout.flush();
-    }
-    result
+        let events = read_events(command, cwd);
+        Ok(draw(width, interactive, "", |frame| {
+            build(frame, command, &sample, &session, &history, &events)
+        }))
+    })
 }
 
 /// The controller's copy of a guest's publication; missing (controller

@@ -528,57 +528,9 @@ where
         }
         let grant = match request.operation {
             MemoryOperation::Add => {
-                let available = host_memory
-                    .available_bytes()
-                    .map_err(HostRuntimeError::HostMemory)?;
-                let caps = [
-                    ("request", request.bytes),
-                    (
-                        "guest_maximum",
-                        self.config
-                            .max_ram
-                            .saturating_sub(base_ram)
-                            .saturating_sub(state.current_bytes),
-                    ),
-                    (
-                        "device_capacity",
-                        state
-                            .maximum_target_bytes()
-                            .saturating_sub(state.current_bytes),
-                    ),
-                    (
-                        "pool",
-                        ceiling.map_or(u64::MAX, |ceiling| {
-                            ceiling.saturating_sub(state.current_bytes)
-                        }),
-                    ),
-                    (
-                        "host_headroom",
-                        available
-                            .saturating_sub(host.committed)
-                            .saturating_sub(self.config.host_min_headroom_bytes)
-                            .saturating_sub(GROW_ADMISSION_MARGIN_BYTES),
-                    ),
-                ];
-                let free = caps.iter().map(|(_, bytes)| *bytes).min().unwrap_or(0);
-                let limiting = caps
-                    .iter()
-                    .filter(|(_, bytes)| *bytes == free)
-                    .map(|(name, _)| *name)
-                    .collect::<Vec<_>>()
-                    .join(",");
-                self.log(&format!("event=grant_limits {} available_bytes={available} committed_bytes={} reserve_bytes={} margin_bytes={} guest_maximum_bytes={} device_capacity_bytes={} pool_bytes={} host_room_bytes={} limiting_factors={limiting} alignment_remainder_bytes={}",
-                    describe(&request), host.committed, self.config.host_min_headroom_bytes, GROW_ADMISSION_MARGIN_BYTES,
-                    caps[1].1, caps[2].1, caps[3].1, caps[4].1, free % state.block_size_bytes));
-                free - free % state.block_size_bytes
+                self.growth_grant(&request, state, base_ram, ceiling, host_memory, host)?
             }
-            MemoryOperation::Remove => {
-                let minimum = self.config.min_ram.saturating_sub(base_ram);
-                let removable = state.current_bytes.saturating_sub(minimum);
-                let grant = request.bytes.min(removable);
-                self.log(&format!("event=grant_limits {} minimum_device_bytes={minimum} removable_bytes={removable} limiting_factors={}", describe(&request), if removable < request.bytes { "guest_minimum" } else { "request" }));
-                grant - grant % state.block_size_bytes
-            }
+            MemoryOperation::Remove => self.removal_grant(&request, state, base_ram),
         };
         self.log(&format!(
             "event=controller_decision action=grant {} grant_bytes={grant} pool_ceiling_bytes={ceiling:?} requested_bytes={} current_bytes={}",
@@ -618,6 +570,90 @@ where
         if stop.load(Ordering::Acquire) {
             return Ok(Step::Wait);
         }
+        let intent =
+            self.record_intent(&request, admission, state, direction, target_bytes, now)?;
+        let command = self.resize(state, &intent, host_memory, host, stop, admission_started);
+        self.settle_command(state, request, now, direction, command)
+    }
+
+    /// What a growth may have: the least of what was asked, the guest's
+    /// maximum, the device's capacity, the pool ceiling and the host's
+    /// headroom, in whole device blocks. Every limit is logged.
+    fn growth_grant<H: HostMemorySource>(
+        &self,
+        request: &MemoryRequest,
+        state: VirtioMemState,
+        base_ram: u64,
+        ceiling: Option<u64>,
+        host_memory: &H,
+        host: &HostBudget,
+    ) -> Result<u64, HostRuntimeError> {
+        let available = host_memory
+            .available_bytes()
+            .map_err(HostRuntimeError::HostMemory)?;
+        let caps = [
+            ("request", request.bytes),
+            (
+                "guest_maximum",
+                self.config
+                    .max_ram
+                    .saturating_sub(base_ram)
+                    .saturating_sub(state.current_bytes),
+            ),
+            (
+                "device_capacity",
+                state
+                    .maximum_target_bytes()
+                    .saturating_sub(state.current_bytes),
+            ),
+            (
+                "pool",
+                ceiling.map_or(u64::MAX, |ceiling| {
+                    ceiling.saturating_sub(state.current_bytes)
+                }),
+            ),
+            (
+                "host_headroom",
+                available
+                    .saturating_sub(host.committed)
+                    .saturating_sub(self.config.host_min_headroom_bytes)
+                    .saturating_sub(GROW_ADMISSION_MARGIN_BYTES),
+            ),
+        ];
+        let free = caps.iter().map(|(_, bytes)| *bytes).min().unwrap_or(0);
+        let limiting = caps
+            .iter()
+            .filter(|(_, bytes)| *bytes == free)
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(",");
+        self.log(&format!("event=grant_limits {} available_bytes={available} committed_bytes={} reserve_bytes={} margin_bytes={} guest_maximum_bytes={} device_capacity_bytes={} pool_bytes={} host_room_bytes={} limiting_factors={limiting} alignment_remainder_bytes={}",
+            describe(request), host.committed, self.config.host_min_headroom_bytes, GROW_ADMISSION_MARGIN_BYTES,
+            caps[1].1, caps[2].1, caps[3].1, caps[4].1, free % state.block_size_bytes));
+        Ok(free - free % state.block_size_bytes)
+    }
+
+    /// What a removal may take: what was asked, down to the guest's minimum,
+    /// in whole device blocks.
+    fn removal_grant(&self, request: &MemoryRequest, state: VirtioMemState, base_ram: u64) -> u64 {
+        let minimum = self.config.min_ram.saturating_sub(base_ram);
+        let removable = state.current_bytes.saturating_sub(minimum);
+        let grant = request.bytes.min(removable);
+        self.log(&format!("event=grant_limits {} minimum_device_bytes={minimum} removable_bytes={removable} limiting_factors={}", describe(request), if removable < request.bytes { "guest_minimum" } else { "request" }));
+        grant - grant % state.block_size_bytes
+    }
+
+    /// Make the admission and the command intent durable together, before
+    /// the command runs.
+    fn record_intent(
+        &mut self,
+        request: &MemoryRequest,
+        admission: RequestAdmission,
+        state: VirtioMemState,
+        direction: CommandDirection,
+        target_bytes: u64,
+        now: u64,
+    ) -> Result<CommandIntent, HostRuntimeError> {
         let intent = CommandIntent {
             operation_id: self.next_operation_id(),
             started_unix_millis: now,
@@ -626,8 +662,6 @@ where
             prior_current_bytes: state.current_bytes,
             target_bytes,
         };
-        let operation_id = intent.operation_id.clone();
-        // Admission and intent become durable together, before the command.
         if admission == RequestAdmission::New {
             self.control
                 .journal
@@ -640,8 +674,23 @@ where
                 )
                 .map_err(HostRuntimeError::Controller)?;
         }
-        self.control.intent = Some(intent);
+        self.control.intent = Some(intent.clone());
         self.save()?;
+        Ok(intent)
+    }
+
+    /// Reserve the growth in this round's host budget, then run the recorded
+    /// resize, guarded by a fresh host headroom check.
+    fn resize<H: HostMemorySource>(
+        &mut self,
+        state: VirtioMemState,
+        intent: &CommandIntent,
+        host_memory: &H,
+        host: &mut HostBudget,
+        stop: &AtomicBool,
+        admission_started: Instant,
+    ) -> Result<(), ResizeSinkError> {
+        let target_bytes = intent.target_bytes;
         let previously_committed = host.committed;
         let growth = target_bytes.saturating_sub(state.current_bytes);
         // Reserve before invoking a command: even a lost/error response may
@@ -659,7 +708,7 @@ where
                 headroom,
             )
         };
-        let command_started_unix_millis = now.saturating_add(
+        let command_started_unix_millis = intent.started_unix_millis.saturating_add(
             u64::try_from(admission_started.elapsed().as_millis()).unwrap_or(u64::MAX),
         );
         let command_started = Instant::now();
@@ -667,9 +716,23 @@ where
             self.resize_sink
                 .request_resize_guarded(state, target_bytes, stop, &authorize);
         self.log(&format!(
-            "event=resize_requested operation_id={operation_id} direction={direction:?} target_bytes={target_bytes} requested_bytes={} current_bytes={} command_started_unix_millis={command_started_unix_millis} command_elapsed_ms={} command_result={command:?}",
-            state.requested_bytes, state.current_bytes, command_started.elapsed().as_millis()
+            "event=resize_requested operation_id={} direction={:?} target_bytes={target_bytes} requested_bytes={} current_bytes={} command_started_unix_millis={command_started_unix_millis} command_elapsed_ms={} command_result={command:?}",
+            intent.operation_id, intent.direction, state.requested_bytes, state.current_bytes, command_started.elapsed().as_millis()
         ));
+        command
+    }
+
+    /// What the resize command's outcome leaves: a pending resize to watch,
+    /// a refused request when nothing ran, or a latch when its outcome is
+    /// unknown.
+    fn settle_command(
+        &mut self,
+        state: VirtioMemState,
+        request: MemoryRequest,
+        now: u64,
+        direction: CommandDirection,
+        command: Result<(), ResizeSinkError>,
+    ) -> Result<Step, HostRuntimeError> {
         match command {
             Ok(()) => {
                 self.pending_since = Some(Instant::now());
