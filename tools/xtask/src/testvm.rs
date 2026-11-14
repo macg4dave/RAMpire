@@ -10,7 +10,10 @@
 //! metadata element naming its disk and seed.
 //!
 //! The host's own values (where images go, which bridge VMs join) come from
-//! the environment, never from the scenario or the code.
+//! the environment or the checkout's `site/testvm.env`, never from the
+//! scenario or the code. Run as a user, every action runs itself again
+//! through `sudo` for the part that needs root; `--packages` first builds
+//! the packages from the checkout as that user.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -19,13 +22,16 @@ use std::time::{Duration, Instant};
 use rampire_ops::process;
 use serde::Deserialize;
 
-pub const HELP: &str = r#"Test VMs (run as root on the KVM host):
-  cargo xtask testvm up SCENARIO --name NAME [--file PATH]... [--keep] [--apply]
+pub const HELP: &str = r#"Test VMs (on the KVM host; each runs itself through sudo):
+  cargo xtask testvm up SCENARIO --name NAME [--packages] [--file PATH]... [--keep] [--apply]
   cargo xtask testvm down NAME [--apply]
   cargo xtask testvm list
 
 up options:
   --name NAME      The domain name (a-z, 0-9, - and _).
+  --packages       Build the packages from this checkout first
+                   (tools/build.sh package) and put each one in dist/ on
+                   the seed, where the scenario's commands find them.
   --file PATH      Put PATH on the VM's seed; commands find it in $SEED.
   --keep           Leave the VM running afterwards and print its address,
                    for further tests; remove it later with `down`.
@@ -34,7 +40,8 @@ up options:
 down removes a VM that `up` made: it stops RAMpire managing it if it does
 (`rampire vm remove`), then removes the domain, its disk and its seed.
 
-Environment (the host's values; see deploy/examples/testvm.env.example):
+Environment, or site/testvm.env in the checkout (the host's values; see
+deploy/examples/testvm.env.example):
   RAMPIRE_TESTVM_IMAGES   Folder for disks, seeds and downloaded images.
   RAMPIRE_TESTVM_BRIDGE   Host bridge the VMs join.
   RAMPIRE_TESTVM_SSH_KEY  Optional public key file for the VM's user tester.
@@ -83,12 +90,13 @@ fn default_disk_gib() -> u64 {
     10
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Up {
         scenario: PathBuf,
         name: String,
         files: Vec<PathBuf>,
+        packages: bool,
         keep: bool,
         apply: bool,
     },
@@ -126,10 +134,12 @@ fn parse_up(args: &[String]) -> Result<Command, String> {
         .filter(|value| !value.starts_with("--"))
         .ok_or("testvm up requires a SCENARIO file")?;
     let (mut name, mut files, mut keep, mut apply) = (None, Vec::new(), false, false);
+    let mut packages = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
             "--keep" if !keep => keep = true,
+            "--packages" if !packages => packages = true,
             "--apply" if !apply => apply = true,
             option @ ("--name" | "--file") => {
                 let value = args
@@ -152,9 +162,130 @@ fn parse_up(args: &[String]) -> Result<Command, String> {
         scenario: PathBuf::from(scenario),
         name,
         files,
+        packages,
         keep,
         apply,
     })
+}
+
+/// The command line for `command`, to run it again through sudo.
+fn arguments(command: &Command) -> Vec<OsString> {
+    let mut arguments = vec![OsString::from("testvm")];
+    match command {
+        Command::Up {
+            scenario,
+            name,
+            files,
+            packages,
+            keep,
+            apply,
+        } => {
+            arguments.extend([
+                OsString::from("up"),
+                scenario.clone().into(),
+                "--name".into(),
+                name.into(),
+            ]);
+            if *packages {
+                arguments.push("--packages".into());
+            }
+            for file in files {
+                arguments.extend(["--file".into(), file.clone().into()]);
+            }
+            if *keep {
+                arguments.push("--keep".into());
+            }
+            if *apply {
+                arguments.push("--apply".into());
+            }
+        }
+        Command::Down { name, apply } => {
+            arguments.extend(["down".into(), name.into()]);
+            if *apply {
+                arguments.push("--apply".into());
+            }
+        }
+        Command::List => arguments.push("list".into()),
+    }
+    arguments
+}
+
+/// Build the packages from the checkout, as the person running testvm
+/// (never as root: the build container is theirs), and return the
+/// command with each package in dist/ added as a `--file`.
+fn with_packages(command: Command, repo: &Path) -> Result<Command, String> {
+    let Command::Up {
+        scenario,
+        name,
+        mut files,
+        packages: true,
+        keep,
+        apply,
+    } = command
+    else {
+        return Ok(command);
+    };
+    let mut build = std::process::Command::new("bash");
+    if process::effective_uid() == 0 {
+        let user = std::env::var("SUDO_USER")
+            .ok()
+            .filter(|user| !user.is_empty() && user != "root")
+            .ok_or("--packages builds as a person, not root: run testvm as yourself")?;
+        build = std::process::Command::new("sudo");
+        build.args(["-u", &user, "-H", "bash"]);
+    }
+    let status = build
+        .args(["tools/build.sh", "package"])
+        .current_dir(repo)
+        .status()
+        .map_err(|error| format!("run tools/build.sh package: {error}"))?;
+    if !status.success() {
+        return Err(format!("tools/build.sh package failed: {status}"));
+    }
+    let dist = repo.join("dist");
+    let mut built: Vec<PathBuf> = std::fs::read_dir(&dist)
+        .map_err(|error| format!("read {}: {error}", dist.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "rpm" || extension == "deb")
+        })
+        .collect();
+    built.sort();
+    if built.is_empty() {
+        return Err(format!(
+            "tools/build.sh package left no packages in {}",
+            dist.display()
+        ));
+    }
+    files.extend(built);
+    Ok(Command::Up {
+        scenario,
+        name,
+        files,
+        packages: false,
+        keep,
+        apply,
+    })
+}
+
+/// Run this command again as root, through sudo, keeping the environment
+/// (the host's testvm values) and the working directory.
+fn elevate(command: &Command) -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| format!("find xtask: {error}"))?;
+    let status = std::process::Command::new("sudo")
+        .arg("-E")
+        .arg("--")
+        .arg(executable)
+        .args(arguments(command))
+        .status()
+        .map_err(|error| format!("run sudo: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("testvm as root failed: {status}"))
+    }
 }
 
 fn valid_name(name: &str) -> Result<(), String> {
@@ -179,12 +310,29 @@ struct Site {
     ssh_key: Option<String>,
 }
 
-fn site() -> Result<Site, String> {
+/// A value from the environment, else from the checkout's
+/// `site/testvm.env` (`NAME=value` lines; `#` starts a comment).
+fn site_value(name: &str, repo: &Path) -> Option<String> {
+    if let Ok(value) = std::env::var(name) {
+        if !value.trim().is_empty() {
+            return Some(value);
+        }
+    }
+    let text = std::fs::read_to_string(repo.join("site/testvm.env")).ok()?;
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
+        .filter(|(key, _)| key.trim() == name)
+        .map(|(_, value)| value.trim().trim_matches('"').to_owned())
+        .rfind(|value| !value.is_empty())
+}
+
+fn site(repo: &Path) -> Result<Site, String> {
     let required = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| format!("{name} is not set (see deploy/examples/testvm.env.example)"))
+        site_value(name, repo).ok_or_else(|| {
+            format!("{name} is not set, nor in site/testvm.env (see deploy/examples/testvm.env.example)")
+        })
     };
     let images = PathBuf::from(required("RAMPIRE_TESTVM_IMAGES")?);
     if !images.is_absolute() || !images.is_dir() {
@@ -193,15 +341,15 @@ fn site() -> Result<Site, String> {
             images.display()
         ));
     }
-    let ssh_key = match std::env::var("RAMPIRE_TESTVM_SSH_KEY") {
-        Ok(path) if !path.trim().is_empty() => {
+    let ssh_key = match site_value("RAMPIRE_TESTVM_SSH_KEY", repo) {
+        Some(path) => {
             let key = process::read_file(Path::new(&path))?.trim().to_owned();
             if !key.starts_with("ssh-") || key.contains('\n') {
                 return Err(format!("{path} is not one OpenSSH public key"));
             }
             Some(key)
         }
-        _ => None,
+        None => None,
     };
     Ok(Site {
         images,
@@ -211,13 +359,18 @@ fn site() -> Result<Site, String> {
 }
 
 pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
-    match command {
+    let command = with_packages(command.clone(), repo)?;
+    if process::effective_uid() != 0 {
+        return elevate(&command);
+    }
+    match &command {
         Command::Up {
             scenario,
             name,
             files,
             keep,
             apply,
+            ..
         } => up(scenario, name, files, *keep, *apply, repo),
         Command::Down { name, apply } => {
             require_root()?;
@@ -311,7 +464,7 @@ fn up(
     repo: &Path,
 ) -> Result<(), String> {
     let scenario = load_scenario(scenario_path)?;
-    let site = site()?;
+    let site = site(repo)?;
     for file in files {
         if !file.is_file() && !file.is_dir() {
             return Err(format!("--file {} is not a file or folder", file.display()));
@@ -1031,9 +1184,18 @@ mod tests {
                 scenario: PathBuf::from("s.toml"),
                 name: "t1".to_owned(),
                 files: vec![PathBuf::from("a.rpm")],
+                packages: false,
                 keep: true,
                 apply: true,
             })
+        );
+        let with = parse(&strings(&["up", "s.toml", "--name", "t1", "--packages"])).unwrap();
+        assert!(matches!(with, Command::Up { packages: true, .. }));
+        assert_eq!(
+            arguments(&with),
+            ["testvm", "up", "s.toml", "--name", "t1", "--packages"]
+                .map(OsString::from)
+                .to_vec()
         );
         assert_eq!(
             parse(&strings(&["down", "t1"])),

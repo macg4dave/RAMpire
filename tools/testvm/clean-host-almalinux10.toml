@@ -1,9 +1,9 @@
 # A clean AlmaLinux 10 KVM host: libvirt from the distribution, then RAMpire's host
 # package with dnf, `rampire init`, and a controller running with no VMs
-# (the roadmap's O2 exit). Pass the host RPM with --file:
+# (the roadmap's O2 exit). --packages builds and passes the packages:
 #
-#   sudo -E target/debug/xtask testvm up tools/testvm/clean-host-almalinux10.toml \
-#     --name clean-almalinux10 --file dist/rampire-VERSION.x86_64.rpm --apply
+#   cargo xtask testvm up tools/testvm/clean-host-almalinux10.toml \
+#     --name clean-almalinux10 --packages --apply
 image = "https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2"
 boot_mib = 2048
 disk_gib = 12

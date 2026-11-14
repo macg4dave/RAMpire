@@ -110,6 +110,7 @@ pub fn run(action: &Action, repo: &Path) -> Result<(), String> {
             "cargo build",
         )?;
     }
+    clear_old_packages(&repo.join(output))?;
     run_status(
         Command::new("bash")
             .arg("packaging/build.sh")
@@ -123,6 +124,30 @@ pub fn run(action: &Action, repo: &Path) -> Result<(), String> {
         identity.build_id
     );
     Ok(())
+}
+
+/// Remove packages and checksums an earlier build left in `output`, so it
+/// holds one version and SHA256SUMS lists only it. Other files stay.
+fn clear_old_packages(output: &Path) -> Result<(), String> {
+    let Ok(entries) = std::fs::read_dir(output) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_build_output(&name) {
+            std::fs::remove_file(entry.path())
+                .map_err(|error| format!("remove {}: {error}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn is_build_output(name: &str) -> bool {
+    name == "SHA256SUMS"
+        || (name.starts_with("rampire")
+            && [".rpm", ".deb", ".tar.gz"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix)))
 }
 
 fn run_status(command: &mut Command, what: &str) -> Result<(), String> {
@@ -254,6 +279,21 @@ mod tests {
             version("0.1.0", Some("other"), "abc123def456", false),
             Ok("0.1.0~dev.abc123def456".to_owned())
         );
+    }
+
+    #[test]
+    fn only_earlier_build_output_is_cleared() {
+        for name in [
+            "SHA256SUMS",
+            "rampire_0.1.0~dev.abc_amd64.deb",
+            "rampire-guest-0.1.0-1.x86_64.rpm",
+            "rampire-0.1.0-x86_64-linux.tar.gz",
+        ] {
+            assert!(is_build_output(name), "{name}");
+        }
+        for name in ["rampire-0.1.0.src.rpm.asc", "notes.txt", "other.deb"] {
+            assert!(!is_build_output(name), "{name}");
+        }
     }
 
     #[test]

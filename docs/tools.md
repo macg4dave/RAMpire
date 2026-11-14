@@ -197,14 +197,19 @@ other. Diagnostic fields never authorise memory changes.
 ## Test VMs
 
 ```bash
-set -a; . site/testvm.env; set +a      # from deploy/examples/testvm.env.example
-sudo -E target/debug/xtask testvm up tools/testvm/SCENARIO.toml --name NAME \
-  [--file PATH]... [--keep] [--apply]
-sudo -E target/debug/xtask testvm down NAME [--apply]
-sudo -E target/debug/xtask testvm list
+cargo xtask testvm up tools/testvm/SCENARIO.toml --name NAME \
+  [--packages] [--file PATH]... [--keep] [--apply]
+cargo xtask testvm down NAME [--apply]
+cargo xtask testvm list
 ```
 
-Every VM a test needs is made by `testvm`, never by hand. A scenario in
+Every VM a test needs is made by `testvm`, never by hand. Run it as
+yourself on the KVM host: each action runs itself again through `sudo`
+for the part that needs root. The host's values (where images go, which
+bridge the VMs join) come from the environment or from `site/testvm.env`
+(copy [deploy/examples/testvm.env.example](../deploy/examples/testvm.env.example)).
+`--packages` builds the packages from the checkout first, as you, with
+`tools/build.sh package`, and puts each one on the seed. A scenario in
 [tools/testvm](../tools/testvm) says what the VM is (cloud image, boot RAM,
 a virtio-mem device or room for one, nested virtualisation) and the
 commands it runs on first boot. `up` downloads the image once, makes a

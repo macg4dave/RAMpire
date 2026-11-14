@@ -382,7 +382,10 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../host/systemd/rampire.service"),
         )
         .unwrap();
-        assert_eq!(supplementary_groups(&[unit_file.clone()]), ["qemu"]);
+        assert_eq!(
+            supplementary_groups(std::slice::from_ref(&unit_file)),
+            ["qemu"]
+        );
         assert_eq!(supplementary_groups(&[unit_file, debian]), ["libvirt-qemu"]);
     }
 }

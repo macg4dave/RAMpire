@@ -2,10 +2,10 @@
 # host, against itself: the first run installs RAMpire and reports
 # "changed", a second run of the same configuration reports no change, and
 # a run after a settings change reports "changed" again (the roadmap's O4
-# exit). Pass the role and the host RPM with --file:
+# exit). Pass the role with --file; --packages builds and passes the packages:
 #
-#   sudo -E target/debug/xtask testvm up tools/testvm/ansible-almalinux10.toml \
-#     --name t-ansible --file deploy/ansible --file dist/rampire-VERSION.x86_64.rpm --apply
+#   cargo xtask testvm up tools/testvm/ansible-almalinux10.toml \
+#     --name t-ansible --packages --file deploy/ansible --apply
 image = "https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2"
 boot_mib = 2048
 disk_gib = 12
