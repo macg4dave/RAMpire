@@ -29,6 +29,14 @@ const PAGE_BYTES: u64 = 4096;
 const ZONEINFO_PATH: &str = "/proc/zoneinfo";
 /// Zone information grows with nodes and CPUs; a megabyte is far above both.
 const MAX_ZONEINFO_BYTES: usize = 1024 * 1024;
+/// Where udev rules live, highest precedence first.
+const UDEV_RULE_DIRECTORIES: [&str; 4] = [
+    "/etc/udev/rules.d",
+    "/run/udev/rules.d",
+    "/usr/lib/udev/rules.d",
+    "/lib/udev/rules.d",
+];
+const MAX_UDEV_RULE_BYTES: usize = 64 * 1024;
 
 /// The kernel's answers as read, before any judgement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +48,9 @@ pub struct Probe {
     pub pressure_trigger: &'static str,
     /// `auto_online_blocks`: offline, online, online_kernel or online_movable.
     pub auto_online: Option<String>,
+    /// A udev rule that onlines hot-added memory blocks, as RHEL's
+    /// `40-redhat-hotplug.rules` does when the kernel leaves them offline.
+    pub udev_memory_rule: Option<String>,
     /// `online_policy`: contig-zones or auto-movable.
     pub online_policy: Option<String>,
     /// `auto_movable_ratio`: the most movable memory auto-movable allows, as
@@ -55,6 +66,17 @@ pub struct Probe {
 }
 
 impl Probe {
+    /// How hot-plugged memory is onlined in effect: the kernel's
+    /// `auto_online_blocks`, or `online` when the kernel leaves blocks
+    /// offline and a udev rule onlines them. In a VM RHEL's rule writes
+    /// `online`, which follows `online_policy` as the kernel's own does.
+    pub fn onlining(&self) -> Option<&str> {
+        match self.auto_online.as_deref() {
+            Some("offline") if self.udev_memory_rule.is_some() => Some("online"),
+            other => other,
+        }
+    }
+
     pub fn read() -> Self {
         let text = |path: &str, maximum: usize| {
             rampire_core::files::read_bounded(Path::new(path), maximum)
@@ -75,6 +97,22 @@ impl Probe {
             pressure_readable: text(crate::pressure::PRESSURE_PATH, 4096).is_some(),
             pressure_trigger: crate::pressure::trigger_description(),
             auto_online: word(AUTO_ONLINE_PATH),
+            udev_memory_rule: UDEV_RULE_DIRECTORIES.iter().find_map(|directory| {
+                let mut paths: Vec<_> = std::fs::read_dir(directory)
+                    .ok()?
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.extension()
+                            .is_some_and(|extension| extension == "rules")
+                    })
+                    .collect();
+                paths.sort();
+                paths.into_iter().find_map(|path| {
+                    let rule = text(path.to_str()?, MAX_UDEV_RULE_BYTES)?;
+                    onlines_memory(&rule).then(|| path.display().to_string())
+                })
+            }),
             online_policy: word(ONLINE_POLICY_PATH),
             auto_movable_ratio: word(AUTO_MOVABLE_RATIO_PATH).and_then(|ratio| ratio.parse().ok()),
             auto_movable_numa_aware: word(AUTO_MOVABLE_NUMA_AWARE_PATH).and_then(|flag| match flag
@@ -123,6 +161,18 @@ pub struct Readiness {
     pub environment: BTreeMap<String, String>,
     /// What an administrator should know before relying on this guest.
     pub warnings: Vec<String>,
+}
+
+/// Whether a udev rule file onlines hot-added memory: it matches the
+/// `memory` subsystem and assigns (not compares) a block's `state`.
+pub fn onlines_memory(rule: &str) -> bool {
+    let lines = || {
+        rule.lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with('#'))
+    };
+    lines().any(|line| line.contains("SUBSYSTEM") && line.contains("\"memory\""))
+        && lines().any(|line| line.contains("ATTR{state}=\""))
 }
 
 /// Pages the kernel manages in movable zones, summed over nodes.
@@ -205,8 +255,7 @@ fn node_count(zoneinfo: &str) -> usize {
 /// placed in the movable zone (`movablecore=`) is not counted. Unknown facts
 /// give no warning.
 pub fn movable_ratio_warning(probe: &Probe, max_ram: u64) -> Option<String> {
-    if probe.online_policy.as_deref() != Some("auto-movable")
-        || probe.auto_online.as_deref() != Some("online")
+    if probe.online_policy.as_deref() != Some("auto-movable") || probe.onlining() != Some("online")
     {
         return None;
     }
@@ -264,22 +313,27 @@ pub fn assess(probe: &Probe) -> Readiness {
     }
     if !probe.pressure_readable {
         warnings.push(
-            "pressure stall information is unavailable (kernel built without PSI, or psi=0): \
-             the guest can ask for memory but never returns any"
+            "pressure stall information is off, so the guest can ask for memory but never \
+             returns any. Boot with psi=1 (on RHEL: grubby --update-kernel=ALL --args=psi=1), \
+             then restart the VM"
                 .to_owned(),
         );
     }
     // A missing pressure trigger is reported where it is registered
     // (`ProcPressure::open`), once the host's settings have arrived: at start
     // it is still `pending`.
-    match auto_online.as_str() {
+    let onlined_by = match &probe.udev_memory_rule {
+        Some(rule) if auto_online == "offline" => format!("the udev rule {rule}"),
+        _ => format!("auto_online_blocks={auto_online}"),
+    };
+    match probe.onlining().unwrap_or("unknown") {
         "offline" => warnings.push(
             "auto_online_blocks is offline: hot-plugged memory stays unused unless something \
              else onlines it"
                 .to_owned(),
         ),
         "online" if online_policy != "auto-movable" => warnings.push(format!(
-            "hot-plugged memory is onlined to kernel zones (auto_online_blocks={auto_online}, \
+            "hot-plugged memory is onlined to kernel zones ({onlined_by}, \
              online_policy={online_policy}): the kernel guarantees removal only from the \
              movable zone. If removals come back partial, boot with \
              memory_hotplug.online_policy=auto-movable"
@@ -316,6 +370,13 @@ pub fn assess(probe: &Probe) -> Readiness {
         ),
         ("pressure_trigger", probe.pressure_trigger.to_owned()),
         ("auto_online_blocks", auto_online),
+        (
+            "udev_memory_rule",
+            probe
+                .udev_memory_rule
+                .clone()
+                .unwrap_or_else(|| "none".to_owned()),
+        ),
         ("online_policy", online_policy),
         (
             "movable_zone_pages",
@@ -391,6 +452,7 @@ mod tests {
             pressure_readable: true,
             pressure_trigger: "100ms/1s",
             auto_online: Some("online_movable".to_owned()),
+            udev_memory_rule: None,
             online_policy: Some("contig-zones".to_owned()),
             auto_movable_ratio: Some(301),
             auto_movable_numa_aware: Some(true),
@@ -428,6 +490,7 @@ mod tests {
         assert_eq!(fact("pressure_trigger"), "100ms/1s");
         assert_eq!(fact("auto_online_blocks"), "online_movable");
         assert_eq!(fact("online_policy"), "contig-zones");
+        assert_eq!(fact("udev_memory_rule"), "none");
         assert_eq!(fact("movable_zone_pages"), "65536");
         assert_eq!(fact("boot_ram_bytes"), GIB.to_string());
         assert_eq!(fact("auto_movable_ratio"), "301");
@@ -455,7 +518,7 @@ mod tests {
                 pressure_readable: false,
                 ..ready()
             },
-            "never returns",
+            "psi=1",
         );
         // The trigger is registered after start; neither state warns here.
         for trigger in ["pending", "none"] {
@@ -473,6 +536,22 @@ mod tests {
             },
             "stays unused",
         );
+        // RHEL leaves blocks offline in the kernel and onlines them with a
+        // udev rule, as plain "online": the same advice as the kernel's.
+        let rule = "/usr/lib/udev/rules.d/40-redhat-hotplug.rules";
+        let udev = Probe {
+            auto_online: Some("offline".to_owned()),
+            udev_memory_rule: Some(rule.to_owned()),
+            ..ready()
+        };
+        assert_eq!(udev.onlining(), Some("online"));
+        warned(udev.clone(), rule);
+        assert!(assess(&Probe {
+            online_policy: Some("auto-movable".to_owned()),
+            ..udev
+        })
+        .warnings
+        .is_empty());
         for kernel in ["online", "online_kernel"] {
             warned(
                 Probe {
@@ -517,6 +596,30 @@ mod tests {
         ] {
             assert_eq!(readiness.environment[name], "unknown", "{name}");
         }
+    }
+
+    #[test]
+    fn a_udev_rule_that_sets_a_memory_blocks_state_onlines_memory() {
+        // RHEL 10's 40-redhat-hotplug.rules.
+        let rhel = "# Memory hotadd request\n\
+            SUBSYSTEM!=\"memory\", GOTO=\"memory_hotplug_end\"\n\
+            ACTION!=\"add\", GOTO=\"memory_hotplug_end\"\n\
+            ENV{.state}=\"online\"\n\
+            CONST{virt}==\"none\", ENV{.state}=\"online_movable\"\n\
+            ATTR{state}==\"offline\", ATTR{state}=\"$env{.state}\"\n\
+            LABEL=\"memory_hotplug_end\"\n";
+        assert!(onlines_memory(rhel));
+        // Comparing the state, another subsystem, or a commented-out rule
+        // does not online memory.
+        assert!(!onlines_memory(
+            "SUBSYSTEM==\"memory\", ATTR{state}==\"offline\", RUN+=\"/bin/true\"\n"
+        ));
+        assert!(!onlines_memory(
+            "SUBSYSTEM==\"cpu\", ATTR{online}=\"1\"\nATTR{state}=\"on\"\n"
+        ));
+        assert!(!onlines_memory(
+            "# SUBSYSTEM==\"memory\", ATTR{state}=\"online\"\n"
+        ));
     }
 
     #[test]

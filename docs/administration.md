@@ -269,6 +269,14 @@ has no configuration file.
 Install with the `rampire-guest` package (`.deb` or RPM). The package
 puts the binary in `/usr/libexec/rampire-guest`.
 
+The service needs pressure stall information to give memory back. RHEL's
+kernels build it in but boot with it off (`CONFIG_PSI_DEFAULT_DISABLED`),
+so on such a kernel the package adds `psi=1` to every installed kernel with
+`grubby`. It takes effect when the VM next starts, which `rampire vm add`
+does when it changes the VM's definition; a VM added before the package
+was installed needs one restart (`rampire vm attest VM --restart`). An
+explicit `psi=0` is left alone.
+
 At start the service checks and logs its readiness: virtio-mem driver bound,
 pressure stall information and its trigger, how hot-plugged memory is
 onlined, the movable zone, swap and the commit model. The same report is
@@ -276,8 +284,11 @@ published with each sample's diagnostics.
 
 Memory onlining: the kernel guarantees removal only from the movable zone.
 Debian's default onlining (`online`, `contig-zones`) removed memory fully in
-measured runs, but if removals come back partial after long uptime, boot the
-guest with `memory_hotplug.online_policy=auto-movable`. Avoid
+measured runs. RHEL leaves `auto_online_blocks` at `offline` and onlines
+hot-plugged memory with a udev rule (`40-redhat-hotplug.rules`) as
+`online`, which has the same effect; the readiness report names the rule.
+If removals come back partial after long uptime, boot the guest with
+`memory_hotplug.online_policy=auto-movable`. Avoid
 `memhp_default_state=online_movable`: it confines the kernel's own memory to
 boot RAM however large the guest grows.
 

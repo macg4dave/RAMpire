@@ -11,7 +11,7 @@ controller unit, `rampire.service`.
 
 While the controller runs it keeps each guest's latest validated
 publication in `/run/rampire/<vm_name>.publication.json`, readable
-by any local user. The tools read that copy first. Without it (the
+by root and the service account, as the tools run as root. The tools read that copy first. Without it (the
 controller stopped) they read the guest's control file through the QEMU
 guest agent, which works only for a guest on the control files: a guest on
 the control channel writes no file, so only the controller's copy shows it.

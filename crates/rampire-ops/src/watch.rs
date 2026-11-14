@@ -1,10 +1,10 @@
 //! `rampire watch`: a live, read-only host-side dashboard of one
 //! virtio-mem guest. It shows host RAM against the controller floor, the
-//! device, Windows' own view read over the guest agent, a device history
-//! chart and the controller's latest journal events.
+//! device, the guest's own view from its latest publication, a device
+//! history chart and the controller's latest journal events.
 //!
-//! It uses `virsh --readonly dumpxml`, guest-agent reads of the Windows
-//! publication and `journalctl`. It never resizes, clears latches or restarts
+//! It uses `virsh --readonly dumpxml`, the guest's publication (the
+//! controller's copy, or a guest-agent read without it) and `journalctl`. It never resizes, clears latches or restarts
 //! anything. It deliberately does not read `.host-status`: a guest-agent read
 //! holds that file open across several commands and makes the controller's
 //! write of it fail with a sharing violation; the controller journal records
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use rampire_core::{MemoryResourceNotificationState, RawTelemetryEnvelope, VirtioMemState};
 use rampire_host::config::HostConfig;
-use rampire_host::guest_channel::PublicationCopyFirst;
+use rampire_host::guest_channel::{PublicationCopyFirst, PublicationSource};
 use rampire_host::qga::{GuestFileReader, VirshGuestFiles};
 use rampire_host::virsh::Virsh;
 
@@ -178,15 +178,23 @@ struct Sample<'a> {
 #[derive(Default)]
 struct GuestView {
     telemetry: Option<RawTelemetryEnvelope>,
+    source: Option<PublicationSource>,
 }
 
 /// A missing agent, file or mid-write view simply leaves it empty.
-fn read_guest(files: &impl GuestFileReader, telemetry_path: &str) -> GuestView {
+fn read_guest<R: GuestFileReader>(
+    files: &PublicationCopyFirst<R>,
+    telemetry_path: &str,
+) -> GuestView {
+    let read = files
+        .read_with_source(telemetry_path, MAX_TELEMETRY_BYTES)
+        .ok();
+    let telemetry = read
+        .as_ref()
+        .and_then(|(bytes, _)| serde_json::from_slice(bytes).ok());
     GuestView {
-        telemetry: files
-            .read_file(telemetry_path, MAX_TELEMETRY_BYTES)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok()),
+        source: telemetry.as_ref().and(read.map(|(_, source)| source)),
+        telemetry,
     }
 }
 
@@ -522,7 +530,11 @@ fn build(
     let age = sample
         .guest_age
         .map_or("never".to_owned(), |age| format!("{}s ago", age.as_secs()));
-    frame.top("GUEST (guest agent)", &format!("read {age}"));
+    let title = match sample.guest.source {
+        Some(source) => format!("GUEST ({})", source.label()),
+        None => "GUEST".to_owned(),
+    };
+    frame.top(&title, &format!("read {age}"));
     match &sample.guest.telemetry {
         None if !command.guest => frame.message("guest reads disabled (--no-guest)", DIM),
         None => frame.message("guest publication unavailable", RED),
@@ -553,7 +565,7 @@ fn build(
     }
     frame.bottom();
     frame.bar(
-        "Read-only: virsh --readonly, guest-agent telemetry reads and the journal",
+        "Read-only: virsh --readonly, the guest's publication and the journal",
         "",
     );
 }
@@ -583,18 +595,8 @@ fn guest_rows(frame: &mut Frame, telemetry: &RawTelemetryEnvelope) {
         ),
         VALUE,
     );
-    let (signal, colour) = match telemetry.native_pressure {
-        Some(MemoryResourceNotificationState::High) => ("HIGH", GREEN),
-        Some(MemoryResourceNotificationState::Neutral) => ("NEUTRAL", YELLOW),
-        Some(MemoryResourceNotificationState::Low) => ("LOW", RED),
-        None => ("UNKNOWN", YELLOW),
-    };
-    frame.metric(
-        "Memory signal",
-        signal,
-        "High is required before release",
-        colour,
-    );
+    let (signal, detail, colour) = memory_signal(telemetry);
+    frame.metric("Memory signal", signal, detail, colour);
     match &telemetry.request {
         Some(request) => frame.metric(
             "Pending request",
@@ -603,6 +605,40 @@ fn guest_rows(frame: &mut Frame, telemetry: &RawTelemetryEnvelope) {
             CYAN,
         ),
         None => frame.metric("Pending request", "none", "", DIM),
+    }
+}
+
+/// The guest's memory-pressure signal, what it means for giving memory
+/// back, and its colour. A guest with no signal never returns memory, so
+/// the view says why rather than showing an unknown.
+fn memory_signal(telemetry: &RawTelemetryEnvelope) -> (&'static str, &'static str, u8) {
+    let no_psi = telemetry
+        .diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.environment.get("pressure_signal"))
+        .is_some_and(|signal| signal == "none");
+    match telemetry.native_pressure {
+        Some(MemoryResourceNotificationState::High) => {
+            ("HIGH", "no memory stalls: memory can be returned", GREEN)
+        }
+        Some(MemoryResourceNotificationState::Neutral) => (
+            "NEUTRAL",
+            "some stalls: memory is kept, not returned",
+            YELLOW,
+        ),
+        Some(MemoryResourceNotificationState::Low) => {
+            ("LOW", "stalling on memory: asking for more", RED)
+        }
+        None if no_psi => (
+            "OFF",
+            "no PSI in the guest: it never returns memory; boot it with psi=1",
+            RED,
+        ),
+        None => (
+            "NONE",
+            "the guest sent no signal: it never returns memory",
+            RED,
+        ),
     }
 }
 
@@ -825,6 +861,66 @@ mod tests {
             for line in text.lines() {
                 assert!(line.chars().count() <= width, "{width}: {line}");
             }
+        }
+    }
+
+    /// The first RHEL 10 guest's publication (pc101, 2026-11-14): RHEL
+    /// boots with PSI off, so it sends no memory signal.
+    const RHEL_WITHOUT_PSI: &str = r#"{"schema":"rampire.publication","version":1,"vm_name":"rhel10_rampire","service_name":"rampire-guest","session_id":"session-18e80a0f31b5d14c-335","observed_unix_millis":1794696509346,"monotonic_millis":997464,"sequence":9863,"memory":{"physical_total_bytes":2147631104,"physical_available_bytes":1741979648,"memory_load_percent":18,"commit_total_bytes":405651456,"commit_limit_bytes":2147631104,"commit_peak_bytes":485294080,"system_cache_bytes":155414528,"kernel_paged_bytes":14053376,"kernel_nonpaged_bytes":37240832},"diagnostics":{"build_id":"ab447c26ff67","driver_file_version":{"Ok":"linux 6.12.0-211.74.1.el10_2.x86_64"},"boot_uptime_millis":1003190,"policy":{"reason":"no_change","desired_bytes":427819008,"safe_floor_bytes":427819008,"history_ready":false,"retry_remaining_millis":0,"physical_deficit_bytes":0,"commit_deficit_bytes":0},"last_consumed_result":null,"result_consumed_unix_millis":null,"environment":{"auto_online_blocks":"offline","pressure_signal":"none","pressure_trigger":"none","virtio_mem_driver":"bound"}}}"#;
+
+    #[test]
+    fn a_guest_without_a_memory_signal_says_why_instead_of_unknown() {
+        let mut telemetry: RawTelemetryEnvelope = serde_json::from_str(RHEL_WITHOUT_PSI).unwrap();
+        let (signal, detail, _) = memory_signal(&telemetry);
+        assert_eq!(signal, "OFF");
+        assert!(detail.contains("psi=1"), "{detail}");
+        telemetry.diagnostics = None;
+        assert_eq!(memory_signal(&telemetry).0, "NONE");
+        telemetry.native_pressure = Some(MemoryResourceNotificationState::High);
+        assert_eq!(memory_signal(&telemetry).0, "HIGH");
+
+        let guest = GuestView {
+            telemetry: serde_json::from_str(RHEL_WITHOUT_PSI).ok(),
+            source: Some(PublicationSource::ControllerCopy),
+        };
+        let sample = Sample {
+            host: HostMemory {
+                total: 32 * GIB,
+                available: 3 * GIB,
+                swap_total: GIB,
+                swap_free: GIB,
+            },
+            device: None,
+            guest: &guest,
+            guest_age: Some(Duration::ZERO),
+            samples: 1,
+        };
+        let journal = Journal {
+            events: Vec::new(),
+            last_result: None,
+            unreadable: None,
+        };
+        let command = Command {
+            vm: "rhel10_rampire".to_owned(),
+            alias: "ua-virtiomem0".to_owned(),
+            unit: crate::systemd_unit::CONTROLLER_UNIT.to_owned(),
+            telemetry_path: String::new(),
+            connect: "qemu:///system".to_owned(),
+            interval: Duration::from_secs(1),
+            guest_interval: Duration::from_secs(1),
+            host_floor_bytes: 0,
+            events: 2,
+            guest: true,
+            once: true,
+        };
+        for width in [80, 120] {
+            let mut frame = Frame::new(width, false);
+            build(&mut frame, &command, &sample, &VecDeque::new(), &journal);
+            let text = frame.render();
+            assert!(text.contains("GUEST (controller copy)"), "{text}");
+            assert!(text.contains("OFF"), "{text}");
+            assert!(!text.contains("UNKNOWN"), "{text}");
+            assert!(!text.contains("guest agent"), "{text}");
         }
     }
 }

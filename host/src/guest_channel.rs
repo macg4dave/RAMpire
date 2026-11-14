@@ -376,13 +376,48 @@ impl<R> PublicationCopyFirst<R> {
     }
 }
 
-impl<R: GuestFileReader> GuestFileReader for PublicationCopyFirst<R> {
-    fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
+/// Where a publication was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationSource {
+    /// The controller's copy, kept for a guest on the control channel or the
+    /// control files.
+    ControllerCopy,
+    /// The guest's control file, through the QEMU guest agent.
+    GuestAgent,
+}
+
+impl PublicationSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ControllerCopy => "controller copy",
+            Self::GuestAgent => "guest agent",
+        }
+    }
+}
+
+impl<R: GuestFileReader> PublicationCopyFirst<R> {
+    /// The controller's copy, or the guest's file when there is no copy,
+    /// with where it came from.
+    pub fn read_with_source(
+        &self,
+        path: &str,
+        maximum_bytes: usize,
+    ) -> Result<(Vec<u8>, PublicationSource), String> {
         match rampire_core::files::read_bounded(&self.copy, maximum_bytes) {
-            Ok(Some(bytes)) => Ok(bytes),
-            Ok(None) => self.guest.read_file(path, maximum_bytes),
+            Ok(Some(bytes)) => Ok((bytes, PublicationSource::ControllerCopy)),
+            Ok(None) => self
+                .guest
+                .read_file(path, maximum_bytes)
+                .map(|bytes| (bytes, PublicationSource::GuestAgent)),
             Err(error) => Err(format!("read {}: {error}", self.copy.display())),
         }
+    }
+}
+
+impl<R: GuestFileReader> GuestFileReader for PublicationCopyFirst<R> {
+    fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
+        self.read_with_source(path, maximum_bytes)
+            .map(|(bytes, _)| bytes)
     }
 }
 
@@ -762,12 +797,20 @@ mod tests {
             reader.read_file("/guest/path", 64 * 1024).unwrap(),
             std::fs::read(&copy).unwrap()
         );
+        assert_eq!(
+            reader.read_with_source("/guest/path", 64 * 1024).unwrap().1,
+            PublicationSource::ControllerCopy
+        );
         assert!(reader.read_file("/guest/path", 1).is_err());
         std::fs::remove_dir_all(&directory).unwrap();
         // Without the controller's copy, the guest's file is read.
         assert_eq!(
             reader.read_file("/guest/path", 64 * 1024).unwrap(),
             b"from the guest"
+        );
+        assert_eq!(
+            reader.read_with_source("/guest/path", 64 * 1024).unwrap().1,
+            PublicationSource::GuestAgent
         );
     }
 
