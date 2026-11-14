@@ -25,7 +25,7 @@ development build.
    tarballs and `SHA256SUMS`, all named for the release version
    (`0.1.0`). A tree that isn't clean, or a tag that doesn't match the
    crate's version, gives a development version instead
-   (`0.1.0~dev.BUILD`) or is refused.
+   (`0.1.0~dev.COUNT.BUILD`) or is refused.
 4. `packaging/srpm.sh VERSION BUILD_ID OUTPUT_DIRECTORY` makes the source
    RPM a COPR project builds from.
 

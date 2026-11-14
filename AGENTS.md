@@ -26,5 +26,21 @@ starting, stopping, resizing, observing and testing VMs.
 - If a tool is broken or gives the wrong result, fix the tool rather than
   working around it.
 
+## Test hosts run the current build
+
+Before testing on a development or test host, upgrade RAMpire there to the
+current build, without asking: in its checkout, at the commit under test,
+
+```bash
+tools/build.sh package --install
+```
+
+builds the packages in the build container and installs the host package
+with dnf or apt, upgrading what is installed; it checks that `rampire
+--version` reports the build just made. A host that still has a
+development install from before packages also needs, once,
+`tools/linux/legacy.sh remove --apply`. Guests get their package with
+`cargo xtask testvm --packages`, or `cargo xtask linux deploy`.
+
 This rule is about operating the product. It does not restrict editing,
 building or testing the code in this repository.

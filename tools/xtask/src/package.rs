@@ -5,8 +5,10 @@
 //! installs what it builds with its package manager, like any other host.
 //!
 //! The version is the `rampire` crate's. On a commit tagged `vVERSION` with
-//! a clean tree it is exactly that; otherwise `VERSION~dev.BUILD`, which
-//! sorts before the release it leads to.
+//! a clean tree it is exactly that; otherwise `VERSION~dev.COUNT.BUILD`,
+//! which sorts before the release it leads to. COUNT is the number of
+//! commits to HEAD, so a later commit's package is always the newer one and
+//! a package manager upgrades to it (a commit hash alone sorts at random).
 
 use std::path::Path;
 use std::process::Command;
@@ -72,6 +74,7 @@ pub fn run(action: &Action, repo: &Path) -> Result<(), String> {
     let version = version(
         crate_version(repo)?.as_str(),
         exact_tag(repo).as_deref(),
+        commit_count(repo)?,
         &identity.build_id,
         identity.dirty,
     )?;
@@ -178,6 +181,22 @@ fn crate_version(repo: &Path) -> Result<String, String> {
         .ok_or_else(|| "rampire/Cargo.toml has no version".to_owned())
 }
 
+/// The number of commits to HEAD.
+fn commit_count(repo: &Path) -> Result<u64, String> {
+    let text = process::checked_text(
+        "git",
+        &[
+            process::os("rev-list"),
+            process::os("--count"),
+            process::os("HEAD"),
+        ],
+        repo,
+    )?;
+    text.trim()
+        .parse()
+        .map_err(|_| format!("git rev-list --count gave {text:?}"))
+}
+
 /// The tag on HEAD, if there is exactly one.
 fn exact_tag(repo: &Path) -> Option<String> {
     process::checked_text(
@@ -201,6 +220,7 @@ fn exact_tag(repo: &Path) -> Option<String> {
 fn version(
     crate_version: &str,
     tag: Option<&str>,
+    count: u64,
     build_id: &str,
     dirty: bool,
 ) -> Result<String, String> {
@@ -217,7 +237,7 @@ fn version(
     // '-' separates the Debian revision and the RPM release, so a dirty
     // build's "-dirty." becomes ".dirty.".
     Ok(format!(
-        "{crate_version}~dev.{}",
+        "{crate_version}~dev.{count}.{}",
         build_id.replace('-', ".")
     ))
 }
@@ -255,7 +275,7 @@ mod tests {
     #[test]
     fn a_clean_tagged_commit_is_the_release() {
         assert_eq!(
-            version("0.1.0", Some("v0.1.0"), "abc123def456", false),
+            version("0.1.0", Some("v0.1.0"), 42, "abc123def456", false),
             Ok("0.1.0".to_owned())
         );
     }
@@ -263,22 +283,34 @@ mod tests {
     #[test]
     fn anything_else_is_a_development_version() {
         assert_eq!(
-            version("0.1.0", None, "abc123def456", false),
-            Ok("0.1.0~dev.abc123def456".to_owned())
+            version("0.1.0", None, 42, "abc123def456", false),
+            Ok("0.1.0~dev.42.abc123def456".to_owned())
         );
         assert_eq!(
             version(
                 "0.1.0",
                 Some("v0.1.0"),
+                42,
                 "abc123def456-dirty.0123456789ab",
                 true
             ),
-            Ok("0.1.0~dev.abc123def456.dirty.0123456789ab".to_owned())
+            Ok("0.1.0~dev.42.abc123def456.dirty.0123456789ab".to_owned())
         );
         assert_eq!(
-            version("0.1.0", Some("other"), "abc123def456", false),
-            Ok("0.1.0~dev.abc123def456".to_owned())
+            version("0.1.0", Some("other"), 42, "abc123def456", false),
+            Ok("0.1.0~dev.42.abc123def456".to_owned())
         );
+    }
+
+    /// RPM and dpkg compare `~dev.42.fff` against `~dev.43.000` by the
+    /// count first, so a later commit is the newer package whatever its
+    /// hash.
+    #[test]
+    fn a_later_commit_sorts_after_an_earlier_one() {
+        let earlier = version("0.1.0", None, 42, "ffffffffffff", false).unwrap();
+        let later = version("0.1.0", None, 43, "000000000000", false).unwrap();
+        let segment = |text: &str| -> u64 { text.split('.').nth(3).unwrap().parse().unwrap() };
+        assert!(segment(&later) > segment(&earlier), "{earlier} {later}");
     }
 
     #[test]
@@ -298,6 +330,6 @@ mod tests {
 
     #[test]
     fn a_release_tag_for_another_version_is_refused() {
-        assert!(version("0.1.0", Some("v0.2.0"), "abc123def456", false).is_err());
+        assert!(version("0.1.0", Some("v0.2.0"), 42, "abc123def456", false).is_err());
     }
 }

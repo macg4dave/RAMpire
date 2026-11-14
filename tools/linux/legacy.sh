@@ -11,7 +11,9 @@
 #   --clear-scratch  also take everything else in ~/scratch
 #
 # remove covers files, directories, units, the polkit rule, the old service
-# account, orphaned parked files and old-name working folders. A checkout of
+# account, orphaned parked files and old-name working folders, and, once
+# the package is installed, a development install's unit, polkit rule and
+# backups (restarting the controller onto the package's unit). A checkout of
 # this repository still in a folder under the old name is cloned again as
 # rampire/, keeping its untracked site/, and the old folder deleted. It never
 # undefines a libvirt domain or deletes a disk: list reports those, and the
@@ -82,6 +84,16 @@ done
 while IFS= read -r line; do
   [ -n "$line" ] && found loaded "${line%% *}" "loaded in systemd"
 done < <(systemctl list-units --all --no-legend --plain 'virtio-mem-*' 2>/dev/null)
+
+# A development install from before packages (the removed xtask
+# host-deploy): once the package is installed, its unit and polkit rule in
+# /etc hide the package's own, and its backups are of nothing in use.
+if rpm -q rampire >/dev/null 2>&1 ||
+   dpkg-query -W -f '${Status}' rampire 2>/dev/null | grep -q installed; then
+  run test -f /etc/systemd/system/rampire.service && found devinstall     /etc/systemd/system/rampire.service "hides the package's unit" removable
+  run test -f /etc/polkit-1/rules.d/50-rampire.rules && found devinstall     /etc/polkit-1/rules.d/50-rampire.rules "duplicates the package's rule" removable
+fi
+run test -d /var/lib/rampire/deployment-backups && found devinstall   /var/lib/rampire/deployment-backups "host-deploy's backups" removable
 
 # The old service account.
 getent passwd virtio-mem-host >/dev/null && found account virtio-mem-host "old user" removable
@@ -189,11 +201,16 @@ if [ "$MODE" = remove ]; then
         run systemctl disable --now "$name" 2>/dev/null
         run rm -rf -- "$target" ;;
       path|parked|scratch) run rm -rf -- "$target" ;;
+      devinstall) run rm -rf -- "$target" && restart=1 ;;
       account) run userdel virtio-mem-host ;;
       group) getent group virtio-mem-host >/dev/null && run groupdel virtio-mem-host ;;
     esac && echo "${verb}d $kind $target" || echo "failed: $kind $target" >&2
   done
   [ "$APPLY" = 1 ] && run systemctl daemon-reload
+  # A running controller moves onto the package's unit.
+  if [ "${restart:-0}" = 1 ] && systemctl is-active --quiet rampire.service; then
+    run systemctl restart rampire.service && echo "restarted rampire.service on the package's unit"
+  fi
   [ "$APPLY" = 0 ] && echo "(dry run: add --apply to remove)"
 fi
 exit 0

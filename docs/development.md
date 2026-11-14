@@ -160,16 +160,20 @@ A development host installs the same packages as any other host, built
 from the checkout:
 
 ```bash
-tools/build.sh package                               # into dist/, in the build container
-sudo dnf install ./dist/rampire-*.x86_64.rpm         # or: sudo apt install ./dist/rampire_*_amd64.deb
-sudo rampire init                                    # a new host; an existing one keeps its configuration
+tools/build.sh package --install    # build in the container, install or upgrade with dnf or apt
+sudo rampire init                   # a new host; an existing one keeps its configuration
 ```
 
 `package` stamps the host and guest binaries with the checkout's build
 identity (`<commit>`, or `<commit>-dirty.<source digest>`), which
 `rampire --version` reports, and builds the RPMs and `.deb`s with nfpm
-(`packaging/build.sh`). A development version is `VERSION~dev.BUILD`, so
-it sorts before the release and an upgrade to that release replaces it.
+(`packaging/build.sh`). A development version is `VERSION~dev.COUNT.BUILD`, COUNT being the
+commits to `HEAD`, so a later commit's package always upgrades an earlier
+one, and the release sorts after every development version that led to
+it. `--install` checks that the installed `rampire --version` reports the
+build just made. A host with a development install from before packages
+(the removed `xtask host-deploy`) then needs `tools/linux/legacy.sh remove
+--apply` once, to drop its unit and polkit rule in `/etc`.
 `--static` adds the musl tarballs a release ships. The guest packages
 (`rampire-guest`) are in `dist/` too.
 
