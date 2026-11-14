@@ -257,8 +257,8 @@ mod tests {
 
     #[test]
     fn reports_started_domains_from_complete_event_lines() {
-        let mut output = b"event 'memory-device-size-change' for domain 'a':\nalias: ua-virtiomem0\nsize: 524288\nevent 'lifecycle' for domain 'safe_vm_2': Started Booted\nevent 'lifecycle' for domain 'b': Stopped Shutdown\nevent 'lifecycle' for domain 'd': Started Restored\nevent 'lifecycle' for domain 'c': Sta".to_vec();
-        assert_eq!(started_domains(&mut output), ["safe_vm_2", "d"]);
+        let mut output = b"event 'memory-device-size-change' for domain 'a':\nalias: ua-virtiomem0\nsize: 524288\nevent 'lifecycle' for domain 'vm2': Started Booted\nevent 'lifecycle' for domain 'b': Stopped Shutdown\nevent 'lifecycle' for domain 'd': Started Restored\nevent 'lifecycle' for domain 'c': Sta".to_vec();
+        assert_eq!(started_domains(&mut output), ["vm2", "d"]);
         // The unfinished line waits for the rest.
         output.extend_from_slice(b"rted Booted\n");
         assert_eq!(started_domains(&mut output), ["c"]);

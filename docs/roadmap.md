@@ -33,37 +33,18 @@ names, so later phases start from a known host. The removal is done with the
 project's tools; if no tool covers a piece, add the tool first.
 
 - [x] **S0.1** Inventory what is left: old binaries, systemd units, config
-  and state directories, the `/etc/rampire/parked/` files and README,
-  libvirt domains and disks from earlier test runs, and the old
-  `virtio-mem-guest` service inside the parked guests (`debian13`,
-  `safe_vm_1` to `safe_vm_4`, `minecraft101`). Write the list here.
+  and state directories, parked files, and libvirt domains and disks from
+  earlier test runs.
 
   Done 2026-11-14 with a one-time tool, `tools/linux/legacy.sh` (removed
-  once pc101 was clean; it is in Git history). No old binary, unit,
-  config, state directory, polkit rule or service account is left. What
-  is left:
-
-  | Item | Finding | Action |
-  |---|---|---|
-  | `/etc/rampire/parked/debian13.toml`, `safe_vm_1` to `_4.toml` | Their domains are gone | Remove |
-  | `/etc/rampire/parked/README.md` | The hand procedure, replaced by `vm add` | Remove |
-  | `/etc/rampire/parked/minecraft101.toml` | Domain exists, shut off, new port | Keep for `rampire vm add minecraft101` |
-  | `~/scratch/old-install-20261114` (125 MB) | Backup of the old install | Remove |
-  | `~/scratch/virtio-mem-gate` (6 GB), `virtio-mem-debian-wip` (3.4 GB), `virtio-mem-pool` | Old-name working folders | Remove |
-  | `~/github/virtio-mem-pool` | This repository at `6c2d09d` under the old folder name, with `site/testvm.env` | Delete and clone again as `~/github/rampire` (owner) |
-  | Other files in `~/scratch` (bundles, XML, `.rs` copies, `safe_vm/` 418 MB, `rampire-site/`, `dist/`) | Hand work from earlier sessions | Remove all (owner) |
-  | Domains `homebridge101`, `dc1`, `TrueNas`, `win11_gpu`, `Tail` | Not RAMpire's | Leave |
-  | `safe_vm` | Running, managed, new port | Kept then; taken out of testing later the same day (owner): `rampire vm remove`, and its parked file, attestation, state and `linux-6-12-116` review removed by hand. Test VMs come from `testvm` now |
+  once pc101 was clean; it is in Git history).
 
 - [x] **S0.2** Run the removal. Afterwards pc101 has only the current
-  `rampire` build and the VMs the owner chose to keep.
+  `rampire` build. Test VMs come from `testvm`.
 
-  Done 2026-11-14 with `legacy.sh remove --apply --clear-scratch`. A
-  second `list` shows only `minecraft101.toml` (kept) and the domains.
-  `~/github/rampire` is a fresh clone at `71f1de7` with `site/testvm.env`
-  carried across; `~/scratch` is empty; `rampire.service` is still
-  active. The packages in `~/scratch/dist` went with it; S1.3's build
-  container makes them again.
+  Done 2026-11-14 with `legacy.sh remove --apply --clear-scratch`.
+  `~/github/rampire` is a fresh clone with `site/testvm.env` carried
+  across; `~/scratch` is empty; `rampire.service` is still active.
 
 ## S1: Tooling and the end-user path
 
@@ -265,6 +246,9 @@ is a finding, fixed in the product or the docs.
   VM) and the kernel release. The controller granted the guest's 122 MiB
   request in full; `top` showed its whole name; `testvm down` left
   nothing behind. Nothing was done by hand apart from that answer.
+- [ ] **S2.4** A second Debian 13 deployment with the hobbyist path, run
+  by the owner at a terminal on pc101, giving feedback as it goes.
+  Write up what it finds and fix it as in S2.3.
 
 ## S3: Administrator deployments
 
