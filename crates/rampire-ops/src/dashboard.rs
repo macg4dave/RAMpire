@@ -105,7 +105,12 @@ impl Frame {
         if text.is_empty() {
             return;
         }
-        let line = self.lines.last_mut().expect("a line was started");
+        if self.lines.is_empty() {
+            self.line();
+        }
+        let Some(line) = self.lines.last_mut() else {
+            return;
+        };
         match line.last_mut() {
             Some((last, fg, bg)) if *fg == colour && *bg == background => last.push_str(&text),
             _ => line.push((text, colour, background)),
@@ -156,7 +161,9 @@ impl Frame {
     /// Clips overlong content inside the frame, pads and closes the row.
     pub fn end_row(&mut self) {
         let limit = self.width - 2;
-        let line = self.lines.last_mut().expect("a row was started");
+        let Some(line) = self.lines.last_mut() else {
+            return;
+        };
         let mut used = 0;
         line.retain_mut(|(text, _, _)| {
             let room = limit.saturating_sub(used);

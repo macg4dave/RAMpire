@@ -7,6 +7,7 @@ pub mod compatibility;
 pub mod controller_status;
 pub mod demand;
 pub mod error;
+pub mod files;
 pub mod guest_policy;
 pub mod memory_request;
 pub mod pool;
@@ -50,7 +51,8 @@ pub use target_controller::{
     TargetSample,
 };
 pub use units::{
-    bytes_to_kibibytes, kibibytes_to_bytes, meminfo_bytes, parse_byte_size, BYTES_PER_KIB,
+    bytes_to_kibibytes, kibibytes_to_bytes, libvirt_unit_bytes, meminfo_bytes, parse_byte_size,
+    BYTES_PER_KIB,
 };
 pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES};
 pub use virtio_mem_xml::{

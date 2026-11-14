@@ -11,7 +11,8 @@ use rampire_ops::process;
 use crate::apply::apply;
 use crate::reporting::status_line;
 use crate::{
-    applied_root, confirm, connection, draft, path_text, running, target, Cli, SERVICE_ACCOUNT,
+    applied_root, confirm, connection, draft, libvirt, path_text, running, target, Cli,
+    SERVICE_ACCOUNT,
 };
 
 pub(crate) fn init(cli: &Cli) -> Result<ExitCode, String> {
@@ -37,18 +38,17 @@ pub(crate) fn init(cli: &Cli) -> Result<ExitCode, String> {
         );
     }
     let host = rampire_ops::host_readings::read_meminfo()?.total;
-    let timeout = std::time::Duration::from_secs(30);
-    let virsh = |args: &[&str]| {
-        let mut arguments = vec![process::os("-c"), process::os(&connection)];
-        arguments.extend(args.iter().map(process::os));
-        process::bounded_text("virsh", &arguments, Path::new("/"), timeout)
-    };
+    let libvirt = libvirt(cli)?;
     let mut domains = Vec::new();
-    for name in virsh(&["list", "--all", "--name"])?.lines().map(str::trim) {
+    for name in libvirt
+        .virsh(&["list", "--all", "--name"])?
+        .lines()
+        .map(str::trim)
+    {
         if !name.is_empty() {
             domains.push(init::parse_domain(
                 name,
-                &virsh(&["dumpxml", "--inactive", name])?,
+                &libvirt.virsh(&["dumpxml", "--inactive", name])?,
             )?);
         }
     }

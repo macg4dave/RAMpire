@@ -11,7 +11,8 @@ use rampire_core::{
     MemoryRequest, MemoryResult, TargetSample,
 };
 
-use crate::files::{read_bounded, replace_file};
+use crate::files::replace_file;
+use rampire_core::files::read_bounded;
 
 /// Bounds a request-state read; the state holds at most one request.
 const MAX_REQUEST_STATE_BYTES: usize = 64 * 1024;

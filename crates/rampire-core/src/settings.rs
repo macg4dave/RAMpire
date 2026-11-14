@@ -4,7 +4,6 @@
 //! second source of administrator settings.
 
 use std::collections::BTreeSet;
-use std::io::Read;
 use std::path::Path;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -431,16 +430,9 @@ fn validate_telemetry_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A TOML file of at most 1 MiB.
 pub fn read_toml<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
-    let file =
-        std::fs::File::open(path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    let mut text = String::new();
-    file.take(1024 * 1024 + 1)
-        .read_to_string(&mut text)
-        .map_err(|error| format!("read {}: {error}", path.display()))?;
-    if text.len() > 1024 * 1024 {
-        return Err(format!("{} exceeds 1 MiB", path.display()));
-    }
+    let text = crate::files::read_bounded_text(path, 1024 * 1024)?;
     toml::from_str(&text).map_err(|error| format!("parse {}: {error}", path.display()))
 }
 

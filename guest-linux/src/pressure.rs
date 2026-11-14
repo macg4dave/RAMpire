@@ -102,7 +102,7 @@ impl PressureSource for ProcPressure {
         if fired == Some(true) {
             return Some(MemoryResourceNotificationState::Low);
         }
-        let bytes = rampire_guest::files::read_bounded(
+        let bytes = rampire_core::files::read_bounded(
             std::path::Path::new(PRESSURE_PATH),
             MAX_PRESSURE_BYTES,
         )

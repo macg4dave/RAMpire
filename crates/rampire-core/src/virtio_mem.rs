@@ -38,6 +38,24 @@ impl VirtioMemState {
         self.validate_state_value(self.current_bytes, "current")
     }
 
+    /// What the pool charges this device: the most it can hold once what is
+    /// outstanding lands, which is its requested size, what is plugged now
+    /// (a removal still in progress), or `target_bytes`, a recorded command
+    /// libvirt may not show yet. Zero `target_bytes` is no command.
+    pub fn pool_charge(self, target_bytes: u64) -> u64 {
+        self.requested_bytes
+            .max(self.current_bytes)
+            .max(target_bytes)
+    }
+
+    /// Growth still to be plugged toward the requested size or the recorded
+    /// `target_bytes`.
+    pub fn outstanding_growth(self, target_bytes: u64) -> u64 {
+        self.requested_bytes
+            .max(target_bytes)
+            .saturating_sub(self.current_bytes)
+    }
+
     /// The largest target `validate_target` accepts for valid device geometry.
     pub fn maximum_target_bytes(self) -> u64 {
         maximum_target_bytes(self.size_bytes, self.block_size_bytes)
@@ -89,6 +107,27 @@ mod tests {
             current_bytes: 4 * GIB,
         }
     }
+
+    #[test]
+    fn the_pool_charges_the_most_a_device_can_hold_once_outstanding_work_lands() {
+        let growing = VirtioMemState {
+            requested_bytes: 6 * GIB,
+            ..valid_state()
+        };
+        assert_eq!(growing.pool_charge(0), 6 * GIB);
+        assert_eq!(growing.outstanding_growth(0), 2 * GIB);
+        let shrinking = VirtioMemState {
+            requested_bytes: 2 * GIB,
+            ..valid_state()
+        };
+        // Memory still being released stays charged.
+        assert_eq!(shrinking.pool_charge(0), 4 * GIB);
+        assert_eq!(shrinking.outstanding_growth(0), 0);
+        // A recorded command libvirt doesn't show yet counts too.
+        assert_eq!(valid_state().pool_charge(7 * GIB), 7 * GIB);
+        assert_eq!(valid_state().outstanding_growth(7 * GIB), 3 * GIB);
+    }
+
     #[test]
     fn validates_state_and_target() {
         assert!(valid_state().validate_target(6 * GIB).is_ok());

@@ -293,8 +293,7 @@ fn main() -> ExitCode {
     match &cli.command {
         // The unit runs the daemon as the service account, and recovery
         // runs its own step as that account too.
-        Command::Daemon => return daemon::run(&running(&cli)),
-        Command::ClearLatch { .. } => {}
+        Command::Daemon | Command::ClearLatch { .. } => {}
         _ if process::effective_uid() != 0 => {
             eprintln!("rampire: run this as root, for example with sudo");
             return ExitCode::from(exit::FAILURE);
@@ -313,7 +312,7 @@ fn main() -> ExitCode {
 fn run(cli: &Cli) -> Result<ExitCode, String> {
     let cwd = Path::new("/");
     match &cli.command {
-        Command::Daemon => unreachable!("handled in main"),
+        Command::Daemon => Ok(daemon::run(&running(cli))),
         Command::Status { vm } => reporting::status(cli, vm.as_deref()),
         Command::Init => controller::init(cli),
         Command::Top { view, events } => {
@@ -482,11 +481,63 @@ fn confirm(cli: &Cli, question: &str) -> Result<bool, String> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
 }
 
+/// A private temporary directory, removed when dropped. The commands run as
+/// root, so it is always a new directory that only its owner can enter: no
+/// other user can plant, read or swap a file in it.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(label: &str) -> Result<Self, String> {
+        use std::os::unix::fs::DirBuilderExt;
+        for attempt in 0..100_u32 {
+            let path = std::env::temp_dir()
+                .join(format!("rampire-{label}-{}-{attempt}", std::process::id()));
+            match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(format!("create {}: {error}", path.display())),
+            }
+        }
+        Err(format!(
+            "no free temporary directory name for {label} in {}",
+            std::env::temp_dir().display()
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        // Best effort: a leftover private directory harms nothing.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::CommandFactory;
     use rampire_ops::reports::{CheckReport, CheckSchema};
+
+    #[test]
+    fn temporary_directories_are_new_private_and_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let first = TempDir::new("test").unwrap();
+        let second = TempDir::new("test").unwrap();
+        assert_ne!(first.path(), second.path());
+        let mode = std::fs::metadata(first.path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+        let path = first.path().to_path_buf();
+        std::fs::write(path.join("file"), "x").unwrap();
+        drop(first);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn the_command_line_is_consistent() {

@@ -64,7 +64,7 @@ pub fn refault_file_pages(vmstat: &str) -> Option<u64> {
 
 pub fn read_refault_file_pages() -> Option<u64> {
     let bytes =
-        rampire_guest::files::read_bounded(std::path::Path::new(VMSTAT_PATH), MAX_VMSTAT_BYTES)
+        rampire_core::files::read_bounded(std::path::Path::new(VMSTAT_PATH), MAX_VMSTAT_BYTES)
             .ok()??;
     refault_file_pages(std::str::from_utf8(&bytes).ok()?)
 }

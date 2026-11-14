@@ -5,7 +5,7 @@
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
-use rampire_core::MEMORY_CONTROL_CHANNEL_NAME;
+use rampire_core::{libvirt_unit_bytes, MEMORY_CONTROL_CHANNEL_NAME};
 use rampire_host::attestation::AnswerSource;
 
 const MIB: u64 = 1 << 20;
@@ -43,7 +43,7 @@ pub struct Inspection {
     pub vcpus: u32,
     /// The domain's `<memory>`: with no NUMA cell, the boot RAM.
     pub memory_bytes: u64,
-    memory_unit: String,
+    memory_unit: Option<String>,
 }
 
 impl Inspection {
@@ -167,9 +167,14 @@ impl Inspection {
 }
 
 /// A new device's size: three times boot RAM, so a Linux guest grows to
-/// about four times its boot RAM and can still return it reliably.
+/// about four times its boot RAM and can still return it reliably. Rounded
+/// up to whole GiB, at most the largest whole GiB a u64 holds.
 pub fn default_device_bytes(boot_bytes: u64) -> u64 {
-    (boot_bytes * 3).div_ceil(GIB) * GIB
+    boot_bytes
+        .saturating_mul(3)
+        .div_ceil(GIB)
+        .min(u64::MAX / GIB)
+        * GIB
 }
 
 /// Read a domain's definition.
@@ -179,7 +184,7 @@ pub fn inspect(xml: &str) -> Result<Inspection, String> {
     let mut buffer = Vec::new();
     let mut path: Vec<Vec<u8>> = Vec::new();
     let mut inspection = Inspection::default();
-    let mut device: Option<(Device, Option<&'static str>, String)> = None;
+    let mut device: Option<(Device, Option<&'static str>, Option<String>)> = None;
     loop {
         let event = reader
             .read_event_into(&mut buffer)
@@ -206,18 +211,13 @@ pub fn inspect(xml: &str) -> Result<Inspection, String> {
                         .map_err(|_| format!("domain XML: vcpu {raw:?}"))?;
                 } else if at(&[b"domain", b"memory"]) {
                     let raw = text.decode().map_err(|error| error.to_string())?;
-                    let unit = std::mem::take(&mut inspection.memory_unit);
-                    let unit = if unit.is_empty() {
-                        "KiB".to_owned()
-                    } else {
-                        unit
-                    };
-                    inspection.memory_bytes = libvirt_bytes(raw.trim(), &unit)?;
+                    let unit = inspection.memory_unit.take();
+                    inspection.memory_bytes = libvirt_bytes(raw.trim(), unit.as_deref())?;
                 }
                 if let Some((current, field, unit)) = device.as_mut() {
                     if let Some(field) = field.take() {
                         let raw = text.decode().map_err(|error| error.to_string())?;
-                        let bytes = libvirt_bytes(raw.trim(), unit)?;
+                        let bytes = libvirt_bytes(raw.trim(), unit.as_deref())?;
                         match field {
                             "size" => current.size_bytes = bytes,
                             "block" => current.block_bytes = bytes,
@@ -248,13 +248,13 @@ fn look(
     element: &BytesStart<'_>,
     path: &[Vec<u8>],
     inspection: &mut Inspection,
-    device: &mut Option<(Device, Option<&'static str>, String)>,
+    device: &mut Option<(Device, Option<&'static str>, Option<String>)>,
 ) -> Result<(), String> {
     let name = element.name().as_ref().to_vec();
     let parent = path.last().map(Vec::as_slice);
     match (name.as_slice(), parent) {
         (b"memory", Some(b"domain")) => {
-            inspection.memory_unit = attribute(element, b"unit")?.unwrap_or_default();
+            inspection.memory_unit = attribute(element, b"unit")?;
         }
         (b"maxMemory", Some(b"domain")) => {
             inspection.max_memory_slots =
@@ -263,8 +263,11 @@ fn look(
         (b"cell", Some(b"numa")) => {
             inspection.numa_cells += 1;
             if let Some(memory) = attribute(element, b"memory")? {
-                let unit = attribute(element, b"unit")?.unwrap_or_else(|| "KiB".to_owned());
-                inspection.boot_bytes += libvirt_bytes(&memory, &unit)?;
+                let unit = attribute(element, b"unit")?;
+                inspection.boot_bytes = inspection
+                    .boot_bytes
+                    .checked_add(libvirt_bytes(&memory, unit.as_deref())?)
+                    .ok_or("domain XML: the NUMA cells' memory overflows")?;
             }
         }
         (b"memory", Some(b"devices")) => {
@@ -277,7 +280,7 @@ fn look(
                         requested_bytes: 0,
                     },
                     None,
-                    String::new(),
+                    None,
                 ));
             } else {
                 inspection.other_memory_devices += 1;
@@ -290,7 +293,7 @@ fn look(
                     b"block" => "block",
                     _ => "requested",
                 });
-                *unit = attribute(element, b"unit")?.unwrap_or_else(|| "KiB".to_owned());
+                *unit = attribute(element, b"unit")?;
             }
         }
         (b"alias", Some(b"memory")) => {
@@ -339,22 +342,13 @@ fn attribute(element: &BytesStart<'_>, key: &[u8]) -> Result<Option<String>, Str
     Ok(None)
 }
 
-fn libvirt_bytes(value: &str, unit: &str) -> Result<u64, String> {
+/// A libvirt memory size in bytes; `unit` `None` is libvirt's KiB.
+fn libvirt_bytes(value: &str, unit: Option<&str>) -> Result<u64, String> {
     let value: u64 = value
         .parse()
         .map_err(|_| format!("domain XML: {value:?} is not a size"))?;
-    let multiplier: u64 = match unit {
-        "b" | "bytes" => 1,
-        "KB" => 1_000,
-        "k" | "KiB" => 1 << 10,
-        "MB" => 1_000_000,
-        "M" | "MiB" => 1 << 20,
-        "GB" => 1_000_000_000,
-        "G" | "GiB" => 1 << 30,
-        "TB" => 1_000_000_000_000,
-        "T" | "TiB" => 1 << 40,
-        other => return Err(format!("domain XML: unknown unit {other:?}")),
-    };
+    let multiplier = libvirt_unit_bytes(unit)
+        .ok_or_else(|| format!("domain XML: unknown unit {:?}", unit.unwrap_or_default()))?;
     value
         .checked_mul(multiplier)
         .ok_or_else(|| "domain XML: size overflows".to_owned())

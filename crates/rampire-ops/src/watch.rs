@@ -11,7 +11,6 @@
 //! the same results.
 
 use std::collections::VecDeque;
-use std::ffi::OsString;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -28,7 +27,7 @@ use crate::dashboard::{
 use crate::host_readings::{
     device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
 };
-use crate::process;
+use crate::journal::{self, field};
 
 pub const HELP: &str = "Watch options (read-only live dashboard):
   --config PATH                 Required host TOML; the VM, device alias,
@@ -213,65 +212,67 @@ struct LastResult {
 struct Journal {
     events: Vec<Event>,
     last_result: Option<LastResult>,
+    /// Why the journal gave nothing, when it couldn't be read.
+    unreadable: Option<String>,
 }
 
+/// This VM's events, and the controller's own that name no VM.
 fn read_journal(command: &Command, cwd: &Path) -> Journal {
-    let arguments: Vec<OsString> = [
-        "-u",
-        &command.unit,
-        "-n",
-        "300",
-        "--no-pager",
-        "-o",
-        "short-iso",
-    ]
-    .iter()
-    .map(process::os)
-    .collect();
-    process::bounded_text("journalctl", &arguments, cwd, COMMAND_TIMEOUT)
-        .map(|journal| Journal {
-            events: parse_events(&journal, command.events),
-            last_result: parse_last_result(&journal),
-        })
-        .unwrap_or_default()
+    match journal::read_events(&command.unit, cwd) {
+        Ok(text) => {
+            let lines = lines_for(&text, &command.vm);
+            Journal {
+                events: parse_events(&lines, command.events),
+                last_result: parse_last_result(&lines),
+                unreadable: None,
+            }
+        }
+        Err(reason) => Journal {
+            unreadable: Some(reason),
+            ..Journal::default()
+        },
+    }
 }
 
-fn parse_last_result(journal: &str) -> Option<LastResult> {
-    let lines: Vec<&str> = journal.lines().collect();
+/// The lines about `vm`, and the controller's own that name no VM.
+fn lines_for<'a>(journal: &'a str, vm: &str) -> Vec<&'a str> {
+    journal
+        .lines()
+        .filter(|line| field(line, "vm").is_none_or(|named| named == vm))
+        .collect()
+}
+
+/// The newest `request_completed` among `lines`, oldest first.
+fn parse_last_result(lines: &[&str]) -> Option<LastResult> {
     let at = lines
         .iter()
-        .rposition(|line| line.contains("event=request_completed"))?;
+        .rposition(|line| field(line, "event") == Some("request_completed"))?;
     let line = lines[at];
-    let field_of = |line: &str, name: &str| -> Option<String> {
-        line.split(' ')
-            .find_map(|word| word.strip_prefix(name)?.strip_prefix('='))
-            .map(str::to_owned)
-    };
-    let field = |name: &str| field_of(line, name);
-    let bytes = |name: &str| field(name)?.parse::<u64>().ok().map(mib);
-    let outcome = field("outcome")?;
-    let colour = match outcome.as_str() {
+    let bytes = |name: &str| field(line, name)?.parse::<u64>().ok().map(mib);
+    let outcome = field(line, "outcome")?;
+    let colour = match outcome {
         "Completed" => GREEN,
         "Partial" | "PoolEmpty" => YELLOW,
         _ => RED,
     };
     let mut detail = format!(
         "{} {}M -> {}M at {}",
-        field("operation")?,
+        field(line, "operation")?,
         bytes("bytes")?,
         bytes("actual_bytes")?,
-        line.get(11..19)?
+        journal::time(line)
     );
     // A grant held back says by what: the same request's grant_limits.
-    let mut shown = outcome.clone();
-    if matches!(outcome.as_str(), "Partial" | "PoolEmpty") {
-        let sequence = field("sequence");
+    let mut shown = outcome.to_owned();
+    if matches!(outcome, "Partial" | "PoolEmpty") {
+        let sequence = field(line, "sequence");
         let limits = lines[..at].iter().rev().find(|earlier| {
-            earlier.contains("event=grant_limits") && field_of(earlier, "sequence") == sequence
+            field(earlier, "event") == Some("grant_limits")
+                && field(earlier, "sequence") == sequence
         });
         if let Some(by) = limits
-            .and_then(|limits| field_of(limits, "limiting_factors"))
-            .and_then(|factors| held_back_by(&factors))
+            .and_then(|limits| field(limits, "limiting_factors"))
+            .and_then(held_back_by)
         {
             shown = "held back".to_owned();
             detail = format!("{detail}: {by}");
@@ -329,53 +330,36 @@ const EVENT_COLOURS: [(&str, u8); 13] = [
 
 /// Newest-first events with health samples dropped, byte counts in MiB and
 /// consecutive repeats (ignoring embedded timestamps) collapsed with a count.
-fn parse_events(journal: &str, count: usize) -> Vec<Event> {
-    let mut events: Vec<(Event, String, usize)> = Vec::new();
-    for line in journal.lines().rev() {
-        let Some((_, text)) = line.split_once("event=") else {
-            continue;
-        };
+fn parse_events(lines: &[&str], count: usize) -> Vec<Event> {
+    let events = lines.iter().rev().filter_map(|line| {
+        let (_, text) = line.split_once("event=")?;
         if text.starts_with("control_health") {
-            continue;
+            return None;
         }
-        let time = line.get(11..19).unwrap_or("--:--:--").to_owned();
-        let full = text.to_owned();
-        let text = shorten(text);
-        let key = mask_long_numbers(&text);
-        if let Some((_, last_key, repeats)) = events.last_mut() {
-            if *last_key == key {
-                *repeats += 1;
-                continue;
-            }
-        }
-        if events.len() == count {
-            break;
-        }
+        let short = shorten(text);
         let colour = EVENT_COLOURS
             .iter()
-            .find(|(marker, _)| text.contains(marker))
+            .find(|(marker, _)| short.contains(marker))
             .map_or(LABEL, |(_, colour)| *colour);
-        events.push((
-            Event {
-                time,
-                text,
-                full,
-                colour,
-            },
-            key,
-            1,
-        ));
-    }
-    events
-        .into_iter()
-        .map(|(mut event, _, repeats)| {
-            if repeats > 1 {
-                event.text = format!("(x{repeats}) {}", event.text);
-                event.full = format!("(x{repeats}) {}", event.full);
-            }
-            event
+        Some(Event {
+            time: journal::time(line).to_owned(),
+            text: short,
+            full: text.to_owned(),
+            colour,
         })
-        .collect()
+    });
+    journal::collapse_repeats(events, count, |newer, older| {
+        mask_long_numbers(&newer.text) == mask_long_numbers(&older.text)
+    })
+    .into_iter()
+    .map(|(mut event, repeats)| {
+        if repeats > 1 {
+            event.text = format!("(x{repeats}) {}", event.text);
+            event.full = format!("(x{repeats}) {}", event.full);
+        }
+        event
+    })
+    .collect()
 }
 
 /// Drops session IDs and shows `*bytes=N` values in MiB.
@@ -526,7 +510,10 @@ fn build(
         None => frame.metric(
             "Last result",
             "none",
-            "no request_completed in the journal",
+            journal
+                .unreadable
+                .as_deref()
+                .unwrap_or("no request_completed in the journal"),
             DIM,
         ),
     }
@@ -556,7 +543,10 @@ fn build(
                 frame.add(format!("{}  ", event.time), DIM);
                 frame.add(event.text.as_str(), event.colour);
             }
-            None if index == 0 => frame.add("no controller events in the journal", DIM),
+            None if index == 0 => match &journal.unreadable {
+                Some(reason) => frame.add(reason.as_str(), YELLOW),
+                None => frame.add("no controller events in the journal", DIM),
+            },
             None => {}
         }
         frame.end_row();
@@ -719,7 +709,8 @@ mod tests {
 2026-10-27T09:57:20+00:00 kvm-host rampire[1]: rampire: vm=w event=control_health direction=Shrink
 2026-10-27T09:57:40+00:00 kvm-host rampire[1]: rampire: vm=w event=actuation_latched reason=x
 ";
-        let events = parse_events(journal, 6);
+        let lines: Vec<&str> = journal.lines().collect();
+        let events = parse_events(&lines, 6);
         assert_eq!(events.len(), 3);
         assert_eq!(
             events[1].full,
@@ -734,8 +725,22 @@ mod tests {
         assert_eq!(events[1].colour, CYAN);
         assert!(events[2].text.starts_with("(x2) guest_input_invalid"));
         assert!(events[2].full.ends_with("is stale at 1793094637000"));
-        assert_eq!(parse_events(journal, 1).len(), 1);
+        assert_eq!(parse_events(&lines, 1).len(), 1);
         assert!(full_events(&events).contains("09:57:40  actuation_latched reason=x\n"));
+    }
+
+    #[test]
+    fn only_this_vms_events_and_the_controllers_own_are_shown() {
+        let journal = "2026-10-27T10:03:21+00:00 h rampire[1]: rampire: vm=w event=request_completed operation=Add bytes=1073741824 outcome=Completed actual_bytes=1073741824
+2026-10-27T10:03:22+00:00 h rampire[1]: rampire: vm=other event=request_completed operation=Remove bytes=1073741824 outcome=Rejected actual_bytes=0
+2026-10-27T10:03:23+00:00 h rampire[1]: rampire: event=reload_refused reason=bad file
+";
+        let lines = lines_for(journal, "w");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(parse_last_result(&lines).unwrap().outcome, "Completed");
+        assert!(parse_events(&lines, 6)[0]
+            .text
+            .starts_with("reload_refused"));
     }
 
     #[test]
@@ -746,14 +751,14 @@ mod tests {
 2026-10-27T10:03:33+00:00 h rampire[1]: rampire: vm=w event=guest_status_unpublished reason=x
 ";
         assert_eq!(
-            parse_last_result(journal),
+            parse_last_result(&journal.lines().collect::<Vec<_>>()),
             Some(LastResult {
                 outcome: "Completed".to_owned(),
                 detail: "Add 1024M -> 1024M at 10:03:21".to_owned(),
                 colour: GREEN,
             })
         );
-        assert_eq!(parse_last_result("no completions"), None);
+        assert_eq!(parse_last_result(&["no completions"]), None);
     }
 
     #[test]
@@ -763,7 +768,7 @@ mod tests {
 2026-11-14T16:12:59+00:00 h rampire[1]: rampire: vm=g event=request_completed operation_id=none session_id=s sequence=4 operation=Add bytes=127926272 outcome=PoolEmpty actual_bytes=0 reason=no free pool, device or host-reserve bytes remain
 ";
         assert_eq!(
-            parse_last_result(journal),
+            parse_last_result(&journal.lines().collect::<Vec<_>>()),
             Some(LastResult {
                 outcome: "held back".to_owned(),
                 detail: "Add 122M -> 0M at 16:12:59: the host reserve (host_reserve)".to_owned(),
@@ -797,6 +802,7 @@ mod tests {
                 colour: RED,
             }],
             last_result: None,
+            unreadable: None,
         };
         let sample = Sample {
             host: HostMemory {

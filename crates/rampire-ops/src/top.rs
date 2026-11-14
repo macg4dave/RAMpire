@@ -9,7 +9,6 @@
 //! anything.
 
 use std::collections::VecDeque;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -25,6 +24,7 @@ use crate::dashboard::{
 use crate::host_readings::{
     device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
 };
+use crate::journal::{self, field};
 use crate::process;
 
 pub const HELP: &str = "Pool options (read-only live dashboard of every VM):
@@ -152,9 +152,10 @@ struct VmSample {
 impl VmSample {
     /// What the pool charges this VM: `max(requested, plugged)`, as the
     /// controller counts it.
+    /// The pool's charge as the controller counts it; a recorded command
+    /// libvirt doesn't show yet is not visible here.
     fn charge(&self) -> u64 {
-        self.device
-            .map_or(0, |device| device.requested_bytes.max(device.current_bytes))
+        self.device.map_or(0, |device| device.pool_charge(0))
     }
 }
 
@@ -212,7 +213,11 @@ pub fn run(command: &Command, cwd: &Path) -> Result<(), String> {
             now_unix_millis: process::unix_millis()?,
             samples,
         };
-        let charged = sample.vms.iter().map(VmSample::charge).sum::<u64>();
+        let charged = sample
+            .vms
+            .iter()
+            .map(VmSample::charge)
+            .fold(0, u64::saturating_add);
         session.record(
             charged,
             command.pool_bytes.map(|pool| pool.saturating_sub(charged)),
@@ -232,10 +237,7 @@ pub fn run(command: &Command, cwd: &Path) -> Result<(), String> {
 /// The controller's copy of a guest's publication; missing (controller
 /// stopped), oversized or mid-write leaves it empty.
 fn read_publication(path: &Path) -> Option<RawTelemetryEnvelope> {
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.len() > MAX_TELEMETRY_BYTES {
-        return None;
-    }
+    let bytes = rampire_core::files::read_bounded(path, MAX_TELEMETRY_BYTES).ok()??;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -247,48 +249,9 @@ struct PoolEvent {
     colour: u8,
 }
 
-/// The pool events, or why the journal gave none: an unprivileged user
-/// outside `systemd-journal` gets no lines at all, not an error. Only event
-/// lines are asked for, so a burst of other controller output (libvirt's
-/// own error lines) cannot push every event out of the window.
+/// The pool events, or why the journal gave none.
 fn read_events(command: &Command, cwd: &Path) -> Result<Vec<PoolEvent>, String> {
-    let arguments: Vec<OsString> = [
-        "-u",
-        &command.unit,
-        "--grep",
-        " event=",
-        "-n",
-        "600",
-        "--no-pager",
-        "-o",
-        "short-iso",
-    ]
-    .iter()
-    .map(process::os)
-    .collect();
-    const UNREADABLE: &str = "journal unreadable: run with sudo or join the systemd-journal group";
-    match process::bounded_text("journalctl", &arguments, cwd, COMMAND_TIMEOUT) {
-        Ok(journal) if journal.lines().any(|line| line.contains(" event=")) => {
-            Ok(parse_events(&journal, command.events))
-        }
-        Ok(_) if process::effective_uid() == 0 => Ok(Vec::new()),
-        // journalctl exits 1 when --grep matches nothing.
-        Err(error) if process::effective_uid() == 0 && error.contains("status 1") => Ok(Vec::new()),
-        Ok(_) => Err(UNREADABLE.to_owned()),
-        Err(error) if error.contains("permission") => Err(UNREADABLE.to_owned()),
-        Err(error) => Err(error),
-    }
-}
-
-/// The value of `name=` in a journal line; `reason=` runs to the end.
-fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
-    let marker = format!(" {name}=");
-    let start = line.find(&marker)? + marker.len();
-    let rest = &line[start..];
-    if name == "reason" {
-        return Some(rest.trim_end());
-    }
-    Some(rest.split(' ').next().unwrap_or(rest))
+    journal::read_events(&command.unit, cwd).map(|text| parse_events(&text, command.events))
 }
 
 fn mebibytes(line: &str, name: &str) -> String {
@@ -362,7 +325,7 @@ fn pool_event(line: &str) -> Option<PoolEvent> {
         _ => return None,
     };
     Some(PoolEvent {
-        time: line.get(11..19).unwrap_or("--:--:--").to_owned(),
+        time: journal::time(line).to_owned(),
         vm: field(line, "vm").unwrap_or("?").to_owned(),
         text,
         colour,
@@ -371,28 +334,19 @@ fn pool_event(line: &str) -> Option<PoolEvent> {
 
 /// Newest-first pool events, consecutive repeats per VM collapsed with a count.
 fn parse_events(journal: &str, count: usize) -> Vec<PoolEvent> {
-    let mut events: Vec<(PoolEvent, usize)> = Vec::new();
-    for event in journal.lines().rev().filter_map(pool_event) {
-        if let Some((last, repeats)) = events.last_mut() {
-            if last.vm == event.vm && last.text == event.text {
-                *repeats += 1;
-                continue;
-            }
+    journal::collapse_repeats(
+        journal.lines().rev().filter_map(pool_event),
+        count,
+        |newer, older| newer.vm == older.vm && newer.text == older.text,
+    )
+    .into_iter()
+    .map(|(mut event, repeats)| {
+        if repeats > 1 {
+            event.text = format!("(x{repeats}) {}", event.text);
         }
-        if events.len() == count {
-            break;
-        }
-        events.push((event, 1));
-    }
-    events
-        .into_iter()
-        .map(|(mut event, repeats)| {
-            if repeats > 1 {
-                event.text = format!("(x{repeats}) {}", event.text);
-            }
-            event
-        })
-        .collect()
+        event
+    })
+    .collect()
 }
 
 fn vm_colour(index: usize) -> u8 {
@@ -426,8 +380,14 @@ fn scale_bytes(command: &Command, sample: &Sample) -> u64 {
             .vms
             .iter()
             .map(|vm| vm.device.map_or(0, |device| device.size_bytes))
-            .sum::<u64>()
-            .max(sample.vms.iter().map(VmSample::charge).sum())
+            .fold(0, u64::saturating_add)
+            .max(
+                sample
+                    .vms
+                    .iter()
+                    .map(VmSample::charge)
+                    .fold(0, u64::saturating_add),
+            )
     })
 }
 
@@ -473,7 +433,7 @@ fn build(
 fn pool_panel(frame: &mut Frame, command: &Command, sample: &Sample, session: &Session) {
     let g = frame.glyphs;
     let charges: Vec<u64> = sample.vms.iter().map(VmSample::charge).collect();
-    let charged: u64 = charges.iter().sum();
+    let charged = charges.iter().copied().fold(0, u64::saturating_add);
     let scale = scale_bytes(command, sample);
     frame.top("POOL", "charge = max(requested, plugged) per VM");
 

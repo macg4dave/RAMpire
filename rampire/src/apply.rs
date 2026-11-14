@@ -11,7 +11,9 @@ use rampire_host::config::HostSettings;
 use rampire_ops::process;
 
 use crate::controller::{controller_unit, systemctl};
-use crate::{applied_root, confirm, daemon, draft, exit, libvirt, version, Cli, SERVICE_ACCOUNT};
+use crate::{
+    applied_root, confirm, daemon, draft, exit, libvirt, version, Cli, TempDir, SERVICE_ACCOUNT,
+};
 
 fn print_check(report: &rampire_ops::check::Report) {
     for vm in &report.vms {
@@ -30,22 +32,20 @@ fn print_check(report: &rampire_ops::check::Report) {
 /// Show the difference between two configuration directories, `None` being
 /// no configuration at all. Returns whether there is any.
 fn show_difference(from: Option<&Path>, to: &Path) -> Result<bool, String> {
-    let empty = std::env::temp_dir().join(format!("rampire-empty-{}", std::process::id()));
+    let empty;
     let from = match from {
-        Some(path) => path.to_path_buf(),
+        Some(path) => path,
         None => {
-            std::fs::create_dir_all(&empty).map_err(|error| error.to_string())?;
-            empty.clone()
+            empty = TempDir::new("empty")?;
+            empty.path()
         }
     };
     let output = std::process::Command::new("diff")
         .arg("-ruN")
-        .arg(&from)
+        .arg(from)
         .arg(to)
         .output()
-        .map_err(|error| format!("run diff: {error}"));
-    let _ = std::fs::remove_dir(&empty);
-    let output = output?;
+        .map_err(|error| format!("run diff: {error}"))?;
     match output.status.code() {
         Some(0) => Ok(false),
         Some(1) => {
@@ -64,14 +64,11 @@ fn show_difference(from: Option<&Path>, to: &Path) -> Result<bool, String> {
 }
 
 pub(crate) fn diff(cli: &Cli) -> Result<ExitCode, String> {
-    let staged = std::env::temp_dir().join(format!("rampire-draft-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&staged);
-    let result = rampire_ops::applied::snapshot(&draft(cli), &staged).and_then(|()| {
-        let current = rampire_ops::applied::current(applied_root())?;
-        show_difference(current.as_deref(), &staged)
-    });
-    let _ = std::fs::remove_dir_all(&staged);
-    if !result? {
+    let temporary = TempDir::new("draft")?;
+    let staged = temporary.path().join("draft");
+    rampire_ops::applied::snapshot(&draft(cli), &staged)?;
+    let current = rampire_ops::applied::current(applied_root())?;
+    if !show_difference(current.as_deref(), &staged)? {
         println!("no changes: the draft is what the controller runs");
     }
     Ok(ExitCode::SUCCESS)
@@ -257,14 +254,7 @@ enum Refreshed {
 /// restart otherwise. One that isn't running is left alone: it starts on
 /// the new copy whenever it starts.
 fn refresh_controller(unit: &str, from: Option<&Path>, to: &Path) -> Result<Refreshed, String> {
-    let active = process::bounded_text(
-        "systemctl",
-        &[process::os("is-active"), process::os(unit)],
-        Path::new("/"),
-        std::time::Duration::from_secs(10),
-    )
-    .is_ok_and(|state| state.trim() == "active");
-    if !active {
+    if !controller_active(unit) {
         println!(
             "{unit} isn't running, so nothing was restarted; it runs this copy when it starts"
         );
@@ -290,9 +280,24 @@ fn refresh_controller(unit: &str, from: Option<&Path>, to: &Path) -> Result<Refr
     }
 }
 
-/// The copy the running controller started on, if it says.
-fn running_copy() -> Option<PathBuf> {
+/// The copy the running controller started on, if it is running and says.
+/// The record outlives a stopped controller, so it counts only while the
+/// unit is active.
+pub(crate) fn running_copy() -> Option<PathBuf> {
+    if !controller_active(&controller_unit()) {
+        return None;
+    }
     std::fs::read_to_string(daemon::RUNNING_COPY)
         .ok()
         .map(|text| PathBuf::from(text.trim()))
+}
+
+fn controller_active(unit: &str) -> bool {
+    process::bounded_text(
+        "systemctl",
+        &[process::os("is-active"), process::os(unit)],
+        Path::new("/"),
+        std::time::Duration::from_secs(10),
+    )
+    .is_ok_and(|state| state.trim() == "active")
 }

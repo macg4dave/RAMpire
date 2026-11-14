@@ -320,7 +320,9 @@ pub(super) fn scrub_descriptor_numbers(arguments: &str) -> String {
                 }
             }
         }
-        let character = rest.chars().next().expect("non-empty");
+        let Some(character) = rest.chars().next() else {
+            break;
+        };
         scrubbed.push(character);
         rest = &rest[character.len_utf8()..];
     }

@@ -45,7 +45,10 @@ pub struct Suggestion {
 /// down to whole GiB.
 pub fn suggest(host_bytes: u64, domains: &[DomainMemory]) -> Suggestion {
     let reserve = (host_bytes / 8).clamp(2 * GIB, 8 * GIB) / GIB * GIB;
-    let set_aside: u64 = domains.iter().map(DomainMemory::set_aside_bytes).sum();
+    let set_aside = domains
+        .iter()
+        .map(DomainMemory::set_aside_bytes)
+        .fold(0, u64::saturating_add);
     let pool = host_bytes.saturating_sub(reserve).saturating_sub(set_aside) / GIB * GIB;
     Suggestion {
         host_bytes,

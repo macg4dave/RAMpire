@@ -12,6 +12,7 @@ pub mod doctor;
 pub mod evidence;
 pub mod host_readings;
 pub mod init;
+pub mod journal;
 pub mod process;
 pub mod reports;
 pub mod set;

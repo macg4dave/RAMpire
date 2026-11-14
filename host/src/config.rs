@@ -171,7 +171,12 @@ pub fn reloadable(old: &HostConfig, new: &HostConfig) -> Result<(), String> {
             old.vm_name
         ));
     }
-    let read = |path: &str| std::fs::read(path).map_err(|error| format!("read {path}: {error}"));
+    let read = |path: &str| {
+        rampire_core::files::read_bounded_text(
+            Path::new(path),
+            crate::attestation::MAX_ATTESTATION_BYTES,
+        )
+    };
     if read(&old.compatibility_attestation_path)? != read(&new.compatibility_attestation_path)? {
         return Err(format!("{}: its attestation changed", old.vm_name));
     }

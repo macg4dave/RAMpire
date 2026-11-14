@@ -18,7 +18,8 @@ use rampire_core::{
     MEMORY_CONTROL_CHANNEL_NAME,
 };
 
-use crate::files::{read_bounded, replace_file, transient_sharing_error};
+use crate::files::{replace_file, transient_sharing_error};
+use rampire_core::files::read_bounded;
 
 pub trait Transport: std::fmt::Debug {
     /// Send one publication, a JSON record ending in a newline. A record the

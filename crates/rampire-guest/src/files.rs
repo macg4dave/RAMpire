@@ -1,28 +1,8 @@
-//! Bounded reads and whole-file replacement for the control files.
+//! Whole-file replacement for the control files.
 
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-
-/// The file's contents, `None` when it does not exist. More than
-/// `maximum_bytes` is an error rather than a truncated read.
-pub fn read_bounded(path: &Path, maximum_bytes: usize) -> std::io::Result<Option<Vec<u8>>> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let mut bytes = Vec::new();
-    file.take(maximum_bytes as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > maximum_bytes {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("file exceeds {maximum_bytes} bytes"),
-        ));
-    }
-    Ok(Some(bytes))
-}
 
 /// How long a replacement waits out a reader holding the destination open.
 /// On Windows the guest agent opens a file it reads without sharing delete,
@@ -67,7 +47,7 @@ pub fn replace_file(path: &Path, bytes: &[u8], durable: bool) -> Result<(), Stri
         #[cfg(unix)]
         if durable {
             // The rename itself is durable only once its directory is.
-            File::open(parent)
+            std::fs::File::open(parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| format!("flush {}: {error}", parent.display()))?;
         }
@@ -120,6 +100,7 @@ fn rename(source: &Path, destination: &Path, durable: bool) -> std::io::Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rampire_core::files::read_bounded;
 
     #[test]
     fn replacement_is_whole_and_reads_are_bounded() {

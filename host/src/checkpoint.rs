@@ -22,7 +22,7 @@ rampire_core::schema_name! {
     /// The `schema` of a VM's durable checkpoint.
     struct CheckpointSchema = "rampire.checkpoint";
 }
-const MAX_CHECKPOINT_BYTES: u64 = 1024 * 1024;
+const MAX_CHECKPOINT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -387,15 +387,14 @@ pub fn clear_actuation_latch(
 /// unreadable, oversized, foreign or invalid fails closed rather than
 /// discarding possible control state.
 fn load(path: &Path, vm_name: &str, device_alias: &str) -> Result<Option<CheckpointFile>, String> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("inspect control checkpoint: {error}")),
+    let bytes = match rampire_core::files::read_bounded(path, MAX_CHECKPOINT_BYTES) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return Err("control checkpoint is oversized; refusing to discard it".to_owned())
+        }
+        Err(error) => return Err(format!("read control checkpoint: {error}")),
     };
-    if metadata.len() > MAX_CHECKPOINT_BYTES {
-        return Err("control checkpoint is oversized; refusing to discard it".to_owned());
-    }
-    let bytes = fs::read(path).map_err(|error| format!("read control checkpoint: {error}"))?;
     let file: CheckpointFile = serde_json::from_slice(&bytes).map_err(|error| {
         format!("control checkpoint is invalid; refusing to discard it: {error}")
     })?;
@@ -420,7 +419,7 @@ fn load(path: &Path, vm_name: &str, device_alias: &str) -> Result<Option<Checkpo
 fn persist(path: &Path, file: &CheckpointFile) -> Result<(), String> {
     let bytes =
         serde_json::to_vec(file).map_err(|error| format!("encode control checkpoint: {error}"))?;
-    if bytes.len() as u64 > MAX_CHECKPOINT_BYTES {
+    if bytes.len() > MAX_CHECKPOINT_BYTES {
         return Err("control checkpoint exceeds its size limit".to_owned());
     }
     let parent = path
@@ -561,10 +560,7 @@ mod tests {
         let mut foreign = config.clone();
         foreign.alias = "memory1".to_owned();
         assert!(Checkpoint::open(&foreign, "a".repeat(64)).is_err());
-        for contents in [
-            b"{invalid".to_vec(),
-            vec![b' '; MAX_CHECKPOINT_BYTES as usize + 1],
-        ] {
+        for contents in [b"{invalid".to_vec(), vec![b' '; MAX_CHECKPOINT_BYTES + 1]] {
             fs::write(&config.policy_state_path, contents).expect("write");
             assert!(Checkpoint::open(&config, "a".repeat(64)).is_err());
         }

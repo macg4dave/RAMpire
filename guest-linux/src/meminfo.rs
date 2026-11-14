@@ -55,7 +55,7 @@ impl CommitModel {
     /// Read on every sample: an administrator can change it while we run.
     pub(crate) fn current() -> Self {
         let read = |name: &str| {
-            rampire_guest::files::read_bounded(&Path::new("/proc/sys/vm").join(name), 64)
+            rampire_core::files::read_bounded(&Path::new("/proc/sys/vm").join(name), 64)
                 .ok()
                 .flatten()
                 .and_then(|bytes| String::from_utf8(bytes).ok())
@@ -93,7 +93,7 @@ impl ProcMeminfo {
 
 impl MemorySource for ProcMeminfo {
     fn sample(&mut self) -> Result<MemoryTelemetrySnapshot, String> {
-        let text = rampire_guest::files::read_bounded(Path::new(MEMINFO_PATH), MAX_MEMINFO_BYTES)
+        let text = rampire_core::files::read_bounded(Path::new(MEMINFO_PATH), MAX_MEMINFO_BYTES)
             .map_err(|error| format!("read {MEMINFO_PATH}: {error}"))?
             .ok_or_else(|| format!("{MEMINFO_PATH} is missing"))?;
         let text = String::from_utf8(text).map_err(|_| format!("{MEMINFO_PATH} is not UTF-8"))?;

@@ -166,13 +166,22 @@ pub fn prune(root: &Path, keep: usize, running: Option<&Path>) -> Result<Vec<Pat
             protected.push(copies[previous].clone());
         }
     }
+    // The daemon names its copy by its canonical path; `root` may not be.
+    let running = running.map(|running| {
+        running
+            .canonicalize()
+            .unwrap_or_else(|_| running.to_path_buf())
+    });
     let mut remaining = copies.len();
     let mut removed = Vec::new();
     for copy in copies {
         if remaining <= keep {
             break;
         }
-        if protected.contains(&copy) {
+        let running_this = copy
+            .canonicalize()
+            .is_ok_and(|canonical| Some(&canonical) == running.as_ref());
+        if protected.contains(&copy) || running_this {
             continue;
         }
         std::fs::remove_dir_all(&copy)
@@ -368,6 +377,26 @@ mod tests {
         );
         assert_eq!(prune(&applied, 1, None).unwrap(), [third]);
         assert_eq!(copies(&applied).unwrap(), [first, second]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_running_copy_stays_when_the_root_is_reached_through_a_link() {
+        let root = temp("linked");
+        let draft = draft(&root);
+        let applied = root.join("applied");
+        let mut installed = Vec::new();
+        for millis in [1_000, 2_000, 3_000] {
+            let staged = staging(&applied).unwrap();
+            snapshot(&draft, &staged).unwrap();
+            installed.push(install(&applied, &staged, millis).unwrap());
+        }
+        let linked = root.join("linked");
+        std::os::unix::fs::symlink(&applied, &linked).unwrap();
+        // The daemon records the oldest copy's canonical path.
+        let running = installed[0].canonicalize().unwrap();
+        let removed = prune(&linked, 1, Some(&running)).unwrap();
+        assert!(installed[0].exists(), "removed {removed:?}");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

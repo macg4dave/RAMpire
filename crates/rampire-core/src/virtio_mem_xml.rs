@@ -2,7 +2,7 @@ use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use thiserror::Error;
 
-use crate::units::BYTES_PER_KIB;
+use crate::units::libvirt_unit_bytes;
 use crate::virtio_mem::VirtioMemState;
 use crate::{CompatibilityEvidence, VirtioMemCompatibility, VirtioMemError};
 
@@ -37,47 +37,13 @@ pub enum VirtioMemXmlError {
     InvalidState(#[from] VirtioMemError),
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Unit {
-    Bytes,
-    Kibibytes,
-    Mebibytes,
-    Gibibytes,
-}
-
-impl Unit {
-    fn parse(field: &'static str, value: Option<&str>) -> Result<Self, VirtioMemXmlError> {
-        match value.unwrap_or("B") {
-            "B" | "bytes" => Ok(Self::Bytes),
-            "KiB" => Ok(Self::Kibibytes),
-            "MiB" => Ok(Self::Mebibytes),
-            "GiB" => Ok(Self::Gibibytes),
-            unit => Err(VirtioMemXmlError::UnsupportedUnit {
-                field,
-                unit: unit.to_owned(),
-            }),
-        }
-    }
-
-    fn to_bytes(self, field: &'static str, value: u64) -> Result<u64, VirtioMemXmlError> {
-        let multiplier = match self {
-            Self::Bytes => 1,
-            Self::Kibibytes => BYTES_PER_KIB,
-            Self::Mebibytes => 1 << 20,
-            Self::Gibibytes => 1 << 30,
-        };
-        value
-            .checked_mul(multiplier)
-            .ok_or(VirtioMemXmlError::Overflow { field })
-    }
-}
-
 pub fn parse_virtio_mem_xml(xml: &str) -> Result<VirtioMemXmlState, VirtioMemXmlError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buffer = Vec::new();
     let mut memory_depth = None;
-    let mut pending: Option<(&'static str, Unit)> = None;
+    // The field awaiting its value, its index and its unit in bytes.
+    let mut pending: Option<(&'static str, usize, u64)> = None;
     let mut alias = None;
     let mut compatibility = VirtioMemCompatibility::unknown();
     let mut values: [Option<u64>; 4] = [None; 4];
@@ -106,9 +72,15 @@ pub fn parse_virtio_mem_xml(xml: &str) -> Result<VirtioMemXmlState, VirtioMemXml
                 } else if memory_depth.is_some() {
                     if name == b"alias" {
                         alias = attribute(&element, b"name")?;
-                    } else if let Some(field) = field_name(&name) {
-                        let unit = Unit::parse(field, attribute(&element, b"unit")?.as_deref())?;
-                        pending = Some((field, unit));
+                    } else if let Some((field, index)) = field_name(&name) {
+                        let unit = attribute(&element, b"unit")?;
+                        let multiplier = libvirt_unit_bytes(unit.as_deref()).ok_or_else(|| {
+                            VirtioMemXmlError::UnsupportedUnit {
+                                field,
+                                unit: unit.unwrap_or_default(),
+                            }
+                        })?;
+                        pending = Some((field, index, multiplier));
                     }
                     if let Some(depth) = memory_depth.as_mut() {
                         *depth += 1;
@@ -121,7 +93,7 @@ pub fn parse_virtio_mem_xml(xml: &str) -> Result<VirtioMemXmlState, VirtioMemXml
                 }
             }
             Ok(Event::Text(text)) => {
-                if let Some((field, unit)) = pending.take() {
+                if let Some((field, index, multiplier)) = pending.take() {
                     let raw = text
                         .decode()
                         .map_err(|error| VirtioMemXmlError::InvalidXml(error.to_string()))?;
@@ -131,7 +103,11 @@ pub fn parse_virtio_mem_xml(xml: &str) -> Result<VirtioMemXmlState, VirtioMemXml
                                 field,
                                 value: raw.into_owned(),
                             })?;
-                    values[field_index(field)] = Some(unit.to_bytes(field, value)?);
+                    values[index] = Some(
+                        value
+                            .checked_mul(multiplier)
+                            .ok_or(VirtioMemXmlError::Overflow { field })?,
+                    );
                 }
             }
             Ok(Event::End(element)) => {
@@ -223,23 +199,14 @@ pub fn parse_virtio_mem_xml_for_alias(
     selected.ok_or_else(|| VirtioMemXmlError::AliasNotFound(expected_alias.to_owned()))
 }
 
-fn field_name(name: &[u8]) -> Option<&'static str> {
+/// A device field's name and its index in the parsed values.
+fn field_name(name: &[u8]) -> Option<(&'static str, usize)> {
     match name {
-        b"size" => Some("size"),
-        b"block" | b"block-size" => Some("block"),
-        b"requested" => Some("requested"),
-        b"current" => Some("current"),
+        b"size" => Some(("size", 0)),
+        b"block" | b"block-size" => Some(("block", 1)),
+        b"requested" => Some(("requested", 2)),
+        b"current" => Some(("current", 3)),
         _ => None,
-    }
-}
-
-fn field_index(field: &'static str) -> usize {
-    match field {
-        "size" => 0,
-        "block" => 1,
-        "requested" => 2,
-        "current" => 3,
-        _ => unreachable!("field names are restricted by field_name"),
     }
 }
 
@@ -299,6 +266,13 @@ mod tests {
     }
 
     #[test]
+    fn a_value_without_a_unit_is_kib_as_libvirt_reads_it() {
+        let xml = valid_xml().replace("<block unit='MiB'>2</block>", "<block>2048</block>");
+        let parsed = parse_virtio_mem_xml(&xml).expect("valid XML should parse");
+        assert_eq!(parsed.memory.block_size_bytes, 2 * 1024 * 1024);
+    }
+
+    #[test]
     fn parses_fully_unplugged_live_state() {
         let xml = valid_xml()
             .replace(
@@ -319,7 +293,7 @@ mod tests {
     #[test]
     fn rejects_unsupported_unit_and_overflow() {
         assert!(matches!(
-            parse_virtio_mem_xml(&valid_xml().replace("unit='MiB'", "unit='MB'")),
+            parse_virtio_mem_xml(&valid_xml().replace("unit='MiB'", "unit='parsec'")),
             Err(VirtioMemXmlError::UnsupportedUnit { .. })
         ));
         assert!(matches!(

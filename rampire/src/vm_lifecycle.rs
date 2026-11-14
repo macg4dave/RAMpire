@@ -8,8 +8,8 @@ use std::process::ExitCode;
 
 use rampire_ops::process;
 
-use crate::apply::apply;
-use crate::{applied_root, confirm, draft, libvirt, path_text, Cli};
+use crate::apply::{apply, running_copy};
+use crate::{applied_root, confirm, draft, libvirt, path_text, Cli, TempDir};
 
 pub(crate) struct AddOptions<'a> {
     pub(crate) vm: &'a str,
@@ -40,14 +40,22 @@ fn ask(question: &str) -> Result<String, String> {
     Ok(answer.trim().to_owned())
 }
 
+/// Write a file that must not exist yet; an existing one is never replaced.
 fn write_new(path: &Path, text: &str) -> Result<(), String> {
-    if path.exists() {
-        return Err(format!("{} already exists", path.display()));
-    }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
     }
-    std::fs::write(path, text).map_err(|error| format!("write {}: {error}", path.display()))
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => format!("{} already exists", path.display()),
+            _ => format!("write {}: {error}", path.display()),
+        })?;
+    file.write_all(text.as_bytes())
+        .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String> {
@@ -97,10 +105,11 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
         if !options.fix_xml {
             println!("rampire vm add {name} --fix-xml makes these changes");
         } else if let Some(fixed) = vm::fix_xml(&xml, &inspection)? {
-            let temporary =
-                std::env::temp_dir().join(format!("rampire-{name}-{}", std::process::id()));
-            std::fs::create_dir_all(&temporary).map_err(|error| error.to_string())?;
-            let (before, after) = (temporary.join("before.xml"), temporary.join("after.xml"));
+            let temporary = TempDir::new(name)?;
+            let (before, after) = (
+                temporary.path().join("before.xml"),
+                temporary.path().join("after.xml"),
+            );
             std::fs::write(&before, &xml).map_err(|error| error.to_string())?;
             std::fs::write(&after, &fixed).map_err(|error| error.to_string())?;
             let shown = std::process::Command::new("diff")
@@ -111,7 +120,6 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
                 .map_err(|error| format!("run diff: {error}"))?;
             print!("{}", String::from_utf8_lossy(&shown.stdout));
             if !confirm(cli, &format!("Change {name}'s saved definition like this?"))? {
-                let _ = std::fs::remove_dir_all(&temporary);
                 println!("nothing changed");
                 return Ok(ExitCode::SUCCESS);
             }
@@ -120,9 +128,8 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
             let backup = backups.join(format!("{name}-{}.xml", process::unix_millis()?));
             std::fs::copy(&before, &backup)
                 .map_err(|error| format!("keep {}: {error}", backup.display()))?;
-            let defined = libvirt.virsh(&["define", &path_text(&after)?]);
-            let _ = std::fs::remove_dir_all(&temporary);
-            defined?;
+            libvirt.virsh(&["define", &path_text(&after)?])?;
+            drop(temporary);
             println!(
                 "changed {name}'s definition; the old one is in {}",
                 backup.display()
@@ -141,8 +148,14 @@ pub(crate) fn vm_add(cli: &Cli, options: &AddOptions) -> Result<ExitCode, String
         }
         return Err(format!("{name} can't be managed yet; nothing was added"));
     }
-    let device = inspection.device().expect("no problems means a device");
-    let alias = device.alias.clone().expect("no problems means an alias");
+    // Without problems there is one device, and it has an alias.
+    let device = inspection
+        .device()
+        .ok_or_else(|| format!("{name} has no virtio-mem device; nothing was added"))?;
+    let alias = device
+        .alias
+        .clone()
+        .ok_or_else(|| format!("{name}'s virtio-mem device has no alias; nothing was added"))?;
 
     // A VM taken out with `vm remove` comes back with the settings it had.
     let parked = directory
@@ -406,6 +419,13 @@ pub(crate) fn vm_remove(cli: &Cli, name: &str, forget: bool) -> Result<ExitCode,
             .map_err(|error| format!("remove {}: {error}", path.display()))?;
         // The controller lets go of the VM first; then what it kept goes.
         let code = apply(cli, false)?;
+        if let Some(copy) = still_managed_in(name)? {
+            println!(
+                "{name} is still managed by {}, so what RAMpire keeps for it stays;                  when it is applied, run rampire vm remove {name} --forget",
+                copy.display()
+            );
+            return Ok(code);
+        }
         forget_vm(&directory, name, vm.review.as_deref())?;
         return Ok(code);
     }
@@ -470,6 +490,19 @@ fn forget_vm(directory: &Path, name: &str, review: Option<&str>) -> Result<(), S
         }
     }
     Ok(())
+}
+
+/// The applied copy, current or running, that still manages `name`. Its
+/// checkpoint and lock belong to the controller until neither does.
+fn still_managed_in(name: &str) -> Result<Option<std::path::PathBuf>, String> {
+    use rampire_core::settings::{self, VMS_DIRECTORY};
+    let filename = settings::vm_filename(name)?;
+    let running = running_copy();
+    let current = rampire_ops::applied::current(applied_root())?;
+    Ok([current, running]
+        .into_iter()
+        .flatten()
+        .find(|copy| copy.join(VMS_DIRECTORY).join(&filename).exists()))
 }
 
 /// Where `vm add --fix-xml` keeps the definitions it replaced.

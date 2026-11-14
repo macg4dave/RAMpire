@@ -1,5 +1,3 @@
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 use rampire_core::{settings::GuestOs, CompatibilityEvidence};
@@ -21,7 +19,7 @@ rampire_core::schema_name! {
     /// The `schema` of a VM's compatibility attestation.
     pub struct AttestationSchema = "rampire.attestation";
 }
-const MAX_ATTESTATION_BYTES: u64 = 64 * 1024;
+pub(crate) const MAX_ATTESTATION_BYTES: usize = 64 * 1024;
 
 /// The review profile's version: `version` in `reviews/NAME.toml`.
 pub const REVIEW_VERSION: u32 = 1;
@@ -317,7 +315,9 @@ impl CompatibilityAttestation {
 }
 
 pub fn read_attestation(path: &Path) -> Result<CompatibilityAttestation, String> {
-    CompatibilityAttestation::parse(&read_bounded_json(path, "compatibility attestation")?)
+    let text = rampire_core::files::read_bounded_text(path, MAX_ATTESTATION_BYTES)
+        .map_err(|error| format!("compatibility attestation: {error}"))?;
+    CompatibilityAttestation::parse(&text)
 }
 
 /// A review profile, `reviews/NAME.toml`.
@@ -327,23 +327,6 @@ pub fn read_review(path: &Path) -> Result<CompatibilityReview, String> {
         .validate()
         .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(review)
-}
-
-fn read_bounded_json(path: &Path, description: &str) -> Result<String, String> {
-    let file = File::open(path)
-        .map_err(|error| format!("read {description} {}: {error}", path.display()))?;
-    let mut bytes = Vec::new();
-    file.take(MAX_ATTESTATION_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("read {description} {}: {error}", path.display()))?;
-    if bytes.len() as u64 > MAX_ATTESTATION_BYTES {
-        return Err(format!(
-            "{description} {} exceeds {MAX_ATTESTATION_BYTES} bytes",
-            path.display()
-        ));
-    }
-    String::from_utf8(bytes)
-        .map_err(|error| format!("read {description} {} as UTF-8: {error}", path.display()))
 }
 
 fn evidence(value: bool) -> CompatibilityEvidence {

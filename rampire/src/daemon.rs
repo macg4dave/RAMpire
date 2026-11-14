@@ -43,7 +43,14 @@ pub fn run(config_path: &Path) -> ExitCode {
         }
     };
     let config_path = config_path.as_path();
-    let _ = std::fs::write(RUNNING_COPY, format!("{}\n", config_path.display()));
+    // Only `apply`'s pruning reads this, so the controller runs without it,
+    // but a person should know the running copy may be pruned.
+    if let Err(error) = std::fs::write(RUNNING_COPY, format!("{}\n", config_path.display())) {
+        eprintln!(
+            "rampire: warning: can't record the running copy in {RUNNING_COPY}: {error}; rampire apply may prune {}",
+            config_path.display()
+        );
+    }
     let settings = match HostSettings::load(config_path) {
         Ok(settings) => settings,
         Err(error) => {

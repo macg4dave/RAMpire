@@ -147,24 +147,9 @@ where
             }
         };
         self.state_unavailable_reported = false;
-        let intent_target = self
-            .control
-            .intent
-            .as_ref()
-            .map_or(0, |intent| intent.target_bytes);
-        self.outstanding_growth = Some(
-            state
-                .requested_bytes
-                .max(intent_target)
-                .saturating_sub(state.current_bytes),
-        );
-        let charge = (
-            state
-                .requested_bytes
-                .max(state.current_bytes)
-                .max(intent_target),
-            state.block_size_bytes,
-        );
+        let intent_target = self.intent_target();
+        self.outstanding_growth = Some(state.outstanding_growth(intent_target));
+        let charge = (state.pool_charge(intent_target), state.block_size_bytes);
         self.last_charge = Some(charge);
         let held = Observed::Held {
             charge: Some(charge),
@@ -276,14 +261,9 @@ where
     /// A stopped VM still holds memory, so the pool keeps charging it.
     pub(super) fn observe_stopped(&mut self) -> Observed {
         if let Ok(state) = self.live_state() {
-            let requested = state.requested_bytes.max(
-                self.control
-                    .intent
-                    .as_ref()
-                    .map_or(0, |intent| intent.target_bytes),
-            );
-            self.outstanding_growth = Some(requested.saturating_sub(state.current_bytes));
-            self.last_charge = Some((requested.max(state.current_bytes), state.block_size_bytes));
+            let intent_target = self.intent_target();
+            self.outstanding_growth = Some(state.outstanding_growth(intent_target));
+            self.last_charge = Some((state.pool_charge(intent_target), state.block_size_bytes));
         }
         Observed::Held {
             charge: self.last_charge,
@@ -983,6 +963,14 @@ where
             .map_or_else(String::new, describe);
         self.log(&format!("event=control_health direction={direction:?} {identity} requested_bytes={} current_bytes={} remaining_to_device_target_bytes={} pending_age_ms={age} idle_ms={idle} idle_timeout_remaining_ms={} floor_bytes={floor:?}",
             state.requested_bytes, state.current_bytes, state.current_bytes.abs_diff(state.requested_bytes), timeout.saturating_sub(idle)));
+    }
+
+    /// The recorded command's target; zero with none.
+    fn intent_target(&self) -> u64 {
+        self.control
+            .intent
+            .as_ref()
+            .map_or(0, |intent| intent.target_bytes)
     }
 
     fn next_operation_id(&mut self) -> String {

@@ -20,7 +20,7 @@ pub const BUILD_ID: &str = match option_env!("RAMPIRE_BUILD_ID") {
 /// The in-tree virtio-mem driver is versioned with its kernel.
 pub fn kernel_release() -> Result<String, String> {
     let path = std::path::Path::new("/proc/sys/kernel/osrelease");
-    let bytes = rampire_guest::files::read_bounded(path, 256)
+    let bytes = rampire_core::files::read_bounded(path, 256)
         .map_err(|error| format!("read kernel release: {error}"))?
         .ok_or("kernel release is unavailable on this platform")?;
     let release = String::from_utf8(bytes).map_err(|_| "kernel release is not UTF-8")?;

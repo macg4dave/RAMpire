@@ -31,6 +31,27 @@ pub fn meminfo_bytes(meminfo: &str, field: &str) -> Result<u64, String> {
     kibibytes_to_bytes(kibibytes).ok_or_else(|| format!("meminfo {field} overflows: {line}"))
 }
 
+/// The bytes in one libvirt memory unit (`unit='KiB'` and the like), `None`
+/// for a unit libvirt doesn't define. Without a unit libvirt means KiB.
+pub fn libvirt_unit_bytes(unit: Option<&str>) -> Option<u64> {
+    Some(match unit.unwrap_or("KiB") {
+        "b" | "bytes" => 1,
+        "KB" => 1_000,
+        "k" | "KiB" => 1 << 10,
+        "MB" => 1_000_000,
+        "M" | "MiB" => 1 << 20,
+        "GB" => 1_000_000_000,
+        "G" | "GiB" => 1 << 30,
+        "TB" => 1_000_000_000_000,
+        "T" | "TiB" => 1 << 40,
+        "PB" => 1_000_000_000_000_000,
+        "P" | "PiB" => 1 << 50,
+        "EB" => 1_000_000_000_000_000_000,
+        "E" | "EiB" => 1 << 60,
+        _ => return None,
+    })
+}
+
 const SIZE_EXAMPLES: &str = "write a size such as \"512MB\", \"128MiB\" or \"3GB\"";
 
 /// Parse a human-written size such as `"8GB"`, `"8.5 GiB"`, `"1024MB"` or
@@ -121,6 +142,15 @@ pub mod byte_size {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn libvirt_units_default_to_kib_and_include_decimal_units() {
+        assert_eq!(libvirt_unit_bytes(None), Some(1024));
+        assert_eq!(libvirt_unit_bytes(Some("bytes")), Some(1));
+        assert_eq!(libvirt_unit_bytes(Some("MB")), Some(1_000_000));
+        assert_eq!(libvirt_unit_bytes(Some("GiB")), Some(1 << 30));
+        assert_eq!(libvirt_unit_bytes(Some("gib")), None);
+    }
 
     #[test]
     fn reads_meminfo_fields_in_kib_as_bytes() {

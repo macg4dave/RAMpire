@@ -363,15 +363,9 @@ impl<R> PublicationCopyFirst<R> {
 
 impl<R: GuestFileReader> GuestFileReader for PublicationCopyFirst<R> {
     fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
-        match std::fs::read(&self.copy) {
-            Ok(bytes) if bytes.len() <= maximum_bytes => Ok(bytes),
-            Ok(_) => Err(format!(
-                "{} exceeds {maximum_bytes} bytes",
-                self.copy.display()
-            )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.guest.read_file(path, maximum_bytes)
-            }
+        match rampire_core::files::read_bounded(&self.copy, maximum_bytes) {
+            Ok(Some(bytes)) => Ok(bytes),
+            Ok(None) => self.guest.read_file(path, maximum_bytes),
             Err(error) => Err(format!("read {}: {error}", self.copy.display())),
         }
     }
