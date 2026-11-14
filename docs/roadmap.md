@@ -219,7 +219,7 @@ is a finding, fixed in the product or the docs.
   | During `init`, apply said the controller "will use the new copy when it starts" just before `init` started it | Reworded: nothing was restarted |
   | `status` with no VMs said "Add one to /etc/rampire/vms.d", pointing a hobbyist at editing files | It names `rampire vm add VM --fix-xml` |
 
-- [ ] **S2.2** A VM with no virtio-mem device goes from `vm add` to managed
+- [x] **S2.2** A VM with no virtio-mem device goes from `vm add` to managed
   in one guided command. Make the guest with `cargo xtask testvm up
   guest-debian13`, then run the quick start's `sudo rampire vm add
   guest-debian13 --fix-xml` on a
@@ -227,8 +227,34 @@ is a finding, fixed in the product or the docs.
   person, or the owner watching). Check `rampire status guest-debian13`,
   then remove it with `cargo xtask testvm down guest-debian13`. The packages come from
   `tools/build.sh package` until a repository is published.
+
+  Done 2026-11-14. `testvm up guest-debian13` made and kept the guest
+  and printed the `vm add` to run next. `vm add --fix-xml` added the
+  device and control channel, read the kernel release from the guest
+  agent (`linux 6.12.116+deb13-amd64`, detected), wrote the review and
+  settings, restarted the VM and applied; the owner gave the answers.
+  The controller managed it: the guest published over the channel, asked
+  for 122 MiB, was held back by the host reserve, and was grown by
+  16 MiB when room came. `testvm down` removed it. Evidence on pc101:
+  `.artifacts/testvm/guest-debian13-1794671826209.json`. Fixed on the
+  way: an interrupted `vm add` left the VM on its old definition and
+  couldn't be finished (now a rerun finishes it, restarting the VM when
+  the live definition lacks the device or channel), and removing a test
+  VM left six files behind (now `vm remove --forget`, which `testvm down`
+  uses).
 - [ ] **S2.3** Write up what the hobbyist path got wrong, fix it, and run
   S2.1 and S2.2 again until they go through with nothing done by hand.
+
+  Found in S2.1 and S2.2, still to fix:
+
+  | Finding | Proposed |
+  |---|---|
+  | `vm add` asks "Do the programs in this VM cope with memory being added and taken away?"; the owner, answering as a hobbyist, wants the text changed | Plainer words, with an example of what doesn't cope |
+  | `vm add` asks "Is the VM never live-migrated with RDMA?"; the owner had no idea what it means | Detect it, or don't ask on a host with no migration set up; at least explain it |
+  | `vm add` asks "Is the VM's memory balloon never used to resize it?": libvirt gives every VM a virtio balloon unless told otherwise, so most VMs hit it | `--fix-xml` sets the balloon to `none` in the shown change, so nothing is asked |
+  | `watch` shows a refused grant as `PoolEmpty` beside "15 GiB free"; the journal says `limiting_factors=host_headroom` | Name what held it back: the host reserve, the pool, the VM's limit |
+  | `top` cuts long VM names (`guest-debian1`) | Widen the column to the longest name |
+  | The two-answer `vm add` can't be scripted for tests, by design; feeding answers through a terminal works but is clumsy | Keep it a person's step; S2 is run with the owner |
 
 ## S3: Administrator deployments
 
