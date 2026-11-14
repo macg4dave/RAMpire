@@ -27,31 +27,37 @@ and shared guest crates build anywhere.
 ## The gate
 
 Every change passes the gate before review. One command runs it from any
-workstation:
+workstation with Docker or Podman, Windows and macOS included:
 
 ```bash
-tools/gate.sh
+tools/build.sh                       # the gate
+tools/build.sh package --static      # the packages, into dist/
+tools/build.sh test -p rampire-ops   # any cargo xtask command
 ```
 
-It checks whitespace in the working tree against `HEAD`, then on a Linux
-machine runs `cargo xtask gate checks`: `cargo fmt --check`, a release
-build, all tests and Clippy with warnings denied for every Linux-buildable
-crate, and `bash -n` on every shell script. On a Windows workstation it
-also runs the Windows guest's tests and Clippy natively.
+It checks whitespace in the working tree against `HEAD`, then runs
+`cargo xtask gate checks` in the build container: `cargo fmt --check`, a
+release build, all tests and Clippy with warnings denied for every
+Linux-buildable crate, and `bash -n` on every shell script. On a Windows
+workstation with Rust it also runs the Windows guest's tests and Clippy
+natively. CI runs the gate and builds the packages with the same command.
 
-On a Linux machine with this checkout, it runs there. Anywhere else it
-needs a Linux build host, named in the environment or in `site/gate.env`
-(untracked; copy [deploy/examples/gate.env.example](../deploy/examples/gate.env.example)):
+The build container is
+[tools/container/Containerfile](../tools/container/Containerfile): Rust,
+rustfmt, Clippy, the musl target, nfpm and rpm at fixed versions. It is
+built on first use and again whenever that file changes; Cargo's registry
+and `target/` stay in the volumes `rampire-cargo` and `rampire-target`.
+The container gets the working tree as it is, uncommitted and untracked
+(not ignored) files included, with `.git`, so a package built there is
+stamped with the checkout's build identity. Nothing else on the
+workstation is visible to it.
 
-| Variable | Meaning |
+Two other builders, for a machine without a container engine:
+
+| Builder | How |
 |---|---|
-| `RAMPIRE_GATE_HOST` | SSH destination of the Linux build host |
-| `RAMPIRE_GATE_DIR` | Absolute directory on it that the gate owns: `src/` is replaced each run, `target/` is kept |
-| `RAMPIRE_SSH` | SSH client to use, if not `ssh` |
-
-The working tree is sent as it is, uncommitted and untracked (not ignored)
-files included, with the repository's line endings. The build host needs
-Rust with `rustfmt` and Clippy, and `bash`.
+| A Linux build host over SSH | `--host HOST`, or `RAMPIRE_BUILD_HOST` in the environment or `site/build.env` (copy [deploy/examples/build.env.example](../deploy/examples/build.env.example)), with `RAMPIRE_BUILD_DIR`, an absolute directory there the build owns. The host needs Rust with rustfmt and Clippy, and nfpm for packages |
+| This machine | `--local`, on Linux with those tools installed |
 
 The individual steps are `cargo xtask gate format|build|test|lint`.
 `cargo xtask gate local` is `checks` plus `git diff --check`, for a Linux
@@ -75,8 +81,8 @@ None needs a VM, a running service or a site's configuration. The host's
 
 | Check | Where | Command |
 |---|---|---|
-| Host, xtask, Linux guest | Linux (or `tools/gate.sh`) | `cargo xtask gate checks` |
-| Windows guest unit tests and Clippy | Windows workstation | part of `tools/gate.sh` there |
+| Host, xtask, Linux guest | The build container (`tools/build.sh`) or Linux | `cargo xtask gate checks` |
+| Windows guest unit tests and Clippy | Windows workstation | part of `tools/build.sh` there |
 | Windows release build, native tests, fetched binaries | Windows build VM | `make windows-native-gate` |
 | Service control, sampling, ACLs, atomic replacement | A Windows guest | Deploy and observe; mocks do not prove them |
 | Resizing, onlining, pressure, cache behaviour | A live VM under the controller | `cargo xtask metrics`, qualification |
@@ -145,7 +151,7 @@ A development host installs the same packages as any other host, built
 from the checkout:
 
 ```bash
-cargo xtask package                                  # into dist/
+tools/build.sh package                               # into dist/, in the build container
 sudo dnf install ./dist/rampire-*.x86_64.rpm         # or: sudo apt install ./dist/rampire_*_amd64.deb
 sudo rampire init                                    # a new host; an existing one keeps its configuration
 ```

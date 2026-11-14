@@ -123,10 +123,14 @@ added on top of something else instead of replacing it.
     `packaging/build.sh` builds another with nfpm. Done: one, `cargo xtask
     package` (S1.2).
   - Getting packages from a CI run to pc101 is done by hand
-    (`gh run download`, then `scp`). Done another way: pc101 has a
-    checkout and Cargo, so it builds the packages itself with `cargo xtask
-    package`, the same way CI does. pc101 needs nfpm installed for that
-    (owner, once); CI's own packages are still what a release ships.
+    (`gh run download`, then `scp`). Done another way (owner: a container
+    build in the repository that everyone can build and test in):
+    `tools/build.sh` runs the gate, `package` or any `cargo xtask` command
+    in the build container (`tools/container/Containerfile`, Docker or
+    Podman), and copies packages back to `dist/`. CI runs the gate and
+    builds the packages with the same command, so a workstation, pc101 and
+    CI build one way. It replaces `tools/gate.sh`; its SSH build host
+    mode stays as `--host`.
 - [ ] **S1.4** The docs: one place for each fact. Check that the README,
   quick start, administration and usage pages don't repeat each other or
   disagree, and that each page says who it is for.

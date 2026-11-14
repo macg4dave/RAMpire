@@ -27,20 +27,6 @@ If you run several VMs, you know the trade-off: give each one plenty of memory a
 
 Run a couple of services in a home lab or manage a larger set of VMs: the idea is the same. **Memory where it's needed, instead of where it was assigned at boot.**
 
-## What you get
-
-| | Feature | Why it matters |
-|:--:|---|---|
-| **01** | **Memory on demand** | Linux VMs can grow as workloads need more memory and give memory back when it is no longer needed. |
-| **02** | **One shared pool** | Multiple VMs draw from the same host-managed allocation, rather than each holding its maximum all the time. |
-| **03** | **Host-first safety** | A configurable host reserve and per-VM minimum and maximum sizes bound memory changes. |
-| **04** | **Priorities that make sense** | When memory is scarce, important VMs can be served first. |
-| **05** | **Live visibility** | See pool usage, individual VMs, resizing activity and recent decisions with `rampire top`. |
-| **06** | **Friendly CLI, serious controls** | Guided setup, diagnostics, readable TOML settings, review-before-apply changes and rollback. |
-| **07** | **Built for automation** | Machine-readable output, event logs, metrics and configuration-management workflows for larger setups. |
-
-## How it works
-
 <div align="center">
 
 <img src="docs/Mascot/info_diag.png" alt="RAMpire — the virtual machine memory manager" width="520">
@@ -54,7 +40,17 @@ Run a couple of services in a home lab or manage a larger set of VMs: the idea i
 
 The controller does **not** take memory away from a busy VM to satisfy a higher-priority one. Priorities determine how new requests are served when capacity is limited.
 
-> **RAMpire isn't a way to create extra physical RAM.** It helps eligible VMs share available host memory more efficiently. Actual gains depend on your workload and how much memory your guests can safely return.
+## What you get
+
+| | Feature | Why it matters |
+|:--:|---|---|
+| **01** | **Memory on demand** | Linux VMs can grow as workloads need more memory and give memory back when it is no longer needed. |
+| **02** | **One shared pool** | Multiple VMs draw from the same host-managed allocation, rather than each holding its maximum all the time. |
+| **03** | **Host-first safety** | A configurable host reserve and per-VM minimum and maximum sizes bound memory changes. |
+| **04** | **Priorities that make sense** | When memory is scarce, important VMs can be served first. |
+| **05** | **Live visibility** | See pool usage, individual VMs, resizing activity and recent decisions with `rampire top`. |
+| **06** | **Friendly CLI, serious controls** | Guided setup, diagnostics, readable TOML settings, review-before-apply changes and rollback. |
+| **07** | **Built for automation** | Machine-readable output, event logs, metrics and configuration-management workflows for larger setups. |
 
 ## Get started
 
@@ -179,7 +175,7 @@ Found a bug? Have an idea? Want to help test another distribution?
 
 - [Open an issue](https://github.com/macg4dave/RAMpire/issues) with your host distribution, QEMU/libvirt versions, what you expected and what happened.
 - [Read the development guide](docs/development.md) if you want to build or modify the code.
-- Run `tools/gate.sh` before proposing code changes; it runs the project's formatting, build, test and lint checks.
+- Run `tools/build.sh` before proposing code changes; it runs the project's formatting, build, test and lint checks in a container, so all you need is Docker or Podman.
 
 Please avoid posting credentials, private VM data or unredacted logs in public issues.
 

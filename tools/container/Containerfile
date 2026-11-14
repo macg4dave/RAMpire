@@ -1,0 +1,27 @@
+# The build container: everything the gate and `cargo xtask package` need,
+# at fixed versions, so every workstation and CI build and test the same
+# way. tools/build.sh builds it and runs commands in it; nobody needs Rust,
+# nfpm or a Linux machine of their own.
+#
+# Change a version here, not in a workflow or a document.
+FROM docker.io/library/rust:1.97.1-trixie
+
+ARG NFPM_VERSION=2.41.1
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends musl-tools rpm jq \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -sSfL -o /tmp/nfpm.deb \
+      "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb" \
+ && dpkg -i /tmp/nfpm.deb \
+ && rm /tmp/nfpm.deb \
+ && rustup component add rustfmt clippy \
+ && rustup target add x86_64-unknown-linux-musl \
+ # The source comes in owned by whoever sent it.
+ && git config --system safe.directory '*' \
+ # Cargo's registry and the build output live in volumes that outlast each
+ # run; a runner of any user id may write them.
+ && mkdir -p /build/src/target "$CARGO_HOME/registry" \
+ && chmod 1777 /build/src/target "$CARGO_HOME/registry"
+
+WORKDIR /build/src

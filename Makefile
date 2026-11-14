@@ -2,7 +2,7 @@
 
 help:
 	@echo "Repository validation delegates"
-	@echo "  make local-gate    - cargo xtask gate local"
+	@echo "  make local-gate    - tools/build.sh (the gate, in the build container)"
 	@echo "  make windows-gate  - cargo xtask windows all"
 	@echo "  make windows-build       - sync, build and fetch the service from the Windows build VM"
 	@echo "  make windows-native-gate - full native Windows gate on the Windows build VM"
@@ -14,7 +14,7 @@ help:
 	@echo "  make clean         - remove Cargo build output"
 
 local-gate:
-	cargo xtask gate local
+	bash tools/build.sh
 
 windows-gate:
 	cargo xtask windows all

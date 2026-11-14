@@ -22,11 +22,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # The same container and command as on a workstation.
       - name: Format, build, test, Clippy and shell syntax
-        run: cargo xtask gate checks
+        run: bash tools/build.sh --container
 
   windows-guest:
     name: Windows guest
@@ -97,7 +95,7 @@ jobs:
           mkdir -p dist
           cp srpm/*.src.rpm dist/
       - name: Build and package
-        run: cargo xtask package --static --output dist
+        run: bash tools/build.sh --container package --static --output dist
       - name: The packages are signed, and apt installs from the repository
         run: |
           bash packaging/apt-repo.sh dist public
