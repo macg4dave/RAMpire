@@ -18,17 +18,25 @@ fn events_in(text: &str) -> BTreeSet<String> {
     found
 }
 
+/// Every event logged by the Rust sources under `directory`, nested modules
+/// included.
+fn events_under(directory: &Path, found: &mut BTreeSet<String>) {
+    for entry in std::fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            events_under(&path, found);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            found.extend(events_in(&std::fs::read_to_string(&path).unwrap()));
+        }
+    }
+}
+
 #[test]
 fn every_logged_event_is_documented() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut logged = BTreeSet::new();
     for directory in ["host/src", "rampire/src"] {
-        for entry in std::fs::read_dir(root.join(directory)).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_some_and(|extension| extension == "rs") {
-                logged.extend(events_in(&std::fs::read_to_string(&path).unwrap()));
-            }
-        }
+        events_under(&root.join(directory), &mut logged);
     }
     let documented = std::fs::read_to_string(root.join("docs/journal.md")).unwrap();
     let missing: Vec<_> = logged

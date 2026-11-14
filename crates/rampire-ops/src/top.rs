@@ -78,7 +78,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         vms: Vec::new(),
         pool_bytes: None,
         host_floor_bytes: 0,
-        unit: crate::units::CONTROLLER_UNIT.to_owned(),
+        unit: crate::systemd_unit::CONTROLLER_UNIT.to_owned(),
         connect: "qemu:///system".to_owned(),
         interval: Duration::from_secs(1),
         events: 8,

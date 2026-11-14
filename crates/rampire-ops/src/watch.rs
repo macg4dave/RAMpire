@@ -71,7 +71,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut command = Command {
         vm: String::new(),
         alias: String::new(),
-        unit: crate::units::CONTROLLER_UNIT.to_owned(),
+        unit: crate::systemd_unit::CONTROLLER_UNIT.to_owned(),
         telemetry_path: String::new(),
         connect: "qemu:///system".to_owned(),
         interval: Duration::from_secs(1),

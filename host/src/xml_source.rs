@@ -1,7 +1,11 @@
 use rampire_core::{parse_virtio_mem_xml_for_alias, VirtioMemState};
 
-use crate::runtime::MemoryStateSource;
 use crate::virsh::VirshCommand;
+
+/// Reads a VM's virtio-mem device state.
+pub trait MemoryStateSource {
+    fn memory_state(&self) -> Result<VirtioMemState, String>;
+}
 
 pub struct VirshXmlSource<C> {
     command: C,

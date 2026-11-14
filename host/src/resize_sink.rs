@@ -1,9 +1,41 @@
 use rampire_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemState};
 use std::sync::atomic::{AtomicBool, Ordering};
+use thiserror::Error;
 
 use crate::compatibility_source::CompatibilitySource;
-use crate::runtime::{ResizeSink, ResizeSinkError};
 use crate::virsh::VirshCommand;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ResizeSinkError {
+    #[error("resize rejected before command execution: {0}")]
+    Rejected(String),
+    #[error("resize command outcome is unknown: {0}")]
+    CommandUnknown(String),
+}
+
+pub trait ResizeSink {
+    /// Resize a converged device still equal to `expected` to `target`,
+    /// after `authorize` passes, unless shutdown was requested.
+    fn request_resize_guarded(
+        &self,
+        expected: VirtioMemState,
+        target: u64,
+        stop: &AtomicBool,
+        authorize: &dyn Fn() -> Result<(), String>,
+    ) -> Result<(), ResizeSinkError>;
+
+    /// Move the target of a pending resize still equal to `expected`:
+    /// its current allocation settles it, a lower target extends a shrink.
+    fn retarget_pending_guarded(
+        &self,
+        expected: VirtioMemState,
+        target: u64,
+        stop: &AtomicBool,
+    ) -> Result<(), ResizeSinkError>;
+
+    // PAUSED (viomem): `widen_usable_region_guarded` is archived in
+    // archive/viomem/host-workaround/ until the viomem driver bug is repaired.
+}
 
 pub struct VirshResizeSink<C, E> {
     command: C,

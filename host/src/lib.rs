@@ -2,7 +2,6 @@
 
 pub mod attestation;
 pub mod checkpoint;
-pub mod cli;
 pub mod compatibility_source;
 pub mod config;
 #[cfg(unix)]
@@ -12,6 +11,7 @@ pub mod host_memory;
 #[cfg(unix)]
 pub mod libvirt;
 pub mod metrics;
+pub mod operator_actions;
 pub mod ownership;
 pub mod qga;
 pub mod resize_sink;

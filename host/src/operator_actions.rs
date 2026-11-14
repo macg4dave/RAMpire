@@ -14,10 +14,9 @@ use crate::compatibility_source::CompatibilitySource;
 use crate::config::HostConfig;
 use crate::guest_channel::{GuestChannel, PublicationCopyFirst, SystemUnixClock, UnixClock};
 use crate::qga::VirshGuestFiles;
-use crate::resize_sink::VirshResizeSink;
-use crate::runtime::{MemoryStateSource, ResizeSink};
+use crate::resize_sink::{ResizeSink, VirshResizeSink};
 use crate::virsh::Virsh;
-use crate::xml_source::VirshXmlSource;
+use crate::xml_source::{MemoryStateSource, VirshXmlSource};
 
 /// The configured VM an operator command acts on.
 #[derive(Debug, PartialEq, Eq)]
