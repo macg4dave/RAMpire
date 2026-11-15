@@ -104,18 +104,19 @@ pub fn domains(libvirt: &crate::attest::Libvirt) -> Result<Vec<String>, String> 
 /// What `vm add` would change in a definition, and the problems
 /// that would still stop RAMpire managing it afterwards.
 pub fn add_preview(xml: &str) -> Result<(Vec<String>, Vec<Problem>), String> {
-    let (to_fix, problems, _) = preview(xml)?;
+    let (to_fix, problems, _, _) = preview(xml)?;
     Ok((to_fix, problems))
 }
 
 /// What `vm add` would change, what would still stop it, and the sizes it
 /// would suggest.
-type Preview = (Vec<String>, Vec<Problem>, Option<SuggestedSizes>);
+type Preview = (Vec<String>, Vec<Problem>, Option<SuggestedSizes>, bool);
 
 /// [`add_preview`], with the sizes `vm add` would suggest.
 fn preview(xml: &str) -> Result<Preview, String> {
     let inspection = crate::vm::inspect(xml)?;
     let to_fix = inspection.fixable();
+    let parts = inspection.control_channel || inspection.device().is_some();
     let after = match crate::vm::fix_xml(xml, &inspection)? {
         Some(fixed) => crate::vm::inspect(&fixed)?,
         None => inspection,
@@ -130,7 +131,7 @@ fn preview(xml: &str) -> Result<Preview, String> {
         .into_iter()
         .map(|(problem, fix)| Problem { problem, fix })
         .collect();
-    Ok((to_fix, problems, suggested))
+    Ok((to_fix, problems, suggested, parts))
 }
 
 /// Read a guest's publication from its own file through the guest agent:
@@ -218,6 +219,7 @@ pub fn list(context: &Context) -> Result<VmListReport, String> {
                 guest: Published::Unknown,
                 os_id: None,
                 suggested: None,
+                rampire_parts: false,
             });
         }
     }
@@ -250,6 +252,7 @@ fn listed(
             .ok()
             .and_then(|xml| libosinfo_id(&xml)),
         suggested: None,
+        rampire_parts: false,
     };
     match management {
         Management::Managed => match read_status(context, name) {
@@ -274,10 +277,11 @@ fn listed(
                 .virsh(&["dumpxml", "--inactive", name])
                 .and_then(|xml| preview(&xml))
             {
-                Ok((to_fix, problems, suggested)) => {
+                Ok((to_fix, problems, suggested, parts)) => {
                     vm.to_fix = to_fix;
                     vm.problems = problems;
                     vm.suggested = suggested;
+                    vm.rampire_parts = parts;
                 }
                 Err(error) => vm.problems.push(Problem {
                     problem: format!("its definition couldn't be read: {error}"),
@@ -412,6 +416,7 @@ mod tests {
                 guest: Published::Yes { age_seconds: 3 },
                 os_id: None,
                 suggested: None,
+                rampire_parts: false,
             }],
         };
         assert_eq!(

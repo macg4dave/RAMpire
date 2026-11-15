@@ -38,7 +38,7 @@ offers only what fits that VM:
 | The VM is | Its menu |
 |---|---|
 | Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `x` Remove RAMpire |
-| Not managed | What would stop adding it; `a` Install RAMpire: its settings (Priority, Minimum, Maximum and Free RAM, filled in from its definition, and Guest login), then everything adding will do, asked once; `o` its doctor |
+| Not managed | What would stop adding it; `x` Remove RAMpire, when its definition still has RAMpire's parts; `a` Install RAMpire: its settings (Priority, Minimum, Maximum and Free RAM, filled in from its definition, and Guest login), then everything adding will do, asked once; `o` its doctor |
 | Half-added | `a` finish adding it; `o` its doctor |
 
 A menu's letters also work from the list and from a VM's details,
@@ -177,7 +177,7 @@ logged as `event=operator_change action=tui_failed`.
 | `rampire vm add VM [--guest-login USER@HOST] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE] [--review PROFILE] [--kernel RELEASE] [--no-guest-install]` | Starts managing a VM. It shows everything it will do and asks once; then it fixes the definition, keeping the old one (a NUMA cell, `maxMemory`, the device, the control channel and the guest agent channel, and the memory balloon turned off), starts the VM, installs or upgrades `rampire-guest` in it (through its guest agent, or over SSH as `--guest-login`, default root at the address libvirt has for it; when neither gets in, or the VM is off, with libvirt's disk tools while it is shut down, the package installing as it starts), restarts it if that is needed, writes its review and settings, applies, and waits for the guest to report in. The sizes default to ones suggested from the definition. It stops first if another managed VM would fail `apply`'s checks |
 | `rampire vm restart VM` | Shuts a VM down and starts it again, so its saved definition takes effect, then applies |
 | `rampire vm list` | Every VM on the libvirt connection: managed, unfinished (a `vm add` that didn't apply) or not managed. For one that isn't managed, what `vm add` would change, what would still stop it, and whether its guest service is installed |
-| `rampire vm remove VM` | Removes RAMpire from a VM: stops managing it at once, puts its definition back to plain RAM (its boot RAM, without the virtio-mem device, control channel, `maxMemory` or a single NUMA cell, and with the memory balloon it had before `vm add`), so Cockpit or `virsh` can change its memory again, and removes its settings, recorded setup, request state, definition backups and the review profile `vm add` wrote for it. The definition takes effect at the VM's next start |
+| `rampire vm remove VM` | Removes RAMpire from a VM: stops managing it at once, puts its definition back to plain RAM (its boot RAM, without the virtio-mem device, control channel, `maxMemory` or a single NUMA cell, and with the memory balloon it had before `vm add`), so Cockpit or `virsh` can change its memory again, and removes its settings, recorded setup, request state, definition backups and the review profile `vm add` wrote for it. For a VM no longer managed whose definition still has RAMpire's parts, it puts the definition back the same way. The definition takes effect at the VM's next start |
 
 ### Watching
 

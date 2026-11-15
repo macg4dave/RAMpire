@@ -181,6 +181,10 @@ pub struct ListedVm {
     /// For a VM that isn't managed: the sizes `vm add` would give it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested: Option<SuggestedSizes>,
+    /// For a VM that isn't managed: its definition still has RAMpire's
+    /// virtio-mem device or control channel, which `vm remove` takes out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rampire_parts: bool,
 }
 
 /// The sizes `vm add` suggests for a VM, in bytes.
@@ -393,6 +397,7 @@ mod tests {
                     guest: Published::Yes { age_seconds: 4 },
                     os_id: Some("http://debian.org/debian/13".to_owned()),
                     suggested: None,
+                    rampire_parts: false,
                 },
                 ListedVm {
                     vm_name: "web".to_owned(),
@@ -405,6 +410,7 @@ mod tests {
                     guest: Published::Yes { age_seconds: 0 },
                     os_id: Some("http://redhat.com/rhel/10.0".to_owned()),
                     suggested: None,
+                    rampire_parts: false,
                 },
             ],
         }

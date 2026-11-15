@@ -798,7 +798,7 @@ impl App {
                         ));
                     }
                 }
-                vec![
+                let mut choices = vec![
                     item(
                         'a',
                         "Install RAMpire",
@@ -806,7 +806,12 @@ impl App {
                         Pick::Add(vec![vm.to_owned()]),
                     ),
                     doctor,
-                ]
+                ];
+                // An earlier RAMpire's parts are still in its definition.
+                if listed.is_some_and(|listed| listed.rampire_parts) {
+                    choices.push(remove);
+                }
+                choices
             }
         };
         (text, choices)
@@ -1098,6 +1103,7 @@ pub(crate) mod tests {
             },
             os_id: Some("http://debian.org/debian/13".to_owned()),
             suggested: None,
+            rampire_parts: false,
         }
     }
 

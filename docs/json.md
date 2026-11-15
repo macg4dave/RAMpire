@@ -82,6 +82,7 @@ The exit code is 0 when `passed` is true and 1 otherwise.
 | `detail` | One line about it for a person |
 | `to_fix` | For a VM that isn't managed: what `vm add` would change |
 | `suggested` | For a VM that isn't managed: the `min_ram`, `max_ram` and `free_ram` `vm add` would give it, in bytes |
+| `rampire_parts` | For a VM that isn't managed: `true` when its definition still has RAMpire's virtio-mem device or control channel, which `vm remove` takes out; left out otherwise |
 | `problems` | For a VM that isn't managed: each `problem` that would still stop `vm add`, and its `fix` |
 | `guest` | Its guest service: `state` is `published` with `age_seconds`, `not_published` (for a VM that isn't managed: not installed), `installed` (not managed yet, so not publishing), or `unknown` (not running, or no guest agent) |
 | `os_id` | The system its definition's libosinfo metadata names, or `null` |

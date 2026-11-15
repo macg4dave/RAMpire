@@ -618,6 +618,9 @@ pub fn vm_remove(context: &Context, ui: &mut dyn Ui, name: &str) -> Result<(), S
     use rampire_core::settings;
     let directory = context.draft();
     let path = settings_path(&directory, name)?;
+    if !path.exists() {
+        return clear_definition(&directory, context, ui, name);
+    }
     let vm = settings::load_vm(&path)?;
     if !ui.confirm(&format!(
         "Remove RAMpire from {name}? It stops managing it, and from {name}'s next start its \
@@ -652,6 +655,41 @@ pub fn vm_remove(context: &Context, ui: &mut dyn Ui, name: &str) -> Result<(), S
     }
     forget_vm(ui, &directory, name, vm.review.as_deref())?;
     ui.say(&format!("{name} is removed"));
+    Ok(())
+}
+
+/// `vm remove` for a VM RAMpire no longer manages whose definition still
+/// has its parts: the definition goes back to plain RAM, and what RAMpire
+/// kept for it goes.
+fn clear_definition(
+    directory: &Path,
+    context: &Context,
+    ui: &mut dyn Ui,
+    name: &str,
+) -> Result<(), String> {
+    let libvirt = context.libvirt()?;
+    let xml = libvirt.virsh(&["dumpxml", "--inactive", name])?;
+    let inspection = crate::vm::inspect(&xml)?;
+    if !inspection.control_channel && inspection.device().is_none() {
+        return Err(format!(
+            "RAMpire doesn't manage {name}, and its definition has nothing of RAMpire's"
+        ));
+    }
+    if !ui.confirm(&format!(
+        "Remove RAMpire's parts from {name}'s definition? From its next start it has plain RAM \
+         again, its boot RAM, for Cockpit or virsh to change."
+    ))? {
+        ui.say("nothing changed");
+        return Ok(());
+    }
+    let plain = crate::vm::plain_xml(&xml, original_definition(name).as_deref())?;
+    define(&libvirt, name, &plain)?;
+    ui.say(&format!(
+        "{name}'s definition has plain RAM again, {}, from its next start",
+        format_byte_size(crate::vm::inspect(&plain)?.memory_bytes)
+    ));
+    crate::audit::record(context, "vm_remove", Some(name), &[]);
+    forget_vm(ui, directory, name, Some(name))?;
     Ok(())
 }
 
@@ -826,11 +864,12 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_vm_that_isnt_managed_says_so_before_asking() {
+    fn removing_a_vm_that_isnt_managed_reads_its_definition_before_asking() {
+        // Unmanaged, it is about the definition: here libvirt can't give
+        // one, which fails before anything is asked.
         let draft = TempDir::new("test-unmanaged").unwrap();
         let mut ui = Transcript::default();
-        let error = vm_remove(&context(draft.path()), &mut ui, "web").unwrap_err();
-        assert!(error.contains("web.toml"), "{error}");
+        assert!(vm_remove(&context(draft.path()), &mut ui, "web").is_err());
         assert!(ui.said.is_empty());
     }
 }
