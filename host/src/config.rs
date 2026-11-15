@@ -178,7 +178,7 @@ pub fn reloadable(old: &HostConfig, new: &HostConfig) -> Result<(), String> {
         )
     };
     if read(&old.compatibility_attestation_path)? != read(&new.compatibility_attestation_path)? {
-        return Err(format!("{}: its attestation changed", old.vm_name));
+        return Err(format!("{}: its recorded setup changed", old.vm_name));
     }
     Ok(())
 }
@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(reloads, Ok(()));
         assert!(alias.is_err());
         assert!(added.unwrap_err().contains("added or removed"));
-        assert!(reattested.unwrap_err().contains("attestation"));
+        assert!(reattested.unwrap_err().contains("recorded setup"));
     }
 
     #[test]

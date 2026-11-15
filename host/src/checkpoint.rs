@@ -112,10 +112,10 @@ impl Checkpoint {
                 && file.control.pending()
                 && !migrate_evidence
             {
-                return Err(
-                    "compatibility attestation changed while control state is pending; review it and use clear-latch"
-                        .to_owned(),
-                );
+                return Err(format!(
+                    "{}'s setup changed while a resize was pending; check the guest, then: rampire recover {} \"WHY IT IS SAFE TO RESUME\"",
+                    config.vm_name, config.vm_name
+                ));
             }
         }
         let (control, last_latch_clear_reason) = file
@@ -233,7 +233,7 @@ pub fn read_controller_status(
     let recovery_reason = if let Some(reason) = &control.latch_reason {
         Some(format!("actuation_latched: {reason}"))
     } else if attestation_changed && control.pending() {
-        Some("compatibility attestation changed while control state is pending".to_owned())
+        Some("its setup changed while a resize was pending".to_owned())
     } else {
         match command_ownership {
             CommandOwnership::None | CommandOwnership::OwnedPending => None,
