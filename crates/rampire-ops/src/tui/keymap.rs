@@ -155,6 +155,8 @@ pub enum Cmd {
     Setup,
     /// The global settings form.
     Global,
+    /// `rampire apply`: the draft, shown first and asked.
+    Apply,
 }
 
 /// A key with its Ctrl and Alt; Shift is in the character.
@@ -446,6 +448,7 @@ pub static BINDINGS: &[Binding] = &[
     bind(Views, &[ch('g'), ch('d')], C::Doctor, "go to the doctor"),
     bind(Views, &[ch('I')], C::Setup, "set up this host: its reserve and pool (rampire init)"),
     bind(Views, &[ch('S')], C::Global, "the global settings: pool, host reserve and the rest (global.toml)"),
+    bind(Views, &[ch('A')], C::Apply, "apply the draft: what was saved but not applied, shown first (rampire apply)"),
     bind(Views, &[ch('g'), ch('l')], C::Logs, "go to the logs"),
     bind(Views, &[ch('g'), ch('w')], C::Tasks, "go to the tasks"),
     bind(Views, &[ch('g'), ch('e')], C::Errors, "go to the errors"),

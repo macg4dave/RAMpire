@@ -45,7 +45,7 @@ offers only what fits that VM:
 |---|---|
 | Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `u` Upgrade the guest service, when an update is available; `x` Remove RAMpire |
 | Not managed | What would stop adding it; `x` Remove RAMpire, when its definition still has RAMpire's parts; `a` Install RAMpire: its settings (Priority, Minimum, Maximum and Free RAM, filled in from its definition, and Guest login), with a warning when the VM is running and adding will shut it down; then everything adding will do, asked once. Answering No adds nothing, and the task ends **Not done**; `o` its doctor |
-| Half-added | `a` finish adding it; `o` its doctor |
+| Half-added | `a` finish adding it; `o` its doctor; `x` undo the add: `rampire vm remove VM` takes its settings out and puts its old definition back |
 
 A managed VM whose guest service runs another build than the host's
 shows **update available (u)** in the list's NOTE column: the host
@@ -78,7 +78,13 @@ finished ones. `q` asks first while tasks run: they stop with the TUI,
 and a `vm add` that stopped finishes when it is run again.
 
 What a task did slides in briefly at the bottom right; an error stays
-longer, and in the errors list (`e`). A change someone else makes while
+longer, and in the errors list (`e`). A task ends **Done** only when it
+did what it was started for. It ends **Not done**, saying what was and
+wasn't changed, when a question was answered No, or when part is left:
+settings saved but not applied, a VM added whose guest service hasn't
+reported in yet, a guest upgraded that hasn't reported in from the new
+build. A removal that fails after taking the VM's settings out of the
+draft puts them back, so the VM stays managed as it was. A change someone else makes while
 the TUI is open, with a command or another TUI, slides in too, with who
 made it, and the screen reads again (from the journal's
 `event=operator_change` lines).
@@ -106,6 +112,7 @@ Anywhere:
 | `i` | Unicode or ASCII icons |
 | `I` | Set up this host, when it isn't set up yet (`rampire init`) |
 | `S` | The global settings: every setting in `global.toml` (pool, host reserve, observe only, the poll interval, the libvirt limits and URI, the copies kept), filled in with its value now and checked as you type; Enter runs `rampire set global KEY=VALUE...` for what changed, and applies |
+| `A` | Apply the draft (`rampire apply`): what a settings change saved but didn't apply, such as after No to its apply question. The difference is shown first and asked |
 | `?`, F1 | The keys |
 | `q`, Ctrl+C | Quit; while tasks run it asks first, and Ctrl+C twice quits at once |
 | Ctrl+Z | Back to the shell; `fg` brings the TUI back |
@@ -117,7 +124,7 @@ The VMs:
 | Enter | The chosen VM's menu |
 | Tab | Its facts: what `vm list`, the pool and its settings say, and the commands that show more; Left and Right go through the VMs, `y` copies the chosen fact |
 | `/` | Show only the VMs whose name has what is typed, as it is typed; Tab completes a name, Enter keeps the filter, Esc puts back what was there |
-| Space, Ctrl+A | Mark the chosen VM, or every VM shown (again: none). A menu's letter then does its item for each marked VM, after one question that lists the commands; `s` opens one settings form for them all, whose empty fields leave each VM its own, and `a` one form to install RAMpire on them all; `x` removes RAMpire from each |
+| Space, Ctrl+A | Mark the chosen VM, or every VM shown (again: none). A menu's letter then does its item for each marked VM, after one question that lists the commands; `s` opens one settings form for them all, whose empty fields leave each VM its own, and `a` one form to install RAMpire on them all; `x` removes RAMpire from each, and `u` upgrades each guest service that has an update |
 | `,` then `o`, `n`, `r`, `p`, `u` | Sort as the pool lists them, by name, by RAM plugged, by priority, by the guest's memory in use; a capital letter reverses. VMs without the figure go last |
 | `m` then `g`, `l`, `d`, `t` | The last columns: the guest's memory and request, the RAM limits, the device, what `vm list` says |
 | `y` | Copy the chosen VM's name |
@@ -135,6 +142,9 @@ reason (a size needs its unit, such as `8GB`; Minimum RAM can't be more
 than Maximum RAM, nor Free RAM as much). Under the boxes, a word about
 the chosen setting and the command Save runs. Tab, Shift+Tab and the
 arrows go between the settings, Enter saves and applies, Esc cancels.
+The form shows the draft's values (`/etc/rampire`), which Save changes;
+when the draft has changes not yet applied, it says so above the boxes,
+since saving applies them too (`rampire diff` shows them).
 
 Text fields take the usual keys: Home, End, Ctrl+A, Ctrl+E, Ctrl+U,
 Ctrl+K, Ctrl+W, Alt+B, Alt+F. Up and Down recall what was typed for the

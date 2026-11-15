@@ -183,6 +183,7 @@ impl App {
             Cmd::Doctor => self.open(View::Doctor(None)),
             Cmd::Setup => self.setup_form(),
             Cmd::Global => self.global_form(),
+            Cmd::Apply => self.start(super::actions::Action::Apply),
             Cmd::Logs => self.open(View::Logs(None)),
             Cmd::Back if self.view != View::Main => self.open(View::Main),
             _ => {}
@@ -281,7 +282,7 @@ impl App {
                     self.copy(entry.name);
                 }
             }
-            Cmd::Letter(letter) if !self.list.marks.is_empty() && "asx".contains(letter) => {
+            Cmd::Letter(letter) if !self.list.marks.is_empty() && "asxu".contains(letter) => {
                 self.for_marked(letter)
             }
             Cmd::Letter(letter) => {
@@ -353,7 +354,7 @@ impl App {
     }
 
     /// Put the list's cursor on `name`.
-    fn choose(&mut self, name: &str) {
+    pub(super) fn choose(&mut self, name: &str) {
         if let Some(at) = self.visible().iter().position(|entry| entry.name == name) {
             self.list.scroll.cursor = at;
         }
@@ -945,18 +946,121 @@ mod tests {
         typed(&mut app, "gl");
         assert_eq!(app.view, View::Logs(None));
         press(&mut app, KeyCode::Esc);
-        // No settings read yet: it says so rather than showing an empty form.
+        // The form edits the draft: a VM whose file can't be read gets
+        // the reason, not an empty form.
+        let draft = crate::context::TempDir::new("tui-settings").unwrap();
+        app.context.config = Some(draft.path().to_path_buf());
         press(&mut app, KeyCode::Char('s'));
         assert!(app.dialog.is_none());
-        app.on_msg(Msg::Details(
-            "vm0".to_owned(),
-            crate::tui::vm::tests::details(),
-        ));
+        let vms = draft.path().join(rampire_core::settings::VMS_DIRECTORY);
+        std::fs::create_dir_all(&vms).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/config/linux-guest.toml"),
+            vms.join("vm0.toml"),
+        )
+        .unwrap();
         press(&mut app, KeyCode::Char('s'));
-        assert!(matches!(app.dialog, Some(Dialog::Form(_))));
+        let Some(Dialog::Form(form)) = &app.dialog else {
+            panic!("the settings form opens");
+        };
+        // The draft's values, not the ones the reader last saw running.
+        assert_eq!(form.fields[0].input.value(), "50");
+        assert_eq!(form.fields[2].input.value(), "5GB");
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Char('q'));
         assert!(app.quit);
+    }
+
+    #[test]
+    fn a_half_added_vm_can_be_finished_or_undone_from_its_menu() {
+        let (mut app, _rx) = app();
+        let oldvm = app.entry("oldvm").expect("the half-added VM");
+        let keys: String = app.menu(&oldvm).1.iter().map(|choice| choice.key).collect();
+        assert_eq!(keys, "aox");
+        app.choose("oldvm");
+        press(&mut app, KeyCode::Char('x'));
+        let queued: Vec<&Action> = app.tasks.list.iter().map(|task| &task.action).collect();
+        assert_eq!(queued, [&Action::Remove("oldvm".to_owned())]);
+    }
+
+    #[test]
+    fn a_vm_removed_from_its_details_goes_back_to_the_list() {
+        let (mut app, _rx) = app();
+        app.open(View::Details("vm0".to_owned()));
+        press(&mut app, KeyCode::Char('x'));
+        let id = app.tasks.list[0].id;
+        app.tasks.start_next(Instant::now());
+        let remove = Action::Remove("vm0".to_owned());
+        app.on_msg(Msg::Task(
+            id,
+            FlowEvent::Done(Ok(remove.ended(crate::flows::Outcome::Done))),
+        ));
+        assert_eq!(app.view, View::Main);
+    }
+
+    #[test]
+    fn marked_vms_are_upgraded_each_not_the_hovered_one_alone() {
+        let (mut app, _rx) = app();
+        app.context.build = "0.5.0 (build newer)".to_owned();
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('u'));
+        assert!(
+            matches!(&app.dialog, Some(Dialog::Confirm(confirm)) if !confirm.list.is_empty()),
+            "one question for the marked VMs, not the hovered one alone"
+        );
+    }
+
+    #[test]
+    fn a_draft_saved_but_not_applied_can_be_applied_from_anywhere() {
+        let (mut app, _rx) = app();
+        press(&mut app, KeyCode::Char('A'));
+        let queued: Vec<&Action> = app.tasks.list.iter().map(|task| &task.action).collect();
+        assert_eq!(queued, [&Action::Apply]);
+    }
+
+    #[test]
+    fn a_task_that_was_declined_or_left_part_done_is_not_reported_done() {
+        use crate::flows::Outcome;
+        use crate::tui::jobs::Ended;
+        let remove = Action::Remove("vm0".to_owned());
+        assert_eq!(
+            remove.ended(Outcome::Done),
+            Ended::Done("RAMpire is removed from vm0".to_owned())
+        );
+        let Ended::NotDone(text) = remove.ended(Outcome::declined()) else {
+            panic!("No is not done");
+        };
+        assert!(
+            text.contains("not removed") && text.contains("answer was No"),
+            "{text}"
+        );
+        let set = Action::Set {
+            target: "vm0".to_owned(),
+            changes: vec!["priority=150".to_owned()],
+        };
+        assert!(matches!(
+            set.ended(Outcome::Partly("saved, not applied".to_owned())),
+            Ended::NotDone(_)
+        ));
+
+        // The notice says what happened, not only which command ran.
+        let (mut app, _rx) = app();
+        let id = app
+            .tasks
+            .add(remove.clone(), "rampire vm remove vm0".to_owned());
+        app.tasks.start_next(Instant::now());
+        app.on_msg(Msg::Task(
+            id,
+            FlowEvent::Done(Ok(remove.ended(Outcome::declined()))),
+        ));
+        assert!(app.errors.is_empty());
+        let shown = format!("{:?}", app.notices);
+        assert!(
+            shown.contains("Not done") && shown.contains("not removed"),
+            "{shown}"
+        );
     }
 
     #[test]

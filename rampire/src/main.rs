@@ -406,12 +406,21 @@ fn main() -> ExitCode {
 
 /// The result of a flow that may change the applied configuration, as
 /// `--detailed-exitcode` reports it.
-fn changed_code(changed: bool, detailed: bool) -> ExitCode {
-    ExitCode::from(if changed && detailed {
-        exit::CHANGED
-    } else {
-        exit::SUCCESS
-    })
+/// The exit code of a flow that didn't fail. Its lines have said how it
+/// ended; a No or a part left to do is not an error for a script, as
+/// before.
+fn ended(_outcome: rampire_ops::flows::Outcome) -> ExitCode {
+    ExitCode::SUCCESS
+}
+
+fn changed_code(outcome: rampire_ops::flows::Outcome, detailed: bool) -> ExitCode {
+    ExitCode::from(
+        if outcome == rampire_ops::flows::Outcome::Done && detailed {
+            exit::CHANGED
+        } else {
+            exit::SUCCESS
+        },
+    )
 }
 
 fn run(cli: &Cli) -> Result<ExitCode, String> {
@@ -426,7 +435,7 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
         Command::Daemon => Ok(daemon::run(&context.running())),
         Command::Status { vm } => reporting::status(cli, vm.as_deref()),
         Command::Init { host_reserve } => {
-            flows::init(&context, ui, host_reserve.as_deref()).map(|_| ExitCode::SUCCESS)
+            flows::init(&context, ui, host_reserve.as_deref()).map(ended)
         }
         Command::Top { view, events } => {
             let mut top = rampire_ops::top::Command::load(&context)?;
@@ -457,7 +466,7 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
         Command::Doctor { vm } => reporting::doctor(cli, vm.as_deref()),
         Command::Diff => apply::diff(&context, ui).map(|()| ExitCode::SUCCESS),
         Command::Apply { detailed_exitcode } => {
-            apply::apply(&context, ui).map(|changed| changed_code(changed, *detailed_exitcode))
+            apply::apply(&context, ui).map(|outcome| changed_code(outcome, *detailed_exitcode))
         }
         Command::Rollback => apply::rollback(&context, ui).map(|()| ExitCode::SUCCESS),
         Command::Set {
@@ -469,22 +478,17 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                 .iter()
                 .map(|change| rampire_ops::set::parse_assignment(change))
                 .collect::<Result<Vec<_>, _>>()?;
-            lifecycle::set(&context, ui, target, &changes, *no_apply).map(|_| ExitCode::SUCCESS)
+            lifecycle::set(&context, ui, target, &changes, *no_apply).map(ended)
         }
         Command::Logs { follow, since, vm } => {
             controller::logs(*follow, since.as_deref(), vm.as_deref())
         }
-        Command::Recover { vm, reason } => {
-            flows::recover(&context, ui, vm, reason).map(|()| ExitCode::SUCCESS)
-        }
+        Command::Recover { vm, reason } => flows::recover(&context, ui, vm, reason).map(ended),
         Command::Vm { command } => match command {
             VmCommand::List => reporting::vm_list(cli),
-            VmCommand::Restart { vm } => {
-                lifecycle::vm_restart(&context, ui, vm).map(|()| ExitCode::SUCCESS)
-            }
+            VmCommand::Restart { vm } => lifecycle::vm_restart(&context, ui, vm).map(ended),
             VmCommand::Upgrade { vm, guest_login } => {
-                lifecycle::vm_upgrade(&context, ui, vm, guest_login.as_deref())
-                    .map(|()| ExitCode::SUCCESS)
+                lifecycle::vm_upgrade(&context, ui, vm, guest_login.as_deref()).map(ended)
             }
             VmCommand::Add {
                 vm,
@@ -511,10 +515,8 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                     free_ram: free_ram.clone(),
                 },
             )
-            .map(|_| ExitCode::SUCCESS),
-            VmCommand::Remove { vm } => {
-                lifecycle::vm_remove(&context, ui, vm).map(|()| ExitCode::SUCCESS)
-            }
+            .map(ended),
+            VmCommand::Remove { vm } => lifecycle::vm_remove(&context, ui, vm).map(ended),
         },
         Command::ClearLatch { vm, reason, apply } => {
             let target = context.target(Some(vm))?;

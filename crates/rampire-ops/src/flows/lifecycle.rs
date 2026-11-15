@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::apply::{apply, running_copy};
+use super::Outcome;
 use crate::context::{applied_root, Context, TempDir, DOMAIN_BACKUPS};
 use crate::process;
 use crate::ui::Ui;
@@ -55,16 +56,6 @@ impl AddOptions {
     }
 }
 
-/// How `vm add` ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Added {
-    /// The person answered No: nothing was changed.
-    Declined,
-    /// It is added; `changed` says whether the applied configuration
-    /// changed.
-    Yes { changed: bool },
-}
-
 /// Write a file that must not exist yet; an existing one is never replaced.
 fn write_new(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -93,8 +84,9 @@ fn settings_path(directory: &Path, name: &str) -> Result<PathBuf, String> {
 /// `rampire vm add`. Shows everything it will do and asks once; then fixes
 /// the definition, starts the VM, installs the guest package in it,
 /// restarts it when that is needed, writes its settings, applies, and waits
-/// for the guest to report in.
-pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Result<Added, String> {
+/// for the guest to report in. [`Outcome::Partly`] when the VM is managed
+/// but its guest service hasn't reported in.
+pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Result<Outcome, String> {
     use crate::vm;
     use rampire_core::settings::VMS_DIRECTORY;
     use std::time::Duration;
@@ -234,7 +226,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     };
     if !agreed {
         ui.say("nothing changed");
-        return Ok(Added::Declined);
+        return Ok(Outcome::declined());
     }
     let answers = if new_review {
         ask_review(ui, &after, name)?
@@ -259,7 +251,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     // What follows can fail with the definition changed: the error then
     // says how to go on or go back.
     #[allow(clippy::redundant_closure_call)]
-    let finished = (|| -> Result<Added, String> {
+    let finished = (|| -> Result<Outcome, String> {
         // The guest package: a VM that is off gets it on its disk before it
         // first starts; a running one through a login, else the same way with
         // it shut down for a moment. An install on the disk runs at the boot.
@@ -345,10 +337,17 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         if !resuming {
             crate::audit::record(context, "vm_add", Some(name), &[]);
         }
-        let changed = super::apply::apply_agreed(context, ui)?;
+        super::apply::apply_agreed(context, ui)?;
         // An install at boot may boot the VM once more.
-        guest_reports_in(context, ui, name, Duration::from_secs(300));
-        Ok(Added::Yes { changed })
+        Ok(
+            if guest_reports_in(context, ui, name, Duration::from_secs(300)) {
+                Outcome::Done
+            } else {
+                Outcome::Partly(format!(
+                    "{name} is managed, but its guest service hasn't reported in yet: rampire doctor {name} says why"
+                ))
+            },
+        )
     })();
     match finished {
         Err(error) if fixed.is_some() => Err(format!(
@@ -423,8 +422,14 @@ fn original_definition(name: &str) -> Option<String> {
     std::fs::read_to_string(Path::new(DOMAIN_BACKUPS).join(oldest)).ok()
 }
 
-/// Wait for the guest service to report in, and say how it is.
-fn guest_reports_in(context: &Context, ui: &mut dyn Ui, vm: &str, limit: std::time::Duration) {
+/// Wait for the guest service to report in, and say how it is; whether
+/// it did.
+fn guest_reports_in(
+    context: &Context,
+    ui: &mut dyn Ui,
+    vm: &str,
+    limit: std::time::Duration,
+) -> bool {
     ui.say(&format!("waiting for {vm}'s guest service to report in"));
     let started = std::time::Instant::now();
     while started.elapsed() < limit {
@@ -434,7 +439,7 @@ fn guest_reports_in(context: &Context, ui: &mut dyn Ui, vm: &str, limit: std::ti
                     "{vm} is added: {}",
                     crate::reports::status_line(&status)
                 ));
-                return;
+                return true;
             }
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -443,6 +448,7 @@ fn guest_reports_in(context: &Context, ui: &mut dyn Ui, vm: &str, limit: std::ti
         "{vm} is added, but its guest service hasn't reported in after {} s: rampire doctor {vm} says why",
         limit.as_secs()
     ));
+    false
 }
 
 /// Fail, saying why, when a VM other than `name` would fail `apply`'s
@@ -666,8 +672,10 @@ fn write_vm_settings(
 }
 
 /// `rampire vm remove`: stop managing a VM, put its definition back to
-/// plain RAM, and remove everything RAMpire kept for it.
-pub fn vm_remove(context: &Context, ui: &mut dyn Ui, name: &str) -> Result<(), String> {
+/// plain RAM, and remove everything RAMpire kept for it. Its settings
+/// are put back if the controller can't be moved off it, so a failed
+/// removal leaves it managed as it was.
+pub fn vm_remove(context: &Context, ui: &mut dyn Ui, name: &str) -> Result<Outcome, String> {
     use rampire_core::settings;
     let directory = context.draft();
     let path = settings_path(&directory, name)?;
@@ -680,35 +688,66 @@ pub fn vm_remove(context: &Context, ui: &mut dyn Ui, name: &str) -> Result<(), S
          definition has plain RAM again, its boot RAM, for Cockpit or virsh to change."
     ))? {
         ui.say("nothing changed");
-        return Ok(());
+        return Ok(Outcome::declined());
     }
     let libvirt = context.libvirt()?;
-    std::fs::remove_file(&path).map_err(|error| format!("remove {}: {error}", path.display()))?;
-    crate::audit::record(context, "vm_remove", Some(name), &[]);
     // The controller lets go of the VM first; then what it kept goes.
-    super::apply::apply_agreed(context, ui)?;
+    without_settings(&path, name, || super::apply::apply_agreed(context, ui))?;
+    crate::audit::record(context, "vm_remove", Some(name), &[]);
+    // From here RAMpire no longer manages it: a failure says what is left.
+    let unmanaged = |error: String| {
+        format!(
+            "{error}\n{name} is no longer managed; the VM list shows what is left of RAMpire in it, and rampire vm remove {name} tries again"
+        )
+    };
     if libvirt.state(name).is_ok() {
-        let xml = libvirt.virsh(&["dumpxml", "--inactive", name])?;
-        let plain = crate::vm::plain_xml(&xml, original_definition(name).as_deref())?;
+        let xml = libvirt
+            .virsh(&["dumpxml", "--inactive", name])
+            .map_err(unmanaged)?;
+        let plain =
+            crate::vm::plain_xml(&xml, original_definition(name).as_deref()).map_err(unmanaged)?;
         if plain != xml {
-            define(&libvirt, name, &plain)?;
-            let ram = crate::vm::inspect(&plain)?.memory_bytes;
+            define(&libvirt, name, &plain).map_err(unmanaged)?;
+            let ram = crate::vm::inspect(&plain).map_err(unmanaged)?.memory_bytes;
             ui.say(&format!(
                 "{name}'s definition has plain RAM again, {}, from its next start",
                 format_byte_size(ram)
             ));
         }
     }
-    if let Some(copy) = still_managed_in(name)? {
+    if let Some(copy) = still_managed_in(name).map_err(unmanaged)? {
         ui.say(&format!(
             "{name} is still managed by {}, so what RAMpire keeps for it stays",
             copy.display()
         ));
-        return Ok(());
+        return Ok(Outcome::Partly(format!(
+            "{name} is out of the configuration, but the controller still runs {}, so its recorded setup and request state stay: rampire doctor says why the controller hasn't moved on",
+            copy.display()
+        )));
     }
-    forget_vm(ui, &directory, name, vm.review.as_deref())?;
+    forget_vm(ui, &directory, name, vm.review.as_deref()).map_err(unmanaged)?;
     ui.say(&format!("{name} is removed"));
-    Ok(())
+    Ok(Outcome::Done)
+}
+
+/// Take a VM's settings file at `path` out of the draft and run `then`;
+/// when that fails, put the file back as it was, so the VM stays managed.
+fn without_settings<T>(
+    path: &Path,
+    name: &str,
+    then: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let kept = std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    std::fs::remove_file(path).map_err(|error| format!("remove {}: {error}", path.display()))?;
+    then().map_err(|error| match std::fs::write(path, &kept) {
+        Ok(()) => format!(
+            "{error}\n{name} is still managed: its settings are back in {}, and nothing else was changed",
+            path.display()
+        ),
+        Err(write) => format!(
+            "{error}\n{name}'s settings were taken out of the draft and couldn't be put back ({write}): rampire vm remove {name} tries again"
+        ),
+    })
 }
 
 /// `vm remove` for a VM RAMpire no longer manages whose definition still
@@ -719,7 +758,7 @@ fn clear_definition(
     context: &Context,
     ui: &mut dyn Ui,
     name: &str,
-) -> Result<(), String> {
+) -> Result<Outcome, String> {
     let libvirt = context.libvirt()?;
     let xml = libvirt.virsh(&["dumpxml", "--inactive", name])?;
     let inspection = crate::vm::inspect(&xml)?;
@@ -733,7 +772,7 @@ fn clear_definition(
          again, its boot RAM, for Cockpit or virsh to change."
     ))? {
         ui.say("nothing changed");
-        return Ok(());
+        return Ok(Outcome::declined());
     }
     let plain = crate::vm::plain_xml(&xml, original_definition(name).as_deref())?;
     define(&libvirt, name, &plain)?;
@@ -743,7 +782,7 @@ fn clear_definition(
     ));
     crate::audit::record(context, "vm_remove", Some(name), &[]);
     forget_vm(ui, directory, name, Some(name))?;
-    Ok(())
+    Ok(Outcome::Done)
 }
 
 /// Remove what RAMpire keeps for a VM it no longer manages: its recorded
@@ -834,20 +873,24 @@ fn still_managed_in(name: &str) -> Result<Option<PathBuf>, String> {
 
 /// `rampire vm restart`: shut the VM down and start it again, so its saved
 /// definition takes effect, then apply, which records its new setup.
-pub fn vm_restart(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(), String> {
+pub fn vm_restart(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<Outcome, String> {
     crate::attest::vm_settings(&context.draft(), vm)?;
     if !ui.confirm(&format!(
         "Shut {vm} down and start it again, so its saved definition takes effect?"
     ))? {
         ui.say("nothing changed");
-        return Ok(());
+        return Ok(Outcome::declined());
     }
     let libvirt = context.libvirt()?;
     crate::attest::cold_restart(vm, &libvirt, std::time::Duration::from_secs(300))?;
     ui.say(&format!("{vm} restarted"));
     crate::audit::record(context, "vm_restart", Some(vm), &[]);
-    apply(context, ui)?;
-    Ok(())
+    Ok(match apply(context, ui)? {
+        Outcome::Declined(_) => Outcome::Partly(format!(
+            "{vm} restarted, but its new setup isn't applied: rampire apply records it"
+        )),
+        _ => Outcome::Done,
+    })
 }
 
 /// `rampire vm upgrade`: install the guest package of the build this host
@@ -859,16 +902,15 @@ pub fn vm_upgrade(
     ui: &mut dyn Ui,
     vm: &str,
     login: Option<&str>,
-) -> Result<(), String> {
+) -> Result<Outcome, String> {
     crate::attest::vm_settings(&context.draft(), vm)?;
     let host = context.build_id();
     let running = crate::guest::running_build(vm);
     if let (Some(guest), Some(host)) = (running.as_deref(), host) {
         if guest == host {
-            ui.say(&format!(
-                "{vm} runs rampire-guest {host} already, the build this host runs"
-            ));
-            return Ok(());
+            let same = format!("{vm} runs rampire-guest {host} already, the build this host runs");
+            ui.say(&same);
+            return Ok(Outcome::AlreadySo(same));
         }
     }
     let from = running.map_or("the build it runs".to_owned(), |build| {
@@ -881,13 +923,20 @@ pub fn vm_upgrade(
         "Upgrade rampire-guest in {vm} from {from} to {to}?"
     ))? {
         ui.say("nothing changed");
-        return Ok(());
+        return Ok(Outcome::declined());
     }
     let libvirt = context.libvirt()?;
     upgrade_guest(ui, &libvirt, vm, login, true)?;
     crate::audit::record(context, "vm_upgrade", Some(vm), &[]);
-    wait_for_build(ui, vm, host, std::time::Duration::from_secs(300));
-    Ok(())
+    Ok(
+        if wait_for_build(ui, vm, host, std::time::Duration::from_secs(300)) {
+            Outcome::Done
+        } else {
+            Outcome::Partly(format!(
+                "the package is installed, but {vm}'s guest service hasn't reported in from the new build: rampire doctor {vm} says why"
+            ))
+        },
+    )
 }
 
 /// Install the guest package of this host's build in `vm`: logged in to it
@@ -944,17 +993,24 @@ fn upgrade_guest(
     }
 }
 
-/// Wait for `vm`'s guest service to publish from `build`, and say so.
-fn wait_for_build(ui: &mut dyn Ui, vm: &str, build: Option<&str>, limit: std::time::Duration) {
+/// Wait for `vm`'s guest service to publish from `build`, and say so;
+/// whether it did. Without a build to wait for, there is nothing to wait
+/// on.
+fn wait_for_build(
+    ui: &mut dyn Ui,
+    vm: &str,
+    build: Option<&str>,
+    limit: std::time::Duration,
+) -> bool {
     let Some(build) = build else {
-        return;
+        return true;
     };
     ui.say(&format!("waiting for {vm}'s guest service to report in"));
     let started = std::time::Instant::now();
     while started.elapsed() < limit {
         if crate::guest::running_build(vm).as_deref() == Some(build) {
             ui.say(&format!("{vm} runs rampire-guest {build}"));
-            return;
+            return true;
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
@@ -962,6 +1018,7 @@ fn wait_for_build(ui: &mut dyn Ui, vm: &str, build: Option<&str>, limit: std::ti
         "{vm}'s guest service hasn't reported in from build {build} after {} s: rampire doctor {vm} says why",
         limit.as_secs()
     ));
+    false
 }
 
 /// After a VM's settings change: when its guest runs another build than
@@ -996,14 +1053,15 @@ fn upgrade_if_behind(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(),
 
 /// `rampire set`: change settings in the draft, then apply unless
 /// `no_apply`. A VM whose guest runs another build than this host's has
-/// its guest upgraded as well.
+/// its guest upgraded as well. [`Outcome::Partly`] when the change is
+/// saved but not applied.
 pub fn set(
     context: &Context,
     ui: &mut dyn Ui,
     target: &str,
     changes: &[crate::set::Assignment],
     no_apply: bool,
-) -> Result<bool, String> {
+) -> Result<Outcome, String> {
     let path = crate::set::set(&context.draft(), target, changes)?;
     ui.say(&format!("changed {}", path.display()));
     let described: Vec<String> = changes
@@ -1019,15 +1077,28 @@ pub fn set(
         (target != crate::set::GLOBAL).then_some(target),
         &[("changes", &described.join(","))],
     );
+    let saved = |error: String| {
+        format!(
+            "{error}\nThe change is saved in {} but not applied: fix what is said above and run rampire apply, or set the old value back",
+            path.display()
+        )
+    };
     if target != crate::set::GLOBAL {
-        grow_for_max_ram(context, ui, target)?;
-        upgrade_if_behind(context, ui, target)?;
+        grow_for_max_ram(context, ui, target).map_err(saved)?;
+        upgrade_if_behind(context, ui, target).map_err(saved)?;
     }
+    let not_applied = format!(
+        "saved in {}, not applied: rampire apply applies it",
+        path.display()
+    );
     if no_apply {
         ui.say("not applied: run rampire apply when ready");
-        return Ok(false);
+        return Ok(Outcome::Partly(not_applied));
     }
-    apply(context, ui)
+    Ok(match apply(context, ui).map_err(saved)? {
+        Outcome::Declined(_) => Outcome::Partly(not_applied),
+        outcome => outcome,
+    })
 }
 
 /// When a VM's `max_ram` is more than its virtio-mem device holds, grow the
@@ -1126,6 +1197,43 @@ mod tests {
         let mut ui = Transcript::default();
         assert!(vm_remove(&context(draft.path()), &mut ui, "web").is_err());
         assert!(ui.said.is_empty());
+    }
+
+    #[test]
+    fn a_removal_the_controller_cant_take_puts_the_settings_back() {
+        let draft = TempDir::new("test-remove-back").unwrap();
+        let path = draft.path().join("web.toml");
+        std::fs::write(&path, "priority = 100\n").unwrap();
+        let error = without_settings(&path, "web", || -> Result<(), String> {
+            assert!(!path.exists(), "out of the draft while applying");
+            Err("the draft did not pass its checks".to_owned())
+        })
+        .unwrap_err();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "priority = 100\n");
+        assert!(error.contains("still managed"), "{error}");
+        // When it goes through, the settings stay out.
+        without_settings(&path, "web", || Ok(())).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn declining_changes_nothing_and_says_so() {
+        // Each flow asks before it changes anything: a No ends it, and the
+        // outcome says so, not that it was done.
+        let draft = TempDir::new("test-decline").unwrap();
+        let vms = draft.path().join(rampire_core::settings::VMS_DIRECTORY);
+        std::fs::create_dir_all(&vms).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/config/linux-guest.toml");
+        std::fs::copy(fixture, vms.join("web.toml")).unwrap();
+        let mut ui = Transcript::answering(&["n", "n"]);
+        let outcome = vm_remove(&context(draft.path()), &mut ui, "web").unwrap();
+        assert_eq!(outcome, Outcome::declined());
+        assert!(vms.join("web.toml").exists(), "still managed");
+        assert_eq!(
+            vm_restart(&context(draft.path()), &mut ui, "web").unwrap(),
+            Outcome::declined()
+        );
     }
 
     #[test]

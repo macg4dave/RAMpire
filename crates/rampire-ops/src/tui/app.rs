@@ -168,6 +168,9 @@ pub struct LogState {
     pub find: Option<String>,
 }
 
+/// What a settings form says when the draft it edits isn't what runs.
+const NOT_APPLIED: &str = "The draft has changes that aren't applied yet; they are shown here, and saving applies them too. rampire diff shows them.";
+
 /// How often the list of the host's VMs is read again by itself.
 const INVENTORY_EVERY: Duration = Duration::from_secs(30);
 /// The header's clock ticks.
@@ -615,10 +618,11 @@ impl App {
             FlowEvent::Done(result) => {
                 let title = task.title.clone();
                 let init = matches!(task.action, Action::Init { .. });
+                let action = task.action.clone();
                 match &result {
-                    Ok(jobs::Ended::Done(_)) => {
+                    Ok(jobs::Ended::Done(text)) => {
                         self.notices
-                            .push(Message::titled("Done", title.clone(), Tone::Good))
+                            .push(Message::titled("Done", text.clone(), Tone::Good))
                     }
                     Ok(jobs::Ended::NotDone(text)) => {
                         self.notices
@@ -639,6 +643,12 @@ impl App {
                 }
                 if init {
                     self.check_setup();
+                }
+                // A VM RAMpire let go of has no live details to show.
+                if let (Action::Remove(vm), Ok(jobs::Ended::Done(_))) = (&action, &result) {
+                    if self.view == View::Details(vm.clone()) {
+                        self.open(View::Main);
+                    }
                 }
                 self.tasks.finish(id, result, Instant::now());
                 // What the action changed shows on the next reads.
@@ -845,6 +855,8 @@ impl App {
                 choices.push(remove);
                 choices
             }
+            // An add that stopped part-way: finish it, or undo it, which
+            // puts the old definition back.
             Management::Unfinished => vec![
                 item(
                     'a',
@@ -853,6 +865,12 @@ impl App {
                     Pick::Run(Action::add(vm)),
                 ),
                 doctor,
+                item(
+                    'x',
+                    "Undo the add: remove RAMpire",
+                    line(&["vm", "remove", vm]),
+                    Pick::Run(Action::Remove(vm.to_owned())),
+                ),
             ],
             Management::NotManaged => {
                 if let Some(listed) = listed {
@@ -940,7 +958,21 @@ impl App {
             return self.edit_settings(&settings);
         }
         if !adding.is_empty() {
-            return self.add_form(&adding);
+            self.add_form(&adding);
+            if !actions.is_empty() {
+                let left: Vec<String> = actions
+                    .iter()
+                    .filter_map(|action| action.vm().map(str::to_owned))
+                    .collect();
+                self.notify(
+                    format!(
+                        "Left out: {} stopped part-way through an earlier add; finish each with a on its own.",
+                        left.join(", ")
+                    ),
+                    Tone::Warn,
+                );
+            }
+            return;
         }
         if actions.is_empty() {
             return self.notify(
@@ -986,6 +1018,10 @@ impl App {
                 )
             }
         };
+        let running = rampire_core::settings::load_globals(&self.context.running()).ok();
+        let warning = running
+            .is_some_and(|running| running != globals)
+            .then(|| NOT_APPLIED.to_owned());
         let fields = vec![
             Field::new("pool", globals.pool.map(format_byte_size)),
             Field::new("host_reserve", Some(format_byte_size(globals.host_reserve))),
@@ -1010,26 +1046,30 @@ impl App {
             vms: Vec::new(),
             fields,
             cursor: 0,
-            warning: None,
+            warning,
             host: None,
         }));
     }
 
     /// The settings form for `vms`: one VM's values to change, or for
-    /// several, empty fields that leave each its own.
+    /// several, empty fields that leave each its own. The values are the
+    /// draft's, which `set` changes, not the applied copy's; the form says
+    /// when the two differ.
     pub(super) fn edit_settings(&mut self, vms: &[String]) {
+        let mut warning = None;
         let fields = match vms {
             [vm] => {
-                let Some(settings) = self
-                    .details
-                    .get(vm)
-                    .and_then(|details| details.settings.clone())
-                else {
-                    return self.notify(
-                        format!("{vm}'s settings are still being read; try again in a moment."),
-                        Tone::Warn,
-                    );
+                let settings = match crate::attest::vm_settings(&self.context.draft(), vm) {
+                    Ok(settings) => settings,
+                    Err(error) => {
+                        return self
+                            .notify(format!("{vm}'s settings can't be read: {error}"), Tone::Bad)
+                    }
                 };
+                let running = crate::attest::vm_settings(&self.context.running(), vm).ok();
+                if running.is_some_and(|running| running != settings) {
+                    warning = Some(NOT_APPLIED.to_owned());
+                }
                 vec![
                     Field::new("priority", Some(settings.priority.to_string())),
                     Field::new("min_ram", Some(format_byte_size(settings.min_ram))),
@@ -1047,7 +1087,7 @@ impl App {
             vms: vms.to_vec(),
             fields,
             cursor: 0,
-            warning: None,
+            warning,
             host: None,
         }));
     }
@@ -1112,7 +1152,7 @@ impl App {
     pub(super) fn setup_form(&mut self) {
         let Some(host) = self.setup else {
             return self.notify(
-                "This host is set up already: change its settings with rampire set global KEY=VALUE.",
+                "This host is set up already: S changes its global settings.",
                 Tone::Dim,
             );
         };

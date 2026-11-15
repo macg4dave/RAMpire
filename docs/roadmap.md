@@ -23,8 +23,8 @@ Work that is done goes in the [changelog](../CHANGELOG.md), not here.
   changed the definition (the guest package wouldn't install, the VM
   didn't come back), it now says so and names `rampire vm remove VM` to put
   the old definition back, and a VM it shut down for the install is
-  started again. Done looks like: the add puts the old definition back
-  itself, or the TUI offers it in one key.
+  started again, and the half-added VM's menu offers **x** to undo it.
+  Done looks like: the add puts the old definition back itself.
 - **Which answer the add question starts on.** Enter answers what is
   marked, and the marked button now shows plainly; No is marked first, as
   for every question. Once a person has reviewed the settings form and the

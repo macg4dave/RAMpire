@@ -5,7 +5,7 @@
 
 use super::jobs::{self, ChannelUi, Ended, Msg, ReaderControl, TaskId};
 use crate::context::Context;
-use crate::flows::{apply, controller, lifecycle};
+use crate::flows::{apply, controller, lifecycle, Outcome};
 use crate::ui::Ui;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
@@ -125,40 +125,21 @@ impl Action {
     }
 
     fn run(&self, context: &Context, ui: &mut ChannelUi) -> Result<Ended, String> {
-        let done = |text: String| Ok(Ended::Done(text));
-        match self {
+        let outcome = match self {
             Self::Add { vm, changes } => {
-                match lifecycle::vm_add(context, ui, &add_options(vm, changes)?)? {
-                    lifecycle::Added::Declined => Ok(Ended::NotDone(format!(
-                        "{vm} is not added: the answer was No, so nothing was changed"
-                    ))),
-                    lifecycle::Added::Yes { .. } => done(format!("{vm} is added")),
-                }
+                lifecycle::vm_add(context, ui, &add_options(vm, changes)?)?
             }
-            Self::Remove(vm) => {
-                lifecycle::vm_remove(context, ui, vm)?;
-                done(format!("{vm} is removed"))
-            }
-            Self::Restart(vm) => {
-                lifecycle::vm_restart(context, ui, vm)?;
-                done(format!("{vm} restarted"))
-            }
-            Self::Upgrade(vm) => {
-                lifecycle::vm_upgrade(context, ui, vm, None)?;
-                done(format!("{vm}'s guest service is upgraded"))
-            }
+            Self::Remove(vm) => lifecycle::vm_remove(context, ui, vm)?,
+            Self::Restart(vm) => lifecycle::vm_restart(context, ui, vm)?,
+            Self::Upgrade(vm) => lifecycle::vm_upgrade(context, ui, vm, None)?,
             Self::Set { target, changes } => {
                 let changes = changes
                     .iter()
                     .map(|change| crate::set::parse_assignment(change))
                     .collect::<Result<Vec<_>, _>>()?;
-                lifecycle::set(context, ui, target, &changes, false)?;
-                done("the settings are saved and applied".to_owned())
+                lifecycle::set(context, ui, target, &changes, false)?
             }
-            Self::Apply => {
-                apply::apply(context, ui)?;
-                done("the configuration is applied".to_owned())
-            }
+            Self::Apply => apply::apply(context, ui)?,
             Self::Recover(vm) => {
                 let reason = ui.text(&format!(
                     "Why is it safe to resume resizing {vm}? (recorded in its state)"
@@ -170,13 +151,57 @@ impl Action {
                     "same as: {}",
                     context.command_line(&["recover", vm, reason.trim()])
                 ));
-                controller::recover(context, ui, vm, reason.trim())?;
-                done(format!("{vm} resumes resizing"))
+                controller::recover(context, ui, vm, reason.trim())?
             }
-            Self::Init { host_reserve } => {
-                controller::init(context, ui, host_reserve.as_deref())?;
-                done("the host is set up".to_owned())
+            Self::Init { host_reserve } => controller::init(context, ui, host_reserve.as_deref())?,
+        };
+        Ok(self.ended(outcome))
+    }
+
+    /// What the TUI says about how the flow ended: what was done in this
+    /// action's words, or the flow's own account of what wasn't.
+    pub fn ended(&self, outcome: Outcome) -> Ended {
+        match outcome {
+            Outcome::Done => Ended::Done(self.done_text()),
+            Outcome::AlreadySo(text) => Ended::Done(text),
+            Outcome::Declined(text) => {
+                Ended::NotDone(format!("{}: the answer was No; {text}", self.subject()))
             }
+            Outcome::Partly(text) => Ended::NotDone(text),
+        }
+    }
+
+    /// What this action does, as a noun phrase for its notices.
+    fn subject(&self) -> String {
+        match self {
+            Self::Add { vm, .. } => format!("{vm} is not added"),
+            Self::Remove(vm) => format!("RAMpire is not removed from {vm}"),
+            Self::Restart(vm) => format!("{vm} is not restarted"),
+            Self::Upgrade(vm) => format!("{vm}'s guest service is not upgraded"),
+            Self::Set { target, .. } if target == crate::set::GLOBAL => {
+                "the global settings are not applied".to_owned()
+            }
+            Self::Set { target, .. } => format!("{target}'s settings are not applied"),
+            Self::Apply => "the draft is not applied".to_owned(),
+            Self::Recover(vm) => format!("{vm} is not recovered"),
+            Self::Init { .. } => "the host is not set up".to_owned(),
+        }
+    }
+
+    /// What was done, when the flow did it all.
+    fn done_text(&self) -> String {
+        match self {
+            Self::Add { vm, .. } => format!("{vm} is added and its guest service reports in"),
+            Self::Remove(vm) => format!("RAMpire is removed from {vm}"),
+            Self::Restart(vm) => format!("{vm} restarted onto its saved definition"),
+            Self::Upgrade(vm) => format!("{vm} runs this host's guest service build"),
+            Self::Set { target, .. } if target == crate::set::GLOBAL => {
+                "the global settings are saved and applied".to_owned()
+            }
+            Self::Set { target, .. } => format!("{target}'s settings are saved and applied"),
+            Self::Apply => "the draft is applied".to_owned(),
+            Self::Recover(vm) => format!("{vm} resumes resizing"),
+            Self::Init { .. } => "the host is set up and the controller runs".to_owned(),
         }
     }
 }

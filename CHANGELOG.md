@@ -11,6 +11,27 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 
 ## Unreleased
 
+- The TUI no longer reports **Done** for a task that wasn't. Answering No
+  to removing, restarting, upgrading, applying, recovering or setting up
+  ends **Not done**, and so does a task with a part left: settings saved
+  but not applied, a VM added or a guest upgraded whose guest service
+  hasn't reported in yet. Each says what was and wasn't changed, and the
+  **Done** notice says what was done.
+- `vm remove` puts the VM's settings back when the controller can't be
+  moved off it, so a failed removal leaves the VM managed as it was. A
+  failure after that says the VM is no longer managed and what is left.
+- A half-added VM's menu has **x**, which undoes the add
+  (`rampire vm remove VM`, which puts its old definition back).
+- A VM's settings form shows the draft's values, which saving changes,
+  not the applied copy's, and both settings forms say when the draft has
+  changes that aren't applied yet. It no longer refuses to open until
+  the VM's settings have been read.
+- **A** in the TUI applies the draft (`rampire apply`), for a settings
+  change saved but not applied.
+- **u** upgrades each marked VM's guest service, not the one under the
+  cursor alone; removing a VM from its live details goes back to the
+  list.
+
 - The TUI sets up a host that isn't set up yet: it opens **Set up this
   host** first, with the recommended host reserve filled in to keep or
   change and the pool it leaves shown as you type. `rampire init` asks

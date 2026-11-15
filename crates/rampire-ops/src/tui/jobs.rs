@@ -69,8 +69,8 @@ pub enum FlowEvent {
 pub enum Ended {
     /// It did what it was started for.
     Done(String),
-    /// It stopped without doing it, such as when No was answered; nothing
-    /// was changed.
+    /// It stopped without doing all of it: No was answered, or a part is
+    /// left. The text says what was and wasn't changed.
     NotDone(String),
 }
 

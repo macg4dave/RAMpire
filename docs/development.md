@@ -124,6 +124,11 @@ TUI's tasks through a channel (`tui/jobs.rs`). Tests answer it with
 `ui::Transcript`. TUI tests set `App::hold_tasks`, so a task is queued but
 its command never runs.
 
+What each control does, from the key to the flow it runs, with how each
+is tested and what is verified only on a deployment, is in
+[the TUI audit](tui-functional-audit.md); the workflows a person
+follows, in [TUI workflows](tui-workflows.md).
+
 Each screen and layer is drawn in tests into a buffer at 80x24, 120x40
 and 200x60, in every theme, at every colour depth and in both icon sets
 (`tui/views/mod.rs`), as part of the gate; keys are pressed through

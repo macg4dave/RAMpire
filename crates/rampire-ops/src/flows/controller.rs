@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use super::apply::apply;
+use super::Outcome;
 use crate::context::{applied_root, Context, SERVICE_ACCOUNT};
 use crate::process;
 use crate::ui::Ui;
@@ -46,13 +47,14 @@ pub fn is_set_up(context: &Context) -> bool {
 }
 
 /// `rampire init`, keeping `host_reserve` for the host: as given, else
-/// asked, with the recommended reserve as the answer to keep. Returns
-/// whether the applied configuration changed.
+/// asked, with the recommended reserve as the answer to keep.
+/// [`Outcome::Done`] when the host's settings are applied and the
+/// controller runs them.
 pub fn init(
     context: &Context,
     ui: &mut dyn Ui,
     host_reserve: Option<&str>,
-) -> Result<bool, String> {
+) -> Result<Outcome, String> {
     use crate::init;
     let connection = context.connection()?;
     let draft = context.draft();
@@ -109,7 +111,8 @@ pub fn init(
             .map_err(|error| format!("create {}: {error}", path.display()))?;
     }
     let global = draft.join(rampire_core::settings::GLOBAL_FILE);
-    if global.exists() {
+    let existed = global.exists();
+    if existed {
         ui.say(&format!(
             "{} already exists and is unchanged. Suggested from this host:\n\n{text}",
             global.display()
@@ -124,12 +127,23 @@ pub fn init(
     if suggestion.pool_bytes.is_none() {
         ui.say("This host has no memory left for a pool once its VMs have theirs.");
     }
-    let changed = apply(context, ui)?;
+    let applied = apply(context, ui)?;
+    if let Outcome::Declined(_) = applied {
+        return Ok(Outcome::Partly(format!(
+            "{} is written but not applied, so the controller isn't started: rampire apply applies it",
+            global.display()
+        )));
+    }
     // The unit runs the default configuration, so only that one starts it.
     if context.config.is_none() {
         start_controller(ui)?;
     }
-    Ok(changed)
+    Ok(match applied {
+        Outcome::AlreadySo(_) if existed => {
+            Outcome::AlreadySo("this host is set up already; its settings are unchanged".to_owned())
+        }
+        _ => Outcome::Done,
+    })
 }
 
 /// Enable and start the controller once a configuration is applied, so
@@ -165,7 +179,12 @@ pub fn controller_unit() -> String {
 
 /// `rampire recover`: clear a VM's latch once a person has checked it is
 /// safe to resume.
-pub fn recover(context: &Context, ui: &mut dyn Ui, vm: &str, reason: &str) -> Result<(), String> {
+pub fn recover(
+    context: &Context,
+    ui: &mut dyn Ui,
+    vm: &str,
+    reason: &str,
+) -> Result<Outcome, String> {
     let unit = controller_unit();
     let config = context.running();
     let config = config
@@ -217,7 +236,9 @@ pub fn recover(context: &Context, ui: &mut dyn Ui, vm: &str, reason: &str) -> Re
         "Stop {unit}, clear {vm}'s latch and start it again?"
     ))? {
         ui.say("nothing changed");
-        return Ok(());
+        return Ok(Outcome::Declined(format!(
+            "nothing was changed: {vm} stays latched"
+        )));
     }
     systemctl("stop", &unit)?;
     let cleared = clear_latch();
@@ -231,7 +252,7 @@ pub fn recover(context: &Context, ui: &mut dyn Ui, vm: &str, reason: &str) -> Re
     started?;
     ui.say(&format!("{vm}: latch cleared; {unit} started"));
     crate::audit::record(context, "recover", Some(vm), &[("reason", reason)]);
-    Ok(())
+    Ok(Outcome::Done)
 }
 
 pub fn systemctl(action: &str, unit: &str) -> Result<(), String> {

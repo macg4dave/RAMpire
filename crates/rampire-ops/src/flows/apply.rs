@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use rampire_host::config::HostSettings;
 
 use super::controller::{controller_unit, systemctl};
+use super::Outcome;
 use crate::context::{applied_root, Context, TempDir, RUNNING_COPY, SERVICE_ACCOUNT};
 use crate::process;
 use crate::ui::Ui;
@@ -120,18 +121,19 @@ pub fn diff(context: &Context, ui: &mut dyn Ui) -> Result<(), String> {
     Ok(())
 }
 
-/// `rampire apply`. Returns whether the applied configuration changed.
-pub fn apply(context: &Context, ui: &mut dyn Ui) -> Result<bool, String> {
+/// `rampire apply`: [`Outcome::Done`] when the applied configuration
+/// changed.
+pub fn apply(context: &Context, ui: &mut dyn Ui) -> Result<Outcome, String> {
     apply_asking(context, ui, true)
 }
 
 /// `apply` for a change the person already agreed to, such as `vm add`'s:
 /// the difference isn't shown and nothing is asked again.
-pub fn apply_agreed(context: &Context, ui: &mut dyn Ui) -> Result<bool, String> {
+pub fn apply_agreed(context: &Context, ui: &mut dyn Ui) -> Result<Outcome, String> {
     apply_asking(context, ui, false)
 }
 
-fn apply_asking(context: &Context, ui: &mut dyn Ui, ask: bool) -> Result<bool, String> {
+fn apply_asking(context: &Context, ui: &mut dyn Ui, ask: bool) -> Result<Outcome, String> {
     let root = applied_root();
     let staged = crate::applied::staging(root)?;
     let result = stage_and_apply(context, ui, root, &staged, ask);
@@ -141,14 +143,13 @@ fn apply_asking(context: &Context, ui: &mut dyn Ui, ask: bool) -> Result<bool, S
     result
 }
 
-/// Returns whether the applied configuration changed.
 fn stage_and_apply(
     context: &Context,
     ui: &mut dyn Ui,
     root: &Path,
     staged: &Path,
     ask: bool,
-) -> Result<bool, String> {
+) -> Result<Outcome, String> {
     let draft = context.draft();
     // Each running VM's recorded setup is brought up to date first, so
     // what is checked is the VMs as they are now.
@@ -165,8 +166,9 @@ fn stage_and_apply(
     let current = crate::applied::current(root)?;
     if let Some(current) = &current {
         if crate::applied::same(current, staged)? {
-            ui.say("nothing to apply: the draft is what the controller runs");
-            return Ok(false);
+            let same = "nothing to apply: the draft is what the controller runs";
+            ui.say(same);
+            return Ok(Outcome::AlreadySo(same.to_owned()));
         }
     }
     let unit = controller_unit();
@@ -175,7 +177,9 @@ fn stage_and_apply(
         show_difference(ui, current.as_deref(), staged)?;
         if !ui.confirm(&format!("Apply this{}?", refresh.question(&unit)))? {
             ui.say("nothing changed");
-            return Ok(false);
+            return Ok(Outcome::Declined(
+                "nothing was applied; the draft keeps its changes for rampire apply".to_owned(),
+            ));
         }
     }
     secure(staged)?;
@@ -203,7 +207,7 @@ fn stage_and_apply(
             refreshed,
         },
     )?;
-    Ok(true)
+    Ok(Outcome::Done)
 }
 
 /// `rampire rollback`: back to the applied copy before the current one.
