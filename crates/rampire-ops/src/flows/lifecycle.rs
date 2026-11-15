@@ -10,6 +10,7 @@ use super::apply::{apply, running_copy};
 use crate::context::{applied_root, Context, TempDir, DOMAIN_BACKUPS, PARKED_DIRECTORY};
 use crate::process;
 use crate::ui::Ui;
+use rampire_host::attestation::AnswerSource;
 
 /// `vm add`'s options beside the VM's name.
 #[derive(Debug, Clone, Default)]
@@ -180,6 +181,15 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     // the questions. Say so before anything is asked or written.
     other_vms_pass(context, &libvirt, ui, name)?;
 
+    // A new review's questions come first, so nothing is asked after the
+    // wait for the VM to start.
+    let new_review = !resuming && !parked.exists() && options.review.is_none();
+    let answers = if new_review {
+        ask_review(ui, &inspection, name)?
+    } else {
+        Vec::new()
+    };
+
     // A VM's setup is recorded while it runs, on the definition it was
     // started with: a changed definition needs a cold restart first. It
     // starts before its review is written, so its guest agent can give the
@@ -218,21 +228,19 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     } else if parked.exists() {
         restore_parked(ui, &directory, &parked, &settings_path, &alias, options)?;
     } else {
-        // A VM just started needs a moment before its guest agent answers.
-        let agent_wait = if started {
-            std::time::Duration::from_secs(90)
+        let review = if new_review {
+            // A VM just started needs a moment before its guest agent answers.
+            let agent_wait = if started {
+                std::time::Duration::from_secs(90)
+            } else {
+                std::time::Duration::ZERO
+            };
+            let kernel = kernel_release(ui, &libvirt, options, agent_wait)?;
+            Some((answers, kernel))
         } else {
-            std::time::Duration::ZERO
+            None
         };
-        write_vm_settings(
-            ui,
-            &libvirt,
-            &directory,
-            &inspection,
-            &alias,
-            options,
-            agent_wait,
-        )?;
+        write_vm_settings(ui, &directory, &inspection, &alias, options, review)?;
     }
     if !resuming {
         crate::audit::record(context, "vm_add", Some(name), &[]);
@@ -388,70 +396,94 @@ fn restore_parked(
     Ok(())
 }
 
-/// Write a new VM's settings, with its review profile: the one named, or
-/// one written from the definition and a person's answers.
-fn write_vm_settings(
+/// A new review's yes-or-no answers and the guest's kernel release, each
+/// with where it came from.
+type NewReview = (
+    Vec<(&'static str, bool, AnswerSource)>,
+    (String, AnswerSource),
+);
+
+/// The review's yes-or-no answers: read from the definition where it shows
+/// them, asked otherwise. One that isn't true means the VM can't be managed.
+fn ask_review(
+    ui: &mut dyn Ui,
+    inspection: &crate::vm::Inspection,
+    name: &str,
+) -> Result<Vec<(&'static str, bool, AnswerSource)>, String> {
+    use crate::vm;
+    let mut answers = Vec::new();
+    for detected in vm::review_answers(inspection, vm::host_has_rdma()) {
+        let (value, source) = match detected.answer {
+            Some(answer) => answer,
+            None => (
+                ui.review(vm::question_text(detected.question))?,
+                AnswerSource::Confirmed,
+            ),
+        };
+        if !value {
+            return Err(format!(
+                "{name} can't be managed: {}; nothing was added",
+                vm::unsafe_text(detected.question)
+            ));
+        }
+        answers.push((detected.question, value, source));
+    }
+    Ok(answers)
+}
+
+/// The guest's kernel release: given, else read from its QEMU guest agent,
+/// waiting up to `agent_wait`, else asked.
+fn kernel_release(
     ui: &mut dyn Ui,
     libvirt: &crate::attest::Libvirt,
+    options: &AddOptions,
+    agent_wait: std::time::Duration,
+) -> Result<(String, AnswerSource), String> {
+    let name = options.vm.as_str();
+    match options.kernel.as_deref() {
+        Some(kernel) if is_kernel_release(kernel) => {
+            Ok((kernel.to_owned(), AnswerSource::Confirmed))
+        }
+        Some(kernel) => Err(format!(
+            "--kernel {kernel} is not a kernel release, such as 6.12.0-1-amd64"
+        )),
+        None => match agent_kernel(ui, libvirt, name, agent_wait) {
+            Some(kernel) => {
+                ui.say(&format!(
+                    "{name} runs Linux {kernel} (read from its guest agent)"
+                ));
+                Ok((kernel, AnswerSource::Detected))
+            }
+            None => Ok((ask_kernel(ui, name)?, AnswerSource::Confirmed)),
+        },
+    }
+}
+
+/// Write a new VM's settings, with its review profile: the one named, or
+/// one written from `review`.
+fn write_vm_settings(
+    ui: &mut dyn Ui,
     directory: &Path,
     inspection: &crate::vm::Inspection,
     alias: &str,
     options: &AddOptions,
-    agent_wait: std::time::Duration,
+    review: Option<NewReview>,
 ) -> Result<(), String> {
     use crate::vm;
     use rampire_core::settings;
     let name = options.vm.as_str();
     let (settings_path, _) = settings_paths(directory, name)?;
     let settings_path = settings_path.as_path();
-    let review = match options.review.as_deref() {
-        Some(profile) => {
+    let review = match (options.review.as_deref(), review) {
+        (Some(profile), _) => {
             let path = directory
                 .join(crate::applied::REVIEW_DIRECTORY)
                 .join(format!("{profile}.toml"));
             rampire_host::attestation::read_review(&path)?;
             profile.to_owned()
         }
-        None => {
-            use rampire_host::attestation::AnswerSource;
-            let mut answers = Vec::new();
-            for detected in vm::review_answers(inspection, vm::host_has_rdma()) {
-                let (value, source) = match detected.answer {
-                    Some(answer) => answer,
-                    None => (
-                        ui.review(vm::question_text(detected.question))?,
-                        AnswerSource::Confirmed,
-                    ),
-                };
-                if !value {
-                    return Err(format!(
-                        "{name} can't be managed: {} is not true for it",
-                        detected.question
-                    ));
-                }
-                answers.push((detected.question, value, source));
-            }
-            // The kernel release: given, else read from a running guest's
-            // QEMU guest agent, else asked.
-            let (kernel, source) = match options.kernel.as_deref() {
-                Some(kernel) if is_kernel_release(kernel) => {
-                    (kernel.to_owned(), AnswerSource::Confirmed)
-                }
-                Some(kernel) => {
-                    return Err(format!(
-                        "--kernel {kernel} is not a kernel release, such as 6.12.0-1-amd64"
-                    ))
-                }
-                None => match agent_kernel(ui, libvirt, name, agent_wait) {
-                    Some(kernel) => {
-                        ui.say(&format!(
-                            "{name} runs Linux {kernel} (read from its guest agent)"
-                        ));
-                        (kernel, AnswerSource::Detected)
-                    }
-                    None => (ask_kernel(ui, name)?, AnswerSource::Confirmed),
-                },
-            };
+        (None, None) => return Err(format!("{name} has no review to write")),
+        (None, Some((answers, (kernel, source)))) => {
             let text = vm::review_toml(
                 name,
                 &answers,
