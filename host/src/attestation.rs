@@ -296,8 +296,19 @@ impl CompatibilityAttestation {
             .iter()
             .find(|(_, attested, observed)| attested != observed)
         {
+            // A digest is told apart by its start; all 64 characters only
+            // bury the message.
+            let short = |value: &str| -> String {
+                if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    value[..12].to_owned()
+                } else {
+                    value.to_owned()
+                }
+            };
             return Err(format!(
-                "live compatibility evidence drifted: {field} (attested {attested}, live {observed})"
+                "live compatibility evidence drifted: {field} changed since it was attested ({} → {})",
+                short(attested),
+                short(observed)
             ));
         }
         Ok(())

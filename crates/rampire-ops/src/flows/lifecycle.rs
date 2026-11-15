@@ -175,28 +175,13 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         .clone()
         .ok_or_else(|| format!("{name}'s virtio-mem device has no alias; nothing was added"))?;
 
-    // A VM taken out with `vm remove` comes back with the settings it had.
-    if resuming {
-        // Written by the earlier run; kept as it is.
-    } else if parked.exists() {
-        restore_parked(ui, &directory, &parked, &settings_path, &alias, options)?;
-    } else {
-        write_vm_settings(
-            ui,
-            &libvirt,
-            &directory,
-            &settings_path,
-            &inspection,
-            &alias,
-            options,
-        )?;
-    }
-    if !resuming {
-        crate::audit::record(context, "vm_add", Some(name), &[]);
-    }
+    // `apply` checks every VM: one that fails would stop it at the end, after
+    // the questions. Say so before anything is asked or written.
+    other_vms_pass(context, &libvirt, ui, name)?;
 
     // A VM is attested while it runs, on the definition it was started
-    // with: a changed definition needs a cold restart first.
+    // with: a changed definition needs a cold restart first. It starts
+    // before its review is written, so its guest agent can give the kernel.
     let running = libvirt.state(name)? == "running";
     // The definition may have been fixed by an earlier run that stopped
     // before the restart: a running VM without the device or the channel
@@ -212,17 +197,137 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         )),
         (false, _) => Some(format!("{name} is not running. Start it now, then apply?")),
     };
-    if let Some(question) = question {
-        if !ui.confirm(&question)? {
-            ui.say(&format!(
-                "when {name} runs its saved definition, run rampire apply"
-            ));
-            return Ok(false);
+    let asked = question.is_some();
+    let started = match question {
+        None => false,
+        Some(question) => {
+            let start = ui.confirm(&question)?;
+            if start {
+                crate::attest::cold_restart(name, &libvirt, std::time::Duration::from_secs(300))?;
+                ui.say(&format!("{name} started"));
+            }
+            start
         }
-        crate::attest::cold_restart(name, &libvirt, std::time::Duration::from_secs(300))?;
-        ui.say(&format!("{name} started"));
+    };
+
+    // A VM taken out with `vm remove` comes back with the settings it had.
+    if resuming {
+        // Written by the earlier run; kept as it is.
+    } else if parked.exists() {
+        restore_parked(ui, &directory, &parked, &settings_path, &alias, options)?;
+    } else {
+        // A VM just started needs a moment before its guest agent answers.
+        let agent_wait = if started {
+            std::time::Duration::from_secs(90)
+        } else {
+            std::time::Duration::ZERO
+        };
+        write_vm_settings(
+            ui,
+            &libvirt,
+            &directory,
+            &inspection,
+            &alias,
+            options,
+            agent_wait,
+        )?;
+    }
+    if !resuming {
+        crate::audit::record(context, "vm_add", Some(name), &[]);
+    }
+    if asked && !started {
+        ui.say(&format!(
+            "when {name} runs its saved definition, run rampire apply"
+        ));
+        return Ok(false);
     }
     apply(context, ui)
+}
+
+/// Fail, saying why, when a VM other than `name` would fail `apply`'s
+/// checks. VMs `apply` would attest are attested first, as it does.
+fn other_vms_pass(
+    context: &Context,
+    libvirt: &crate::attest::Libvirt,
+    ui: &mut dyn Ui,
+    name: &str,
+) -> Result<(), String> {
+    let draft = context.draft();
+    for vm in crate::attest::attest_missing(&draft, libvirt)? {
+        ui.say(&format!("attested {vm}, which had no attestation"));
+    }
+    let mut report = crate::check::run(&draft)?;
+    report
+        .vms
+        .retain(|vm| vm.vm_name != name && vm.problem.is_some());
+    if report.vms.is_empty() {
+        return Ok(());
+    }
+    ui.say(crate::check::text(&report, true).trim_end());
+    Err(format!(
+        "applying checks every VM, so fix these first; nothing was asked or added for {name}"
+    ))
+}
+
+/// Ask for the kernel release until the answer is one; an empty answer
+/// stops.
+fn ask_kernel(ui: &mut dyn Ui, name: &str) -> Result<String, String> {
+    loop {
+        let answer = ui.text(&format!(
+            "{name}'s guest agent didn't answer. Its kernel release (uname -r in the guest):"
+        ))?;
+        let answer = answer.trim();
+        if answer.is_empty() {
+            return Err(format!(
+                "a review needs {name}'s kernel release; nothing was added"
+            ));
+        }
+        if is_kernel_release(answer) {
+            return Ok(answer.to_owned());
+        }
+        ui.say(&format!(
+            "{answer} is not a kernel release, such as 6.12.0-1-amd64"
+        ));
+    }
+}
+
+/// Whether `text` looks like a kernel release (`6.12.0-1-amd64`), not a
+/// stray answer.
+fn is_kernel_release(text: &str) -> bool {
+    text.starts_with(|c: char| c.is_ascii_digit())
+        && text.contains('.')
+        && !text.contains(char::is_whitespace)
+}
+
+/// The guest's kernel release from its QEMU guest agent, waiting up to
+/// `wait` for the agent to answer.
+fn agent_kernel(
+    ui: &mut dyn Ui,
+    libvirt: &crate::attest::Libvirt,
+    name: &str,
+    wait: std::time::Duration,
+) -> Option<String> {
+    let deadline = std::time::Instant::now() + wait;
+    let mut said = false;
+    loop {
+        let kernel = libvirt
+            .virsh(&[
+                "qemu-agent-command",
+                name,
+                r#"{"execute":"guest-get-osinfo"}"#,
+            ])
+            .ok()
+            .as_deref()
+            .and_then(crate::vm::kernel_release_from_osinfo);
+        if kernel.is_some() || std::time::Instant::now() >= deadline {
+            return kernel;
+        }
+        if !said {
+            ui.say(&format!("waiting for {name}'s guest agent"));
+            said = true;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
 }
 
 fn path_text(path: &Path) -> Result<String, String> {
@@ -286,14 +391,16 @@ fn write_vm_settings(
     ui: &mut dyn Ui,
     libvirt: &crate::attest::Libvirt,
     directory: &Path,
-    settings_path: &Path,
     inspection: &crate::vm::Inspection,
     alias: &str,
     options: &AddOptions,
+    agent_wait: std::time::Duration,
 ) -> Result<(), String> {
     use crate::vm;
     use rampire_core::settings;
     let name = options.vm.as_str();
+    let (settings_path, _) = settings_paths(directory, name)?;
+    let settings_path = settings_path.as_path();
     let review = match options.review.as_deref() {
         Some(profile) => {
             let path = directory
@@ -324,28 +431,24 @@ fn write_vm_settings(
             // The kernel release: given, else read from a running guest's
             // QEMU guest agent, else asked.
             let (kernel, source) = match options.kernel.as_deref() {
-                Some(kernel) => (kernel.to_owned(), AnswerSource::Confirmed),
-                None => match libvirt
-                    .virsh(&["qemu-agent-command", name, r#"{"execute":"guest-get-osinfo"}"#])
-                    .ok()
-                    .as_deref()
-                    .and_then(vm::kernel_release_from_osinfo)
-                {
+                Some(kernel) if is_kernel_release(kernel) => {
+                    (kernel.to_owned(), AnswerSource::Confirmed)
+                }
+                Some(kernel) => {
+                    return Err(format!(
+                        "--kernel {kernel} is not a kernel release, such as 6.12.0-1-amd64"
+                    ))
+                }
+                None => match agent_kernel(ui, libvirt, name, agent_wait) {
                     Some(kernel) => {
                         ui.say(&format!(
                             "{name} runs Linux {kernel} (read from its guest agent)"
                         ));
                         (kernel, AnswerSource::Detected)
                     }
-                    None => (
-                        ui.text("The guest's kernel release (uname -r in the VM; its guest agent didn't answer):")?,
-                        AnswerSource::Confirmed,
-                    ),
+                    None => (ask_kernel(ui, name)?, AnswerSource::Confirmed),
                 },
             };
-            if kernel.is_empty() {
-                return Err("a review needs the guest's kernel release".to_owned());
-            }
             let text = vm::review_toml(
                 name,
                 &answers,
@@ -767,6 +870,31 @@ mod tests {
         assert!(!parked.exists());
         // The shared profile it named is kept: vm add didn't write it for web.
         assert!(draft.path().join("reviews/linux-standard.toml").exists());
+    }
+
+    #[test]
+    fn a_kernel_release_is_told_from_a_stray_answer() {
+        for release in [
+            "6.12.0-1-amd64",
+            "6.12.86+deb13-amd64",
+            "6.12.0-55.el10.x86_64",
+        ] {
+            assert!(is_kernel_release(release), "{release}");
+        }
+        for answer in ["w", "y", "", "linux 6.12", "6", "six.twelve"] {
+            assert!(!is_kernel_release(answer), "{answer}");
+        }
+    }
+
+    #[test]
+    fn asking_for_the_kernel_asks_again_after_a_stray_answer() {
+        let mut ui = Transcript::answering(&["w", "6.12.0-1-amd64"]);
+        assert_eq!(ask_kernel(&mut ui, "web").unwrap(), "6.12.0-1-amd64");
+        assert!(ui
+            .lines()
+            .contains(&"w is not a kernel release, such as 6.12.0-1-amd64".to_owned()));
+        let mut ui = Transcript::answering(&[""]);
+        assert!(ask_kernel(&mut ui, "web").is_err());
     }
 
     #[test]

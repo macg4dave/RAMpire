@@ -637,20 +637,16 @@ pub fn review_answers(inspection: &Inspection, host_has_rdma: bool) -> Vec<Detec
 pub fn question_text(question: &str) -> &'static str {
     match question {
         "workload_reviewed" => {
-            "RAMpire will add memory to this VM while it runs, and take back memory it isn't using. Most programs are fine with that; ones that grab a fixed amount at start-up or lock memory in place (a database or Java service tuned to a set size, some game servers) may not be. Are the programs in this VM fine with it?"
+            "Can this VM's programs run with memory that grows and shrinks (none sized once at start-up or locking its memory)?"
         }
-        "no_rdma_migration" => {
-            "This host has RDMA network hardware. Live migration over RDMA can't move a VM whose memory RAMpire resizes. Is this VM never live-migrated over RDMA?"
-        }
+        "no_rdma_migration" => "Is this VM never live-migrated over RDMA?",
         "no_vfio_nvme" => {
-            "None of the VM's passed-through devices is an NVMe drive, and none pins its memory?"
+            "Is none of the VM's passed-through devices an NVMe drive or one that pins memory?"
         }
         "no_unsupported_vhost_user" => {
-            "Do the VM's vhost-user devices all support memory being added and removed?"
+            "Do all the VM's vhost-user devices support adding and removing memory?"
         }
-        "balloon_resize_inactive" => {
-            "The VM has a memory balloon, which would fight RAMpire over its size. Is the balloon never used to resize it? (--fix-xml turns it off instead.)"
-        }
+        "balloon_resize_inactive" => "Is the VM's memory balloon never used to resize it?",
         _ => "Is this true for the VM?",
     }
 }
