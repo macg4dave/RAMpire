@@ -773,7 +773,10 @@ mod tests {
     fn a_vms_backups_are_its_own() {
         let backup = backup_name("web", 1_700_000_000_000);
         assert!(is_backup_of(&backup, "web"));
-        assert!(!is_backup_of(&backup_name("web-2", 1_700_000_000_000), "web"));
+        assert!(!is_backup_of(
+            &backup_name("web-2", 1_700_000_000_000),
+            "web"
+        ));
         assert!(!is_backup_of("web-notes.xml", "web"));
         assert!(!is_backup_of("web-.xml", "web"));
         assert!(!is_backup_of(&backup, "we"));
