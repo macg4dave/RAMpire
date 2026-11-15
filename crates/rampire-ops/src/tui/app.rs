@@ -149,25 +149,6 @@ pub struct ErrorEntry {
     pub error: String,
 }
 
-/// A short notice in the corner, gone after a while.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Toast {
-    pub text: String,
-    pub tone: Tone,
-    pub shown: Instant,
-}
-
-impl Toast {
-    /// How long it stays: longer for what needs reading.
-    pub fn lasts(&self) -> Duration {
-        match self.tone {
-            Tone::Bad => Duration::from_secs(10),
-            Tone::Warn => Duration::from_secs(6),
-            _ => Duration::from_secs(4),
-        }
-    }
-}
-
 /// What a command palette item does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -285,8 +266,8 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub overlay: Option<Overlay>,
     pub errors: Vec<ErrorEntry>,
-    /// Short notices in the corner, newest last.
-    pub toasts: Vec<Toast>,
+    /// Notices sliding in at the bottom right.
+    pub notices: super::notify::Notify,
     /// The command palette, while it is open.
     pub palette: Option<CommandPalette>,
     pub quit: bool,
@@ -318,7 +299,7 @@ impl App {
             dialog: None,
             overlay: None,
             errors: Vec::new(),
-            toasts: Vec::new(),
+            notices: super::notify::Notify::default(),
             palette: None,
             quit: false,
             quit_armed: false,
@@ -389,16 +370,9 @@ impl App {
             .collect()
     }
 
-    /// Show a short notice in the corner. At most four are shown.
+    /// Show a short notice at the bottom right.
     pub fn notify(&mut self, text: impl Into<String>, tone: Tone) {
-        self.toasts.push(Toast {
-            text: text.into(),
-            tone,
-            shown: Instant::now(),
-        });
-        if self.toasts.len() > 4 {
-            self.toasts.remove(0);
-        }
+        self.notices.push(super::notify::Message::new(text, tone));
     }
 
     /// Open the command palette, with what can be done now.
@@ -550,8 +524,7 @@ impl App {
     /// Called every turn of the screen's loop: reads the host's VMs again
     /// when they are old.
     pub fn tick(&mut self) {
-        self.toasts
-            .retain(|toast| toast.shown.elapsed() < toast.lasts());
+        self.notices.tick(Instant::now());
         let stale = self
             .inventory_read
             .is_none_or(|read| read.elapsed() >= INVENTORY_EVERY);
@@ -1492,16 +1465,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn toasts_go_after_a_while_and_errors_stay_longest() {
+    fn notices_go_after_a_while_and_errors_stay_longest() {
         let (mut app, _rx) = app();
         app.notify("done", Tone::Good);
         app.notify("broke", Tone::Bad);
-        assert_eq!(app.toasts.len(), 2);
-        app.toasts[0].shown -= Duration::from_secs(5);
-        app.toasts[1].shown -= Duration::from_secs(5);
+        assert_eq!(app.notices.messages.len(), 2);
+        for message in &mut app.notices.messages {
+            message.shown -= Duration::from_secs(5);
+        }
         app.tick();
-        assert_eq!(app.toasts.len(), 1);
-        assert_eq!(app.toasts[0].text, "broke");
+        assert_eq!(app.notices.messages.len(), 1);
+        assert_eq!(app.notices.messages[0].content, "broke");
     }
 
     #[test]

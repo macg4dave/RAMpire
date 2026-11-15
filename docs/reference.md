@@ -41,8 +41,8 @@ fits that VM:
 | Half-added | `a` finish adding it; `o` its doctor; `f` forget it |
 
 A menu's letters also work from the list and from a VM's details,
-without opening the menu. What an action did shows briefly in the top
-right corner; an error stays longer, and in the errors list (`e`).
+without opening the menu. What an action did slides in briefly at the
+bottom right; an error stays longer, and in the errors list (`e`).
 
 | Key | Does |
 |---|---|

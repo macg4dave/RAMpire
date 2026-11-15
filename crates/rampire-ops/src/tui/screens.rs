@@ -64,7 +64,8 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &App) {
     if let Some(palette) = &app.palette {
         command_palette(body, buf, theme, palette);
     }
-    toasts(body, buf, theme, &app.toasts);
+    app.notices
+        .render(area, buf, theme, std::time::Instant::now());
 }
 
 /// The command palette: a search box near the top, and what matches it,
@@ -141,47 +142,6 @@ fn command_palette(
     Paragraph::new(lines)
         .style(theme.raised())
         .render(inner, buf);
-}
-
-/// The notices in the top right corner, newest at the bottom.
-fn toasts(area: Rect, buf: &mut Buffer, theme: &Theme, toasts: &[super::app::Toast]) {
-    let mut y = area.y + 1;
-    for toast in toasts {
-        let icon = match toast.tone {
-            Tone::Bad | Tone::Warn => Icon::Problem,
-            Tone::Good => Icon::Ok,
-            _ => Icon::Running,
-        };
-        let text = widgets::fit(
-            &toast.text,
-            (area.width as usize).saturating_sub(12).min(56),
-        );
-        let width = (Span::raw(text.as_str()).width() as u16 + 6).min(area.width);
-        if y + 3 > area.bottom() {
-            break;
-        }
-        let rect = Rect {
-            x: area.right().saturating_sub(width + 1),
-            y,
-            width,
-            height: 3,
-        };
-        Clear.render(rect, buf);
-        let block = ratatui::widgets::Block::new()
-            .borders(ratatui::widgets::Borders::ALL)
-            .border_set(theme.border_set())
-            .border_style(theme.tone(toast.tone))
-            .style(theme.raised());
-        let inner = block.inner(rect);
-        block.render(rect, buf);
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!(" {} ", theme.icon(icon)), theme.tone(toast.tone)),
-            Span::styled(text, theme.value()),
-        ]))
-        .style(theme.raised())
-        .render(inner, buf);
-        y += 3;
-    }
 }
 
 fn header_bar(area: Rect, buf: &mut Buffer, app: &App) {
@@ -837,10 +797,11 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
                     // A yes-or-no question as buttons: No is the default.
                     if !matches!(pending.question, Question::Text(_)) {
                         lines.push(Line::default());
+                        let half = " ".repeat((inner.width as usize / 2).saturating_sub(10) / 2);
                         lines.push(Line::from(vec![
-                            Span::styled("   ", theme.raised()),
+                            Span::styled(half.clone(), theme.raised()),
                             Span::styled("  n  No  ", theme.selected()),
-                            Span::styled("   ", theme.raised()),
+                            Span::styled(format!("{half}{half}"), theme.raised()),
                             Span::styled("  y  Yes  ", theme.chip()),
                         ]));
                     }
@@ -1292,6 +1253,8 @@ mod tests {
         let mut app = app();
         app.open_palette();
         app.notify("ran: rampire set vm0 priority=110", Tone::Good);
+        // As it shows once it has slid in.
+        app.notices.messages[0].shown -= std::time::Duration::from_secs(1);
         for (width, height) in SIZES {
             let text = text(&app, width, height);
             assert!(text.contains("COMMANDS"), "{text}");

@@ -16,6 +16,15 @@ pub const BINARIES: [(&str, &str); 2] = [
     ("rampire-guest-linux", "rampire-guest.THIRD_PARTY_LICENSES"),
 ];
 
+/// Code copied into the repository from other projects, by the binary it
+/// is built into: the project, where its code is, and its license text with
+/// the project's copyright notice. THIRD_PARTY_NOTICES.md records each.
+const COPIED: [(&str, &str, &str); 1] = [(
+    "rampire",
+    "Yazi, https://github.com/sxyazi/yazi, at commit d5e4beb6b5212c28d1026d8e7d4ae985dcf174cb: its notifications, adapted in crates/rampire-ops/src/tui/notify.rs",
+    "LICENSES/MIT.txt",
+)];
+
 /// The platform the packages are built for: only its dependencies count.
 const PLATFORM: &str = "x86_64-unknown-linux-gnu";
 
@@ -37,7 +46,8 @@ pub fn write(repo: &Path, output: &Path) -> Result<(), String> {
     for (root, file) in BINARIES {
         let crates = dependencies(&metadata, root)?;
         let mut missing = Vec::new();
-        let text = render(root, &crates, &mut missing)?;
+        let mut text = render(root, &crates, &mut missing)?;
+        text.push_str(&copied(repo, root)?);
         if !missing.is_empty() {
             return Err(format!(
                 "these crates ship no license file, so their notices can't be included: {}",
@@ -179,6 +189,26 @@ fn is_license_name(name: &str) -> bool {
     .any(|prefix| upper.starts_with(prefix))
 }
 
+/// The notices of code copied into `root`'s source, each with its license.
+fn copied(repo: &Path, root: &str) -> Result<String, String> {
+    let mut text = String::new();
+    for (binary, what, license) in COPIED {
+        if binary != root {
+            continue;
+        }
+        let path = repo.join(license);
+        let content = std::fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        text.push_str(&format!(
+            "\n{}\nCode copied into {root}: {what}\n{}\n\n{}\n",
+            "=".repeat(78),
+            "=".repeat(78),
+            content.trim_end()
+        ));
+    }
+    Ok(text)
+}
+
 fn render(root: &str, crates: &[Crate], missing: &mut Vec<String>) -> Result<String, String> {
     let mut text = format!(
         "Third-party software built into {root}\n\n\
@@ -223,6 +253,23 @@ fn render(root: &str, crates: &[Crate], missing: &mut Vec<String>) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copied_code_carries_its_projects_notice() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let host = copied(&repo, "rampire").expect("the host's copied code");
+        assert!(host.contains("Copyright (c) 2023 - sxyazi"), "{host}");
+        assert!(
+            host.contains("crates/rampire-ops/src/tui/notify.rs"),
+            "{host}"
+        );
+        assert_eq!(copied(&repo, "rampire-guest-linux").unwrap(), "");
+        // Every file named here says where it came from.
+        let notify =
+            std::fs::read_to_string(repo.join("crates/rampire-ops/src/tui/notify.rs")).unwrap();
+        assert!(notify.starts_with("// Copyright (c) 2023 - sxyazi"));
+        assert!(notify.contains("SPDX-License-Identifier: MIT"));
+    }
 
     #[test]
     fn license_files_are_found_by_their_usual_names() {

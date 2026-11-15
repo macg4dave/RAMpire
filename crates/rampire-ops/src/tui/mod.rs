@@ -12,6 +12,7 @@ pub mod actions;
 pub mod app;
 pub mod jobs;
 pub mod live;
+pub mod notify;
 pub mod pool;
 pub mod screens;
 pub mod theme;
@@ -117,6 +118,8 @@ fn run_app(context: Context) -> Result<(), String> {
             if hung_up() {
                 return Ok(());
             }
+            // Notices slide in and out, so keep drawing while any show.
+            dirty |= app.notices.busy();
             if dirty {
                 terminal
                     .draw(|frame| screens::draw(frame, &app))
@@ -124,7 +127,8 @@ fn run_app(context: Context) -> Result<(), String> {
                 dirty = false;
             }
             // Short polls: keys answer at once, and readings show as they come.
-            if event::poll(Duration::from_millis(100))
+            let wait = if app.notices.busy() { 40 } else { 100 };
+            if event::poll(Duration::from_millis(wait))
                 .map_err(|error| format!("read a key: {error}"))?
             {
                 if let Event::Key(key) =
