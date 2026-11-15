@@ -61,7 +61,7 @@ pub fn render(
     events_panel(journal, buf, theme, snapshot);
 }
 
-fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
+pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
     let block = panel(
         theme,
         Icon::Pool,
@@ -182,7 +182,7 @@ fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapsh
 }
 
 /// GiB to one place, for the dashboard's summary lines.
-fn one_place(bytes: u64) -> String {
+pub(crate) fn one_place(bytes: u64) -> String {
     format!("{:.1} GiB", bytes as f64 / GIB as f64)
 }
 
@@ -297,7 +297,7 @@ fn vm_table(
         };
         Paragraph::new(widgets::line(
             theme,
-            "RAMpire manages no VMs yet: press 3 to add one",
+            "RAMpire manages no VMs yet: add one with sudo rampire, or rampire vm add VM --fix-xml",
             Tone::Dim,
         ))
         .render(inner, buf);
@@ -305,7 +305,7 @@ fn vm_table(
 }
 
 /// The guest's in-use meter and its pending request.
-fn guest_cells<'a>(
+pub(crate) fn guest_cells<'a>(
     theme: &Theme,
     guest: Option<&RawTelemetryEnvelope>,
     now_unix_millis: u64,
@@ -372,7 +372,7 @@ fn history_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSna
     .render(inner, buf);
 }
 
-fn events_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
+pub(crate) fn events_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
     let block = panel(theme, Icon::Pool, "POOL EVENTS", "every VM, newest first");
     let inner = block.inner(area);
     block.render(area, buf);
@@ -525,7 +525,7 @@ pub(crate) mod tests {
         empty.events = Err("journal unreadable".to_owned());
         render(area, &mut buf, &theme, &empty, None);
         let text = widgets::plain_text(&buf);
-        assert!(text.contains("press 3 to add one"), "{text}");
+        assert!(text.contains("RAMpire manages no VMs yet"), "{text}");
         assert!(text.contains("journal unreadable"), "{text}");
     }
 }

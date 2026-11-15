@@ -7,11 +7,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
-use super::app::{App, Dialog, Loaded, Overlay, Screen};
+use super::app::{App, Dialog, Entry, Loaded, Overlay, View};
 use super::jobs::Question;
 use super::theme::{Icon, Theme};
 use super::widgets::{self, panel};
-use crate::reports::{Management, Published};
+use crate::reports::Published;
 use crate::tone::Tone;
 
 /// The smallest terminal the TUI draws in.
@@ -39,22 +39,18 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &App) {
             .render(area, buf);
         return;
     }
-    let [header, tabs, body, status] = Layout::vertical([
-        Constraint::Length(1),
+    let [header, body, status] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
     .areas(area);
     header_bar(header, buf, app);
-    tab_bar(tabs, buf, app);
-    match app.screen {
-        Screen::Dashboard => dashboard(body, buf, app),
-        Screen::Vm => vm_screen(body, buf, app),
-        Screen::Add => add_screen(body, buf, app),
-        Screen::Remove => remove_screen(body, buf, app),
-        Screen::Doctor => doctor_screen(body, buf, app),
-        Screen::Logs => logs_screen(body, buf, app),
+    match &app.view {
+        View::Main => main_screen(body, buf, app),
+        View::Details(vm) => details_screen(body, buf, app, vm),
+        View::Doctor(vm) => doctor_screen(body, buf, app, vm.as_deref()),
+        View::Logs(vm) => logs_screen(body, buf, app, vm.as_deref()),
     }
     status_bar(status, buf, app);
     if let Some(dialog) = &app.dialog {
@@ -116,34 +112,11 @@ fn short_host() -> String {
     name.split('.').next().unwrap_or(&name).to_owned()
 }
 
-fn tab_bar(area: Rect, buf: &mut Buffer, app: &App) {
-    let theme = &app.theme;
-    let mut spans = vec![Span::styled(" ", theme.base())];
-    for (index, screen) in Screen::ALL.iter().enumerate() {
-        let style = if *screen == app.screen {
-            theme.selected()
-        } else {
-            theme.dim()
-        };
-        let mut title = screen.title().to_owned();
-        if *screen == Screen::Vm {
-            if let Some(vm) = app.selected_vm() {
-                title = format!("VM {}", widgets::fit(&vm, 18));
-            }
-        }
-        spans.push(Span::styled(format!(" {} {title} ", index + 1), style));
-        spans.push(Span::styled(" ", theme.base()));
-    }
-    Paragraph::new(Line::from(spans))
-        .style(theme.base())
-        .render(area, buf);
-}
-
 /// The keys for the screen, then what last happened.
 fn status_bar(area: Rect, buf: &mut Buffer, app: &App) {
     let theme = &app.theme;
     buf.set_style(area, theme.bar());
-    let hint = match (&app.dialog, app.screen) {
+    let hint = match (&app.dialog, &app.view) {
         (Some(Dialog::Flow(flow)), _) if flow.done.is_some() => "Enter close  arrows scroll",
         (Some(Dialog::Flow(flow)), _) => match &flow.pending {
             Some(pending) if matches!(pending.question, Question::Text(_)) => {
@@ -154,12 +127,12 @@ fn status_bar(area: Rect, buf: &mut Buffer, app: &App) {
         },
         (Some(Dialog::Choice(_)), _) => "letter or Enter choose  Esc back",
         (Some(Dialog::Form(_)), _) => "type to edit  Tab next  Enter apply  Esc back",
-        (None, Screen::Dashboard) => "arrows choose  Enter details  Tab screens  ? keys  q quit",
-        (None, Screen::Vm) => "s settings  a attest  x remove  d doctor  l logs  Esc back",
-        (None, Screen::Add) => "arrows choose  Enter add  r reload  ? keys",
-        (None, Screen::Remove) => "arrows choose  Enter remove or bring back  r reload",
-        (None, Screen::Doctor) => "arrows choose  Enter run the fix  r check again",
-        (None, Screen::Logs) => "arrows scroll  f filter by VM  r reload",
+        (None, View::Main) => "arrows choose  Enter what to do  d doctor  l logs  ? keys  q quit",
+        (None, View::Details(_)) => {
+            "Enter menu  s settings  o doctor  l logs  left right VM  Esc back"
+        }
+        (None, View::Doctor(_)) => "arrows choose  Enter run the fix  r check again  Esc back",
+        (None, View::Logs(_)) => "arrows scroll  f one VM  r reload  Esc back",
     };
     let mut spans = vec![Span::styled(format!(" {hint}"), theme.bar())];
     if let Some((text, tone)) = &app.status {
@@ -202,46 +175,261 @@ fn message(area: Rect, buf: &mut Buffer, theme: &Theme, title: &str, text: &str,
         .render(inner, buf);
 }
 
-fn dashboard(area: Rect, buf: &mut Buffer, app: &App) {
+/// The one screen: the pool, every VM on the host, and the pool's history
+/// and events, small.
+fn main_screen(area: Rect, buf: &mut Buffer, app: &App) {
+    let theme = &app.theme;
+    let pool = match &app.pool {
+        Some(Ok(snapshot)) => Some(snapshot),
+        _ => None,
+    };
+    let tall = area.height >= 36;
+    let [pool_area, list_area, history_area, events_area] = Layout::vertical([
+        Constraint::Length(if pool.is_some() { 6 } else { 3 }),
+        Constraint::Min(5),
+        Constraint::Length(if tall { 5 } else { 3 }),
+        Constraint::Length(if tall { 7 } else { 4 }),
+    ])
+    .areas(area);
     match &app.pool {
+        Some(Ok(snapshot)) => super::pool::pool_panel(pool_area, buf, theme, snapshot),
+        Some(Err(error)) => message(pool_area, buf, theme, "POOL", error, Tone::Warn),
         None => message(
-            area,
+            pool_area,
             buf,
-            &app.theme,
-            "DASHBOARD",
+            theme,
+            "POOL",
             "reading the pool...",
             Tone::Dim,
         ),
-        Some(Err(error)) => message(area, buf, &app.theme, "DASHBOARD", error, Tone::Warn),
-        Some(Ok(snapshot)) => super::pool::render(
-            area,
-            buf,
-            &app.theme,
-            snapshot,
-            (!snapshot.command.vms.is_empty()).then_some(app.selected),
-        ),
+    }
+    vm_list(list_area, buf, app, &app.entries(), pool);
+    match pool {
+        Some(snapshot) => {
+            history_strip(history_area, buf, theme, snapshot);
+            super::pool::events_panel(events_area, buf, theme, snapshot);
+        }
+        None => {
+            message(history_area, buf, theme, "POOL HISTORY", "", Tone::Dim);
+            message(events_area, buf, theme, "POOL EVENTS", "", Tone::Dim);
+        }
     }
 }
 
-fn vm_screen(area: Rect, buf: &mut Buffer, app: &App) {
-    let Some(name) = app.selected_vm() else {
-        return message(
-            area,
-            buf,
-            &app.theme,
-            "VM",
-            "RAMpire manages no VMs yet: press 3 to add one.",
-            Tone::Dim,
-        );
+/// Every VM on the host, managed or not, with what Enter does for each.
+fn vm_list(
+    area: Rect,
+    buf: &mut Buffer,
+    app: &App,
+    entries: &[Entry],
+    pool: Option<&crate::top::PoolSnapshot>,
+) {
+    use crate::reports::Management;
+    use ratatui::widgets::{Cell, HighlightSpacing, Row, StatefulWidget, Table, TableState};
+    let theme = &app.theme;
+    let block = panel(
+        theme,
+        Icon::Vm,
+        "VMS",
+        "Enter on a VM: details, settings, doctor, add, remove",
+    );
+    let wide = area.width >= super::pool::WIDE;
+    let name_width = entries
+        .iter()
+        .map(|entry| entry.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(10, 28) as u16
+        + 2;
+    let mut header = vec!["VM", "STATE", "PRI", "PLUGGED"];
+    let mut widths = vec![
+        Constraint::Length(name_width),
+        Constraint::Length(13),
+        Constraint::Length(4),
+        Constraint::Length(8),
+    ];
+    if wide {
+        header.push("RAM LIMITS");
+        widths.push(Constraint::Length(13));
+    }
+    header.extend(["GUEST", "NOTE"]);
+    widths.extend([Constraint::Length(17), Constraint::Min(6)]);
+    let dash = || Cell::from(Span::styled("-", theme.dim()));
+    let rows: Vec<Row> = entries
+        .iter()
+        .map(|entry| {
+            let live = entry.pool_index.zip(pool);
+            let mut cells = Vec::new();
+            match live {
+                Some((index, pool)) => {
+                    let vm = &pool.command.vms[index];
+                    let sample = &pool.vms[index];
+                    cells.push(Cell::from(Line::from(vec![
+                        Span::styled(format!("{} ", theme.icon(Icon::Full)), theme.series(index)),
+                        Span::styled(entry.name.clone(), theme.value()),
+                    ])));
+                    cells.push(Cell::from(super::pool::device_state(theme, sample.device)));
+                    cells.push(Cell::from(Span::styled(
+                        format!("{:>3}", vm.priority),
+                        theme.text(),
+                    )));
+                    cells.push(Cell::from(Span::styled(
+                        sample.device.map_or_else(
+                            || "-".to_owned(),
+                            |device| crate::top::short_gib(device.current_bytes),
+                        ),
+                        theme.value(),
+                    )));
+                    if wide {
+                        cells.push(Cell::from(Span::styled(
+                            format!(
+                                "{}-{}",
+                                crate::top::short_gib(vm.min_ram),
+                                crate::top::short_gib(vm.max_ram)
+                            ),
+                            theme.dim(),
+                        )));
+                    }
+                    let (guest, request) = super::pool::guest_cells(
+                        theme,
+                        sample.guest.as_ref(),
+                        pool.now_unix_millis,
+                    );
+                    cells.push(Cell::from(guest));
+                    // A pending request, or a stale publication; nothing when quiet.
+                    let quiet = request.to_string() == "none";
+                    cells.push(Cell::from(if quiet { Line::default() } else { request }));
+                }
+                None => {
+                    let (icon, tone, next) = match entry.management {
+                        Management::Managed => (Icon::Vm, Tone::Value, "details"),
+                        Management::Parked => (Icon::Parked, Tone::Dim, "bring back"),
+                        Management::Unfinished => (Icon::Problem, Tone::Warn, "finish"),
+                        Management::NotManaged => (Icon::Stopped, Tone::Dim, "add"),
+                    };
+                    cells.push(Cell::from(widgets::marked(
+                        theme,
+                        icon,
+                        entry.name.clone(),
+                        tone,
+                    )));
+                    cells.push(Cell::from(Span::styled(
+                        entry.management.label().to_owned(),
+                        theme.tone(tone),
+                    )));
+                    cells.push(dash());
+                    cells.push(dash());
+                    if wide {
+                        cells.push(dash());
+                    }
+                    cells.push(Cell::from(match &entry.listed {
+                        Some(listed) => guest_short(theme, &listed.guest),
+                        None => Span::styled("", theme.dim()),
+                    }));
+                    let blocked = entry
+                        .listed
+                        .as_ref()
+                        .is_some_and(|listed| !listed.problems.is_empty());
+                    cells.push(Cell::from(if blocked {
+                        Span::styled("fix first", theme.tone(Tone::Warn))
+                    } else {
+                        Span::styled(next, theme.tone(Tone::Info))
+                    }));
+                }
+            }
+            Row::new(cells)
+        })
+        .collect();
+    let empty = rows.is_empty();
+    let table = Table::new(rows, widths)
+        .header(Row::new(header).style(theme.dim()))
+        .block(block)
+        .style(theme.base())
+        .row_highlight_style(theme.selected())
+        .highlight_symbol(Line::from(theme.icon(Icon::Pointer)))
+        .highlight_spacing(HighlightSpacing::Always);
+    let selected = (!empty).then(|| app.cursor.min(entries.len() - 1));
+    let mut state = TableState::new().with_selected(selected);
+    StatefulWidget::render(table, area, buf, &mut state);
+    let note = match (&app.inventory, empty) {
+        (Loaded::NotYet | Loaded::Loading, _) => Some(("reading the host's VMs...", Tone::Dim)),
+        (Loaded::Done(Err(_)), _) => {
+            Some(("the host's VMs couldn't be read: r tries again", Tone::Warn))
+        }
+        (_, true) => Some(("libvirt has no VMs on this connection", Tone::Dim)),
+        _ => None,
     };
+    if let Some((text, tone)) = note {
+        let row = area.y + 2 + entries.len() as u16;
+        if row + 1 < area.bottom() {
+            let line = Rect {
+                y: row,
+                height: 1,
+                ..area.inner(ratatui::layout::Margin::new(2, 0))
+            };
+            Paragraph::new(widgets::line(theme, text, tone)).render(line, buf);
+        }
+    }
+}
+
+/// A VM's guest service in a word, for the list.
+fn guest_short<'a>(theme: &Theme, guest: &Published) -> Span<'a> {
+    match guest {
+        Published::Yes { .. } => {
+            widgets::marked(theme, Icon::Ok, "publishing".to_owned(), Tone::Good)
+        }
+        Published::Installed => {
+            widgets::marked(theme, Icon::Ok, "installed".to_owned(), Tone::Good)
+        }
+        Published::No => {
+            widgets::marked(theme, Icon::Problem, "not installed".to_owned(), Tone::Warn)
+        }
+        Published::Unknown => Span::styled("unknown", theme.dim()),
+    }
+}
+
+/// The pool's charge over time, as one strip of bars.
+fn history_strip(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &crate::top::PoolSnapshot) {
+    use ratatui::widgets::Sparkline;
+    let scale = snapshot.scale().max(1);
+    let width = area.width.saturating_sub(2) as usize;
+    let totals: Vec<u64> = snapshot
+        .history
+        .iter()
+        .rev()
+        .take(width)
+        .rev()
+        .map(|charges| charges.iter().copied().fold(0, u64::saturating_add))
+        .collect();
+    let block = panel(
+        theme,
+        Icon::Pool,
+        "POOL HISTORY",
+        &format!(
+            "charged, last {} samples, 0..{:.1} GiB",
+            totals.len(),
+            scale as f64 / crate::dashboard::GIB as f64
+        ),
+    );
+    Sparkline::default()
+        .block(block)
+        .data(&totals)
+        .max(scale)
+        .bar_set(theme.icons.bars())
+        .style(theme.tone(Tone::Info))
+        .render(area, buf);
+}
+
+/// One managed VM live: the `watch` view.
+fn details_screen(area: Rect, buf: &mut Buffer, app: &App, vm: &str) {
     match &app.vm {
-        Some((shown, Ok(snapshot))) if *shown == name => {
-            super::vm::render(area, buf, &app.theme, snapshot, app.details.get(&name))
+        Some((shown, Ok(snapshot))) if shown == vm => {
+            super::vm::render(area, buf, &app.theme, snapshot, app.details.get(vm))
         }
-        Some((shown, Err(error))) if *shown == name => {
-            message(area, buf, &app.theme, &name, error, Tone::Warn)
+        Some((shown, Err(error))) if shown == vm => {
+            message(area, buf, &app.theme, vm, error, Tone::Warn)
         }
-        _ => message(area, buf, &app.theme, &name, "reading the VM...", Tone::Dim),
+        _ => message(area, buf, &app.theme, vm, "reading the VM...", Tone::Dim),
     }
 }
 
@@ -265,288 +453,13 @@ fn loading<T>(
     }
 }
 
-fn published_span<'a>(theme: &Theme, guest: &Published) -> Span<'a> {
-    match guest {
-        Published::Yes { age_seconds } => widgets::marked(
-            theme,
-            Icon::Ok,
-            format!("guest published {age_seconds}s ago"),
-            Tone::Good,
-        ),
-        Published::Installed => widgets::marked(
-            theme,
-            Icon::Ok,
-            "guest service installed".to_owned(),
-            Tone::Good,
-        ),
-        Published::No => widgets::marked(
-            theme,
-            Icon::Problem,
-            "guest service not installed".to_owned(),
-            Tone::Warn,
-        ),
-        Published::Unknown => Span::styled("guest unknown", theme.dim()),
-    }
-}
-
-/// A list on the left and the chosen item's details on the right; one
-/// above the other on a narrow screen.
-fn list_and_details(area: Rect) -> (Rect, Rect) {
-    if area.width >= 120 {
-        let [list, details] =
-            Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-                .areas(area);
-        (list, details)
-    } else {
-        let [list, details] =
-            Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(area);
-        (list, details)
-    }
-}
-
-fn list_lines<'a>(theme: &Theme, rows: Vec<(Line<'a>, bool)>, height: usize) -> Vec<Line<'a>> {
-    let selected = rows.iter().position(|(_, selected)| *selected).unwrap_or(0);
-    let start = selected.saturating_sub(height.saturating_sub(1));
-    rows.into_iter()
-        .skip(start)
-        .take(height)
-        .map(|(line, selected)| {
-            if selected {
-                let mut spans = vec![Span::styled(
-                    format!("{} ", theme.icon(Icon::Pointer)),
-                    theme.selected(),
-                )];
-                spans.extend(
-                    line.spans
-                        .into_iter()
-                        .map(|span| span.style(theme.selected())),
-                );
-                Line::from(spans)
-            } else {
-                let mut spans = vec![Span::styled("  ", theme.base())];
-                spans.extend(line.spans);
-                Line::from(spans)
-            }
-        })
-        .collect()
-}
-
-fn add_screen(area: Rect, buf: &mut Buffer, app: &App) {
+fn doctor_screen(area: Rect, buf: &mut Buffer, app: &App, vm: Option<&str>) {
     let theme = &app.theme;
-    if loading(area, buf, theme, "ADD A VM", &app.inventory) {
-        return;
-    }
-    let vms = app.addable();
-    let (list, details) = list_and_details(area);
-    let block = panel(
-        theme,
-        Icon::Vm,
-        "ADD A VM",
-        "the host's VMs RAMpire doesn't manage",
-    );
-    let inner = block.inner(list);
-    block.render(list, buf);
-    if vms.is_empty() {
-        Paragraph::new(widgets::line(
-            theme,
-            "every VM on this host is managed or parked (see 4 Remove to bring one back)",
-            Tone::Dim,
-        ))
-        .wrap(Wrap { trim: true })
-        .render(inner, buf);
-        return;
-    }
-    let cursor = app.add_cursor.min(vms.len() - 1);
-    let rows = vms
-        .iter()
-        .enumerate()
-        .map(|(index, vm)| {
-            let mut spans = vec![
-                Span::styled(
-                    format!("{:<20} ", widgets::fit(&vm.vm_name, 20)),
-                    theme.value(),
-                ),
-                Span::styled(format!("{:<9} ", vm.state), theme.dim()),
-            ];
-            if vm.management == Management::Unfinished {
-                spans.push(Span::styled("unfinished  ", theme.tone(Tone::Warn)));
-            }
-            spans.push(published_span(theme, &vm.guest));
-            (Line::from(spans), index == cursor)
-        })
-        .collect();
-    Paragraph::new(list_lines(theme, rows, inner.height as usize))
-        .style(theme.base())
-        .render(inner, buf);
-
-    let vm = vms[cursor];
-    let block = panel(
-        theme,
-        Icon::Settings,
-        &vm.vm_name,
-        "what vm add --fix-xml does",
-    );
-    let inner = block.inner(details);
-    block.render(details, buf);
-    let mut lines = vec![Line::from(Span::styled(vm.detail.clone(), theme.dim()))];
-    if vm.management == Management::Unfinished {
-        lines.push(widgets::line(
-            theme,
-            "An earlier vm add didn't finish: Enter finishes it.",
-            Tone::Warn,
-        ));
-    }
-    if vm.to_fix.is_empty() && vm.management == Management::NotManaged {
-        lines.push(widgets::line(
-            theme,
-            "Its definition needs no change.",
-            Tone::Good,
-        ));
-    }
-    for change in &vm.to_fix {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{} ", theme.icon(Icon::Settings)),
-                theme.tone(Tone::Info),
-            ),
-            Span::styled(change.clone(), theme.text()),
-        ]));
-    }
-    for problem in &vm.problems {
-        lines.push(Line::from(widgets::marked(
-            theme,
-            Icon::Problem,
-            problem.problem.clone(),
-            Tone::Bad,
-        )));
-        lines.push(Line::from(Span::styled(
-            format!("   fix: {}", problem.fix),
-            theme.tone(Tone::Warn),
-        )));
-    }
-    if matches!(vm.guest, Published::No) {
-        lines.push(Line::default());
-        lines.push(Line::from(widgets::marked(
-            theme,
-            Icon::Guest,
-            "Its guest service isn't installed. Install it in the VM first:".to_owned(),
-            Tone::Warn,
-        )));
-        lines.push(Line::from(Span::styled(
-            format!("   {}", super::app::install_command(vm.os_id.as_deref())),
-            theme.value(),
-        )));
-    }
-    lines.push(Line::default());
-    lines.push(Line::from(vec![
-        Span::styled("Enter runs: ", theme.dim()),
-        Span::styled(
-            app.context
-                .command_line(&["vm", "add", &vm.vm_name, "--fix-xml"]),
-            theme.value(),
-        ),
-    ]));
-    lines.push(Line::from(Span::styled(
-        "It shows the definition change, asks the review question, writes the VM's files, restarts it if needed and applies.",
-        theme.dim(),
-    )));
-    Paragraph::new(lines)
-        .style(theme.base())
-        .wrap(Wrap { trim: false })
-        .render(inner, buf);
-}
-
-fn remove_screen(area: Rect, buf: &mut Buffer, app: &App) {
-    let theme = &app.theme;
-    if loading(area, buf, theme, "REMOVE A VM", &app.inventory) {
-        return;
-    }
-    let vms = app.removable();
-    let (list, details) = list_and_details(area);
-    let block = panel(
-        theme,
-        Icon::Vm,
-        "REMOVE A VM",
-        "managed VMs, and parked ones to bring back",
-    );
-    let inner = block.inner(list);
-    block.render(list, buf);
-    if vms.is_empty() {
-        Paragraph::new(widgets::line(
-            theme,
-            "RAMpire manages no VMs and has none parked",
-            Tone::Dim,
-        ))
-        .render(inner, buf);
-        return;
-    }
-    let cursor = app.remove_cursor.min(vms.len() - 1);
-    let rows = vms
-        .iter()
-        .enumerate()
-        .map(|(index, vm)| {
-            let (icon, tone) = match vm.management {
-                Management::Parked => (Icon::Parked, Tone::Dim),
-                _ => (Icon::Vm, Tone::Value),
-            };
-            (
-                Line::from(vec![
-                    widgets::marked(
-                        theme,
-                        icon,
-                        format!("{:<20}", widgets::fit(&vm.vm_name, 20)),
-                        tone,
-                    ),
-                    Span::styled(format!(" {:<11} ", vm.management.label()), theme.dim()),
-                    Span::styled(vm.state.clone(), theme.dim()),
-                ]),
-                index == cursor,
-            )
-        })
-        .collect();
-    Paragraph::new(list_lines(theme, rows, inner.height as usize))
-        .style(theme.base())
-        .render(inner, buf);
-    let vm = vms[cursor];
-    let choice = super::app::remove_choice(
-        &vm.vm_name,
-        vm.management == Management::Parked,
-        &app.context,
-    );
-    let block = panel(theme, Icon::Settings, &vm.vm_name, vm.management.label());
-    let inner = block.inner(details);
-    block.render(details, buf);
-    let mut lines = vec![Line::from(Span::styled(vm.detail.clone(), theme.dim()))];
-    lines.extend(
-        choice
-            .text
-            .iter()
-            .map(|text| widgets::line(theme, text.clone(), Tone::Normal)),
-    );
-    lines.push(Line::default());
-    for option in &choice.choices {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{}  ", option.key), theme.value()),
-            Span::styled(option.label.clone(), theme.value()),
-        ]));
-        lines.push(Line::from(Span::styled(
-            format!("   {}", option.detail),
-            theme.dim(),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!("   {}", option.action.command_line(&app.context)),
-            theme.tone(Tone::Info),
-        )));
-    }
-    Paragraph::new(lines)
-        .style(theme.base())
-        .wrap(Wrap { trim: false })
-        .render(inner, buf);
-}
-
-fn doctor_screen(area: Rect, buf: &mut Buffer, app: &App) {
-    let theme = &app.theme;
-    if loading(area, buf, theme, "DOCTOR", &app.doctor) {
+    let title = match vm {
+        Some(vm) => format!("DOCTOR {vm}"),
+        None => "DOCTOR".to_owned(),
+    };
+    if loading(area, buf, theme, &title, &app.doctor) {
         return;
     }
     let rows = app.doctor_rows();
@@ -554,9 +467,14 @@ fn doctor_screen(area: Rect, buf: &mut Buffer, app: &App) {
     let block = panel(
         theme,
         Icon::Ok,
-        "DOCTOR",
+        &title,
         &format!(
-            "the host and each VM, problems first: {problems} problem{}",
+            "{}, problems first: {problems} problem{}",
+            if vm.is_some() {
+                "this VM"
+            } else {
+                "the host and each VM"
+            },
             if problems == 1 { "" } else { "s" }
         ),
     );
@@ -642,9 +560,9 @@ fn doctor_screen(area: Rect, buf: &mut Buffer, app: &App) {
     Paragraph::new(shown).style(theme.base()).render(inner, buf);
 }
 
-fn logs_screen(area: Rect, buf: &mut Buffer, app: &App) {
+fn logs_screen(area: Rect, buf: &mut Buffer, app: &App, vm: Option<&str>) {
     let theme = &app.theme;
-    let filter = match &app.log_filter {
+    let filter = match vm {
         Some(vm) => format!("lines about {vm} (f: next VM)"),
         None => "every line (f: one VM)".to_owned(),
     };
@@ -800,54 +718,52 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
                 .render(inner, buf);
         }
         Dialog::Choice(choice) => {
-            let box_width = width.min(100);
-            let mut text: Vec<Line> = choice
+            // One line per item; what the chosen one does, and the command
+            // that does the same, beneath them.
+            let box_width = width.min(90);
+            let inner_width = box_width.saturating_sub(2) as usize;
+            let mut lines: Vec<Line<'static>> = choice
                 .text
                 .iter()
-                .map(|text| widgets::line(theme, text.clone(), Tone::Normal))
+                .flat_map(|text| {
+                    hard_wrap(
+                        widgets::line(theme, text.clone(), Tone::Normal),
+                        inner_width,
+                    )
+                })
                 .collect();
-            text.push(Line::default());
-            for option in &choice.choices {
-                text.push(Line::from(format!(" {}  {} ", option.key, option.label)));
-                text.push(Line::from(format!("    {}", option.detail)));
+            if !lines.is_empty() {
+                lines.push(Line::default());
             }
-            text.push(Line::default());
-            let rows = wrapped_rows(&text, box_width.saturating_sub(2)) as u16 + 2;
-            let rect = centred(area, box_width, rows.min(height));
-            Clear.render(rect, buf);
-            let block = panel(theme, Icon::Settings, &choice.title, "");
-            let inner = block.inner(rect);
-            block.render(rect, buf);
-            let mut lines: Vec<Line> = choice
-                .text
-                .iter()
-                .map(|text| widgets::line(theme, text.clone(), Tone::Normal))
-                .collect();
-            lines.push(Line::default());
             for (index, option) in choice.choices.iter().enumerate() {
                 let style = if index == choice.cursor {
                     theme.selected()
                 } else {
                     theme.value()
                 };
-                lines.push(Line::from(vec![Span::styled(
+                lines.push(Line::from(Span::styled(
                     format!(" {}  {} ", option.key, option.label),
                     style,
-                )]));
-                lines.push(Line::from(Span::styled(
-                    format!("    {}", option.detail),
-                    theme.dim(),
                 )));
+            }
+            lines.push(Line::default());
+            if let Some(option) = choice.choices.get(choice.cursor) {
+                lines.extend(hard_wrap(
+                    widgets::line(theme, option.detail.clone(), Tone::Dim),
+                    inner_width,
+                ));
             }
             lines.push(widgets::line(
                 theme,
-                " Esc  back, nothing changed",
+                "letter or Enter: do it   Esc: back, nothing changed",
                 Tone::Dim,
             ));
-            Paragraph::new(lines)
-                .style(theme.base())
-                .wrap(Wrap { trim: false })
-                .render(inner, buf);
+            let rect = centred(area, box_width, (lines.len() as u16 + 2).min(height));
+            Clear.render(rect, buf);
+            let block = panel(theme, Icon::Settings, &choice.title, "");
+            let inner = block.inner(rect);
+            block.render(rect, buf);
+            Paragraph::new(lines).style(theme.base()).render(inner, buf);
         }
         Dialog::Form(form) => {
             let rect = centred(
@@ -949,15 +865,6 @@ fn hard_wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     rows
 }
 
-/// How many rows `lines` take wrapped at `width`.
-fn wrapped_rows(lines: &[Line], width: u16) -> usize {
-    let width = width.max(1) as usize;
-    lines
-        .iter()
-        .map(|line| line.width().max(1).div_ceil(width))
-        .sum()
-}
-
 fn help(area: Rect, buf: &mut Buffer, app: &App) {
     let theme = &app.theme;
     let rect = centred(area, 76, 22);
@@ -966,23 +873,26 @@ fn help(area: Rect, buf: &mut Buffer, app: &App) {
     let inner = block.inner(rect);
     block.render(rect, buf);
     let rows: [(&str, &str); 18] = [
-        ("Tab, Shift+Tab", "next and previous screen"),
-        ("1 to 6", "Dashboard, VM, Add, Remove, Doctor, Logs"),
-        ("arrows, j k", "choose; Home, End, PgUp, PgDn"),
-        ("Enter", "open, or run what is chosen"),
+        ("arrows, j k", "choose a VM; Home, End, PgUp, PgDn"),
+        ("Enter", "what can be done with the chosen VM"),
+        ("v", "its details, live"),
+        ("s", "its settings: priority, min_ram, max_ram, free_ram"),
+        ("o", "its doctor"),
+        ("a", "add it, or attest it again"),
+        (
+            "k, f, b",
+            "remove it keeping its settings, forget it, bring it back",
+        ),
+        ("d", "the doctor, for the host and every VM"),
+        ("l", "the logs"),
         ("Esc", "back, or close a dialog"),
-        ("r", "read the screen again"),
+        ("r", "read again"),
         ("e", "the errors list"),
         ("t", "next colour theme: navy, light, terminal"),
         ("i", "Unicode or ASCII icons"),
         ("q, Ctrl+C", "quit"),
         ("", ""),
-        ("VM screen", ""),
-        ("s", "change priority, min_ram, max_ram, free_ram"),
-        ("a", "attest it again"),
-        ("x", "remove it"),
-        ("d, l", "its doctor, its logs"),
-        ("left, right", "the previous and next VM"),
+        ("", "A VM's menu shows only what fits it, with its key."),
         (
             "",
             "Every action shows the rampire command that does the same.",
@@ -1037,9 +947,8 @@ fn errors(area: Rect, buf: &mut Buffer, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reports::{ListedVm, Problem, VmListReport, VmListSchema};
     use crate::tui::actions::Action;
-    use crate::tui::app::{Choice, ChoiceDialog, ErrorEntry, FlowDialog};
+    use crate::tui::app::{Choice, ChoiceDialog, ErrorEntry, FlowDialog, Pick};
     use crate::tui::jobs::{DoctorSection, Msg};
     use crate::tui::pool::tests::themes;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1047,20 +956,7 @@ mod tests {
     const SIZES: [(u16, u16); 3] = [(80, 24), (120, 40), (200, 60)];
 
     fn app() -> crate::tui::app::App {
-        let (tx, _rx) = super::super::jobs::channel();
-        let context = crate::context::Context {
-            config: None,
-            connect: Some("test:///default".to_owned()),
-            build: "0.1.0 (build test)".to_owned(),
-            via: "tui",
-        };
-        let mut app = crate::tui::app::App::new(
-            context,
-            themes()[0],
-            tx,
-            super::super::jobs::ReaderControl::new(),
-        );
-        app.on_msg(Msg::Pool(Ok(crate::tui::pool::tests::snapshot(3))));
+        let (mut app, _rx) = crate::tui::app::tests::app();
         app.on_msg(Msg::Vm(
             "vm0".to_owned(),
             Box::new(Ok(crate::tui::vm::tests::snapshot())),
@@ -1069,59 +965,6 @@ mod tests {
             "vm0".to_owned(),
             crate::tui::vm::tests::details(),
         ));
-        app.on_msg(Msg::Inventory(Ok(VmListReport {
-            schema: VmListSchema,
-            version: 1,
-            vms: vec![
-                ListedVm {
-                    vm_name: "newvm".to_owned(),
-                    state: "running".to_owned(),
-                    management: Management::NotManaged,
-                    status: None,
-                    detail: "the guest service hasn't published".to_owned(),
-                    to_fix: vec!["add a 6144 MiB virtio-mem device".to_owned()],
-                    problems: vec![],
-                    guest: Published::No,
-                    os_id: Some("http://debian.org/debian/13".to_owned()),
-                },
-                ListedVm {
-                    vm_name: "blocked".to_owned(),
-                    state: "shut off".to_owned(),
-                    management: Management::NotManaged,
-                    status: None,
-                    detail: String::new(),
-                    to_fix: vec![],
-                    problems: vec![Problem {
-                        problem: "more than one virtio-mem device".to_owned(),
-                        fix: "remove the others".to_owned(),
-                    }],
-                    guest: Published::Unknown,
-                    os_id: None,
-                },
-                ListedVm {
-                    vm_name: "vm0".to_owned(),
-                    state: "running".to_owned(),
-                    management: Management::Managed,
-                    status: None,
-                    detail: "steady".to_owned(),
-                    to_fix: vec![],
-                    problems: vec![],
-                    guest: Published::Yes { age_seconds: 1 },
-                    os_id: None,
-                },
-                ListedVm {
-                    vm_name: "oldvm".to_owned(),
-                    state: "shut off".to_owned(),
-                    management: Management::Parked,
-                    status: None,
-                    detail: "parked".to_owned(),
-                    to_fix: vec![],
-                    problems: vec![],
-                    guest: Published::Unknown,
-                    os_id: None,
-                },
-            ],
-        })));
         app.on_msg(Msg::Doctor(Ok(vec![
             DoctorSection {
                 vm: Some("vm0".to_owned()),
@@ -1154,46 +997,84 @@ mod tests {
     }
 
     #[test]
-    fn every_screen_draws_at_every_size_in_every_theme() {
+    fn every_view_draws_at_every_size_in_every_theme() {
         let mut app = app();
         let expected = [
-            (Screen::Dashboard, "POOL EVENTS"),
-            (Screen::Vm, "VIRTIO-MEM DEVICE"),
-            (Screen::Add, "newvm"),
-            (Screen::Remove, "oldvm"),
-            (Screen::Doctor, "drifted"),
-            (Screen::Logs, "operator_change"),
+            (View::Main, "POOL EVENTS"),
+            (View::Details("vm0".to_owned()), "VIRTIO-MEM DEVICE"),
+            (View::Doctor(None), "drifted"),
+            (View::Logs(None), "operator_change"),
         ];
         for theme in themes() {
             app.theme = theme;
-            for (screen, needle) in expected {
-                app.screen = screen;
+            for (view, needle) in &expected {
+                app.view = view.clone();
                 for (width, height) in SIZES {
                     let text = text(&app, width, height);
                     assert!(
                         text.contains(needle),
-                        "{screen:?} at {width}x{height} lacks {needle}:\n{text}"
+                        "{view:?} at {width}x{height} lacks {needle}:\n{text}"
                     );
                     assert!(text.contains("RAMpire"), "{text}");
-                    assert_eq!(text.lines().count(), height as usize, "{screen:?}\n{text}");
+                    assert_eq!(text.lines().count(), height as usize, "{view:?}\n{text}");
                 }
             }
         }
     }
 
     #[test]
-    fn the_add_screen_says_how_to_install_the_guest_service() {
+    fn the_main_screen_lists_every_vm_with_what_enter_does() {
+        let app = app();
+        for (width, height) in SIZES {
+            let text = text(&app, width, height);
+            for needle in [
+                "vm0",
+                "grow +1024M",
+                "oldvm",
+                "parked",
+                "bring",
+                "newvm",
+                "not managed",
+                "not installed",
+                "POOL HISTORY",
+            ] {
+                assert!(
+                    text.contains(needle),
+                    "{width}x{height} lacks {needle}:\n{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_vms_menu_draws_with_its_keys_and_commands() {
         let mut app = app();
-        app.screen = Screen::Add;
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        for (width, height) in SIZES {
+            let text = text(&app, width, height);
+            for needle in [
+                "vm0 (managed)",
+                "v  Details, live",
+                "s  Settings",
+                "o  Doctor",
+                "Forget it",
+            ] {
+                assert!(
+                    text.contains(needle),
+                    "{width}x{height} lacks {needle}:\n{text}"
+                );
+            }
+        }
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let text = text(&app, 120, 40);
-        assert!(text.contains("apt install rampire-guest"), "{text}");
         assert!(
-            text.contains("rampire --connect test:///default vm add newvm --fix-xml"),
+            text.contains("vm add will add a 6144 MiB virtio-mem device"),
             "{text}"
         );
-        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        let text = self::text(&app, 120, 40);
-        assert!(text.contains("remove the others"), "{text}");
+        assert!(text.contains("apt install rampire-guest"), "{text}");
+        assert!(text.contains("a  Add it"), "{text}");
     }
 
     #[test]
@@ -1273,20 +1154,17 @@ mod tests {
             assert!(text.contains("y yes"), "{text}");
         }
         app.dialog = Some(Dialog::Choice(ChoiceDialog {
-            title: "Stop managing vm0".to_owned(),
-            text: vec!["It keeps its memory.".to_owned()],
+            title: "Run the fix".to_owned(),
+            text: vec!["This runs: rampire apply".to_owned()],
             choices: vec![Choice {
-                key: 'k',
-                label: "Keep its settings".to_owned(),
-                detail: "parked".to_owned(),
-                action: Action::Remove {
-                    vm: "vm0".to_owned(),
-                    forget: false,
-                },
+                key: 'y',
+                label: "Run it".to_owned(),
+                detail: "its own questions come next".to_owned(),
+                pick: Pick::Run(Action::Apply),
             }],
             cursor: 0,
         }));
-        assert!(text(&app, 80, 24).contains("Keep its settings"));
+        assert!(text(&app, 80, 24).contains("Run it"));
         app.dialog = None;
         app.errors.push(ErrorEntry {
             time: "10:00:00".to_owned(),
@@ -1297,13 +1175,13 @@ mod tests {
         app.overlay = Some(Overlay::Errors);
         assert!(text(&app, 80, 24).contains("the draft did not pass its checks"));
         app.overlay = Some(Overlay::Help);
-        assert!(text(&app, 80, 24).contains("Shift+Tab"));
+        assert!(text(&app, 80, 24).contains("what can be done with the chosen VM"));
     }
 
     #[test]
     fn the_doctor_offers_to_run_a_fix_that_is_a_command() {
         let mut app = app();
-        app.screen = Screen::Doctor;
+        app.view = View::Doctor(None);
         let text = text(&app, 120, 40);
         assert!(text.contains("[Enter runs it]"), "{text}");
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -1311,11 +1189,11 @@ mod tests {
             panic!("a dialog to confirm the fix");
         };
         assert_eq!(
-            choice.choices[0].action,
-            Action::Attest {
+            choice.choices[0].pick,
+            Pick::Run(Action::Attest {
                 vm: "vm0".to_owned(),
                 restart: false
-            }
+            })
         );
     }
 }

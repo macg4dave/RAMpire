@@ -28,24 +28,31 @@ host's console, or from any computer with `ssh -t HOST sudo rampire`.
 Piped, or with `--help`, it prints the help instead. It needs a terminal
 of at least 80x24.
 
-| Screen | Key | What it shows and does |
-|---|---|---|
-| Dashboard | `1` | The pool and every managed VM, its history and events; Enter opens a VM |
-| VM | `2` | One VM: its settings, boot RAM and device, a resize under way, the guest's figures, the last request and what held it back, its history and events |
-| Add | `3` | The host's VMs RAMpire doesn't manage, what `vm add --fix-xml` would change, and whether the guest service is installed; Enter adds the VM |
-| Remove | `4` | Managed VMs, to park (`k`) or forget (`f`), and parked ones to bring back (`b`) |
-| Doctor | `5` | The host's checks and each VM's, problems first; Enter runs a fix that is a `rampire` command |
-| Logs | `6` | The journal; `f` shows one VM's lines |
+Everything starts from one screen: the pool, every VM on the host
+(managed, parked, half-added and not managed), the pool's history and its
+latest events. **Enter** on a VM opens its menu, which offers only what
+fits that VM:
+
+| The VM is | Its menu |
+|---|---|
+| Managed | `v` details, live (as `rampire watch` shows them); `s` settings: `priority`, `min_ram`, `max_ram`, `free_ram`; `o` its doctor; `l` its logs; `a` attest it again; `c` restart it, then attest; `k` remove it, keeping its settings; `f` forget it |
+| Not managed | What `vm add --fix-xml` will change, what would stop it, and the guest service's install command when it isn't installed; `a` add it; `o` its doctor |
+| Parked | `b` bring it back; `o` its doctor; `f` forget it |
+| Half-added | `a` finish adding it; `o` its doctor; `f` forget it |
+
+A menu's letters also work from the list and from a VM's details,
+without opening the menu.
 
 | Key | Does |
 |---|---|
-| Tab, Shift+Tab, `1` to `6` | Next, previous or a given screen |
-| arrows, `j` `k`, Home, End, PgUp, PgDn | Move |
-| Enter | Open, or run what is chosen |
-| Esc | Back, or close a dialog |
-| `s`, `a`, `x`, `d`, `l` | On the VM screen: change its settings, attest it again, remove it, its doctor, its logs |
+| arrows, `j` `k`, Home, End, PgUp, PgDn | Choose a VM, or move |
+| Enter | The chosen VM's menu, or run what is chosen |
+| `d` | The doctor for the host and every VM; Enter runs a fix that is a `rampire` command |
+| `l` | The journal; `f` shows one VM's lines |
+| Esc | Back to the list, or close a dialog |
+| left, right | In a VM's details, the previous and next VM |
 | `y`, `n` | Answer a question |
-| `r` | Read the screen again |
+| `r` | Read again |
 | `e` | The errors list |
 | `t` | The next colour theme: navy, light, or the terminal's own 16 colours |
 | `i` | Unicode or ASCII icons |

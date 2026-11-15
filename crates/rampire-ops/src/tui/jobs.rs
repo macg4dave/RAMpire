@@ -177,6 +177,16 @@ pub fn doctor(context: &Context) -> Result<Vec<DoctorSection>, String> {
     Ok(sections)
 }
 
+/// The doctor for one VM, managed or not, problems first.
+pub fn doctor_one(context: &Context, vm: &str) -> Result<Vec<DoctorSection>, String> {
+    let mut findings = crate::doctor_vm::run(context, vm)?;
+    findings.sort_by_key(|finding| finding.ok);
+    Ok(vec![DoctorSection {
+        vm: Some(vm.to_owned()),
+        findings,
+    }])
+}
+
 /// What the reader is asked to read besides the pool.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Wanted {

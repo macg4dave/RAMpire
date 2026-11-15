@@ -134,6 +134,7 @@ fn run_app(context: Context) -> Result<(), String> {
                 }
                 dirty = true;
             }
+            app.tick();
             while let Ok(msg) = rx.try_recv() {
                 app.on_msg(msg);
                 dirty = true;

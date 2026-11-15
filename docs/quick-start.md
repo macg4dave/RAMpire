@@ -65,8 +65,8 @@ sudo rampire                 # on the host
 ssh -t HOST sudo rampire     # from another computer
 ```
 
-Press **3** for the Add screen, choose the VM with the arrows and press
-**Enter**. It runs the same steps as the command, which you can also
+Every VM on the host is listed. Choose the VM with the arrows, press
+**Enter** and choose **Add it** (`a`). It runs the same steps as the command, which you can also
 type yourself:
 
 ```bash
@@ -90,8 +90,8 @@ rampire vm add webserver --fix-xml
 
 ## 5. Watch it work
 
-The TUI's dashboard (**1**) shows the VM and the pool live; **Enter** on
-the VM shows it in detail, and **5** runs the doctor. Without the TUI:
+The TUI shows the VM and the pool live. **Enter** on the VM opens its
+menu: its details (`v`), settings (`s`) and doctor (`o`). Without the TUI:
 
 ```bash
 rampire status

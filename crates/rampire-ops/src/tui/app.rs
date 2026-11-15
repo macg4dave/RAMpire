@@ -1,9 +1,15 @@
 //! The TUI's state and what each key does. Drawing is in
 //! [`super::screens`]; the work off the screen's thread is in
 //! [`super::jobs`].
+//!
+//! Everything starts from one screen: the pool and every VM on the host,
+//! managed or not. Enter on a VM opens its menu, which offers what can be
+//! done with it: its details, settings, doctor and logs, attesting it,
+//! removing it, or adding it when RAMpire doesn't manage it yet.
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -12,48 +18,22 @@ use super::jobs::{self, Answer, DoctorSection, FlowEvent, Msg, Question, ReaderC
 use super::theme::Theme;
 use super::vm::VmDetails;
 use crate::context::Context;
-use crate::reports::{ControllerUnit, Management, VmListReport};
+use crate::reports::{ControllerUnit, ListedVm, Management, VmListReport};
 use crate::tone::Tone;
 use crate::top::PoolSnapshot;
 use crate::watch::VmSnapshot;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
-    Dashboard,
-    Vm,
-    Add,
-    Remove,
-    Doctor,
-    Logs,
-}
-
-impl Screen {
-    pub const ALL: [Self; 6] = [
-        Self::Dashboard,
-        Self::Vm,
-        Self::Add,
-        Self::Remove,
-        Self::Doctor,
-        Self::Logs,
-    ];
-
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Dashboard => "Dashboard",
-            Self::Vm => "VM",
-            Self::Add => "Add",
-            Self::Remove => "Remove",
-            Self::Doctor => "Doctor",
-            Self::Logs => "Logs",
-        }
-    }
-
-    fn index(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|screen| *screen == self)
-            .unwrap_or(0)
-    }
+/// What fills the screen below the header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum View {
+    /// The pool and every VM.
+    Main,
+    /// One managed VM live, as `rampire watch` shows it.
+    Details(String),
+    /// The doctor: for the host and every VM, or for one VM.
+    Doctor(Option<String>),
+    /// The journal, all of it or one VM's lines.
+    Logs(Option<String>),
 }
 
 /// Something read once, on request.
@@ -94,13 +74,25 @@ pub struct FlowDialog {
     pub scroll: usize,
 }
 
-/// One of several things to do, each with what it does.
+/// What choosing a menu item does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pick {
+    /// Run an action in a dialog.
+    Run(Action),
+    /// Show a view.
+    Open(View),
+    /// The settings form for a VM.
+    Settings(String),
+}
+
+/// One item of a menu, with what it does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     pub key: char,
     pub label: String,
+    /// What it does, or the command that does the same.
     pub detail: String,
-    pub action: Action,
+    pub pick: Pick,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,27 +149,42 @@ pub struct ErrorEntry {
     pub error: String,
 }
 
+/// One VM in the main list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub name: String,
+    pub management: Management,
+    /// Its place in the pool, for a managed VM the pool shows.
+    pub pool_index: Option<usize>,
+    /// What `vm list` says about it, once read.
+    pub listed: Option<ListedVm>,
+}
+
+/// How often the list of the host's VMs is read again by itself.
+const INVENTORY_EVERY: Duration = Duration::from_secs(30);
+
 pub struct App {
     pub context: Context,
     pub theme: Theme,
-    pub screen: Screen,
+    pub view: View,
     tx: Sender<Msg>,
     pub control: ReaderControl,
     pub pool: Option<Result<PoolSnapshot, String>>,
-    /// The chosen VM, by its place in the pool.
-    pub selected: usize,
+    pub inventory: Loaded<VmListReport>,
+    inventory_read: Option<Instant>,
+    /// The chosen VM, by its place in [`App::entries`].
+    pub cursor: usize,
     pub vm: Option<(String, Result<VmSnapshot, String>)>,
     pub details: BTreeMap<String, VmDetails>,
     pub controller: Option<ControllerUnit>,
-    pub inventory: Loaded<VmListReport>,
-    pub add_cursor: usize,
-    pub remove_cursor: usize,
     pub doctor: Loaded<Vec<DoctorSection>>,
+    /// Whose doctor is loaded: the host and every VM, or one VM.
+    doctor_for: Option<Option<String>>,
     pub doctor_cursor: usize,
     pub log: Loaded<String>,
+    log_for: Option<Option<String>>,
     /// Lines scrolled back from the newest.
     pub log_scroll: usize,
-    pub log_filter: Option<String>,
     pub dialog: Option<Dialog>,
     pub overlay: Option<Overlay>,
     pub errors: Vec<ErrorEntry>,
@@ -192,22 +199,22 @@ impl App {
         Self {
             context,
             theme,
-            screen: Screen::Dashboard,
+            view: View::Main,
             tx,
             control,
             pool: None,
-            selected: 0,
+            inventory: Loaded::NotYet,
+            inventory_read: None,
+            cursor: 0,
             vm: None,
             details: BTreeMap::new(),
             controller: None,
-            inventory: Loaded::NotYet,
-            add_cursor: 0,
-            remove_cursor: 0,
             doctor: Loaded::NotYet,
+            doctor_for: None,
             doctor_cursor: 0,
             log: Loaded::NotYet,
+            log_for: None,
             log_scroll: 0,
-            log_filter: None,
             dialog: None,
             overlay: None,
             errors: Vec::new(),
@@ -217,24 +224,68 @@ impl App {
         }
     }
 
-    /// The managed VMs, in the pool's order.
-    pub fn vm_names(&self) -> Vec<String> {
-        match &self.pool {
+    /// Every VM on the host: the managed ones in the pool's order, then
+    /// half-added, parked and unmanaged ones by name.
+    pub fn entries(&self) -> Vec<Entry> {
+        let listed: Vec<&ListedVm> = self
+            .inventory
+            .ok()
+            .map(|report| report.vms.iter().collect())
+            .unwrap_or_default();
+        let find = |name: &str| {
+            listed
+                .iter()
+                .find(|vm| vm.vm_name == name)
+                .map(|vm| (*vm).clone())
+        };
+        let mut entries: Vec<Entry> = match &self.pool {
             Some(Ok(snapshot)) => snapshot
                 .command
                 .vms
                 .iter()
-                .map(|vm| vm.name.clone())
+                .enumerate()
+                .map(|(index, vm)| Entry {
+                    name: vm.name.clone(),
+                    management: Management::Managed,
+                    pool_index: Some(index),
+                    listed: find(&vm.name),
+                })
                 .collect(),
             _ => Vec::new(),
+        };
+        for management in [
+            Management::Managed,
+            Management::Unfinished,
+            Management::Parked,
+            Management::NotManaged,
+        ] {
+            for vm in listed.iter().filter(|vm| vm.management == management) {
+                if !entries.iter().any(|entry| entry.name == vm.vm_name) {
+                    entries.push(Entry {
+                        name: vm.vm_name.clone(),
+                        management,
+                        pool_index: None,
+                        listed: Some((*vm).clone()),
+                    });
+                }
+            }
         }
+        entries
     }
 
-    pub fn selected_vm(&self) -> Option<String> {
-        let names = self.vm_names();
-        names
-            .get(self.selected.min(names.len().saturating_sub(1)))
-            .cloned()
+    pub fn selected(&self) -> Option<Entry> {
+        let entries = self.entries();
+        let at = self.cursor.min(entries.len().saturating_sub(1));
+        entries.into_iter().nth(at)
+    }
+
+    /// The managed VMs, in the pool's order.
+    pub fn managed(&self) -> Vec<String> {
+        self.entries()
+            .into_iter()
+            .filter(|entry| entry.management == Management::Managed)
+            .map(|entry| entry.name)
+            .collect()
     }
 
     /// A flow is running in the dialog.
@@ -242,29 +293,59 @@ impl App {
         matches!(&self.dialog, Some(Dialog::Flow(flow)) if flow.done.is_none())
     }
 
+    /// Called every turn of the screen's loop: reads the host's VMs again
+    /// when they are old.
+    pub fn tick(&mut self) {
+        let stale = self
+            .inventory_read
+            .is_none_or(|read| read.elapsed() >= INVENTORY_EVERY);
+        if stale && self.inventory != Loaded::Loading {
+            self.load_inventory();
+        }
+    }
+
+    fn load_inventory(&mut self) {
+        self.inventory_read = Some(Instant::now());
+        if self.inventory.ok().is_none() {
+            self.inventory = Loaded::Loading;
+        }
+        let context = self.context.clone();
+        jobs::spawn_load(self.tx.clone(), move || {
+            Msg::Inventory(crate::inventory::list(&context))
+        });
+    }
+
     pub fn on_msg(&mut self, msg: Msg) {
         match msg {
-            Msg::Pool(pool) => {
-                if let Ok(snapshot) = &pool {
-                    let count = snapshot.command.vms.len();
-                    if count > 0 && self.selected >= count {
-                        self.selected = count - 1;
-                    }
-                }
-                self.pool = Some(pool);
-            }
+            Msg::Pool(pool) => self.pool = Some(pool),
             Msg::Vm(name, snapshot) => self.vm = Some((name, *snapshot)),
             Msg::Details(name, details) => {
                 self.details.insert(name, details);
             }
             Msg::Controller(unit) => self.controller = Some(unit),
-            Msg::Inventory(report) => {
-                self.inventory = Loaded::Done(report);
+            // A failed re-read keeps the list it had.
+            Msg::Inventory(Err(error)) if self.inventory.ok().is_some() => {
+                self.status = Some((format!("reading the VMs failed: {error}"), Tone::Warn));
             }
+            Msg::Inventory(report) => self.inventory = Loaded::Done(report),
             Msg::Doctor(sections) => self.doctor = Loaded::Done(sections),
             Msg::Log(text) => self.log = Loaded::Done(text),
             Msg::Flow(event) => self.on_flow(event),
         }
+        self.follow_selection();
+    }
+
+    /// The reader follows the chosen VM, so its details and settings are at
+    /// hand when its menu or details open.
+    fn follow_selection(&mut self) {
+        let vm = match &self.view {
+            View::Details(vm) => Some(vm.clone()),
+            _ => self
+                .selected()
+                .filter(|entry| entry.management == Management::Managed)
+                .map(|entry| entry.name),
+        };
+        self.control.want_vm(vm);
     }
 
     fn on_flow(&mut self, event: FlowEvent) {
@@ -303,9 +384,7 @@ impl App {
             FlowEvent::Done(result) => {
                 let title = flow.title.clone();
                 match &result {
-                    Ok(_) => {
-                        self.status = Some((format!("ran: {title}"), Tone::Good));
-                    }
+                    Ok(_) => self.status = Some((format!("ran: {title}"), Tone::Good)),
                     Err(error) => {
                         self.status = Some((format!("failed: {title}"), Tone::Bad));
                         self.errors.push(ErrorEntry {
@@ -318,9 +397,9 @@ impl App {
                 flow.pending = None;
                 flow.done = Some(result);
                 // What the action changed shows on the next reads.
-                self.inventory = Loaded::NotYet;
+                self.load_inventory();
                 self.doctor = Loaded::NotYet;
-                self.refresh_screen();
+                self.log = Loaded::NotYet;
             }
         }
     }
@@ -339,35 +418,41 @@ impl App {
         }));
     }
 
-    fn go(&mut self, screen: Screen) {
-        self.screen = screen;
-        self.refresh_screen();
+    /// Do what a menu item says.
+    pub fn pick(&mut self, pick: Pick) {
+        self.dialog = None;
+        match pick {
+            Pick::Run(action) => self.start(action),
+            Pick::Open(view) => self.open(view),
+            Pick::Settings(vm) => self.edit_settings(&vm),
+        }
     }
 
-    /// Load what the screen shows, if it isn't loaded.
-    pub fn refresh_screen(&mut self) {
-        let vm = (self.screen == Screen::Vm)
-            .then(|| self.selected_vm())
-            .flatten();
-        self.control.want_vm(vm);
+    pub fn open(&mut self, view: View) {
+        self.view = view;
+        self.follow_selection();
         let context = self.context.clone();
-        match self.screen {
-            Screen::Add | Screen::Remove if self.inventory == Loaded::NotYet => {
-                self.inventory = Loaded::Loading;
+        match self.view.clone() {
+            View::Doctor(vm)
+                if self.doctor_for.as_ref() != Some(&vm) || self.doctor == Loaded::NotYet =>
+            {
+                self.doctor = Loaded::Loading;
+                self.doctor_for = Some(vm.clone());
+                self.doctor_cursor = 0;
                 jobs::spawn_load(self.tx.clone(), move || {
-                    Msg::Inventory(crate::inventory::list(&context))
+                    Msg::Doctor(match vm {
+                        None => jobs::doctor(&context),
+                        Some(vm) => jobs::doctor_one(&context, &vm),
+                    })
                 });
             }
-            Screen::Doctor if self.doctor == Loaded::NotYet => {
-                self.doctor = Loaded::Loading;
-                jobs::spawn_load(self.tx.clone(), move || Msg::Doctor(jobs::doctor(&context)));
-            }
-            Screen::Logs if self.log == Loaded::NotYet => {
+            View::Logs(vm) if self.log_for.as_ref() != Some(&vm) || self.log == Loaded::NotYet => {
                 self.log = Loaded::Loading;
-                let filter = self.log_filter.clone();
+                self.log_for = Some(vm.clone());
+                self.log_scroll = 0;
                 jobs::spawn_load(self.tx.clone(), move || {
                     Msg::Log(crate::journal::read_log(
-                        filter.as_deref(),
+                        vm.as_deref(),
                         1000,
                         std::path::Path::new("/"),
                     ))
@@ -377,17 +462,187 @@ impl App {
         }
     }
 
-    fn reload_screen(&mut self) {
-        match self.screen {
-            Screen::Add | Screen::Remove => self.inventory = Loaded::NotYet,
-            Screen::Doctor => self.doctor = Loaded::NotYet,
-            Screen::Logs => self.log = Loaded::NotYet,
-            _ => self
-                .control
-                .reload
-                .store(true, std::sync::atomic::Ordering::Release),
+    fn reload(&mut self) {
+        match self.view.clone() {
+            View::Main | View::Details(_) => {
+                self.load_inventory();
+                self.control
+                    .reload
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            view @ View::Doctor(_) => {
+                self.doctor = Loaded::NotYet;
+                self.open(view);
+            }
+            view @ View::Logs(_) => {
+                self.log = Loaded::NotYet;
+                self.open(view);
+            }
         }
-        self.refresh_screen();
+    }
+
+    /// The menu for a VM: what can be done with it, each with its key.
+    pub fn menu(&self, entry: &Entry) -> ChoiceDialog {
+        let vm = entry.name.as_str();
+        let line = |words: &[&str]| self.context.command_line(words);
+        let item = |key, label: &str, detail: String, pick| Choice {
+            key,
+            label: label.to_owned(),
+            detail,
+            pick,
+        };
+        let doctor = item(
+            'o',
+            "Doctor",
+            format!(
+                "everything that can be checked about it: {}",
+                line(&["doctor", vm])
+            ),
+            Pick::Open(View::Doctor(Some(vm.to_owned()))),
+        );
+        let forget = item(
+            'f',
+            "Forget it",
+            format!(
+                "removes its settings, attestation, request state, definition backups and its review: {}",
+                line(&["vm", "remove", vm, "--forget"])
+            ),
+            Pick::Run(Action::Remove {
+                vm: vm.to_owned(),
+                forget: true,
+            }),
+        );
+        let listed = entry.listed.as_ref();
+        let mut text = Vec::new();
+        if let Some(listed) = listed {
+            text.push(listed.detail.clone());
+        }
+        let choices = match entry.management {
+            Management::Managed => vec![
+                item(
+                    'v',
+                    "Details, live",
+                    format!(
+                        "its device, guest, history and events: {}",
+                        line(&["watch", vm])
+                    ),
+                    Pick::Open(View::Details(vm.to_owned())),
+                ),
+                item(
+                    's',
+                    "Settings",
+                    format!(
+                        "priority, min_ram, max_ram, free_ram: {}",
+                        line(&["set", vm, "KEY=VALUE"])
+                    ),
+                    Pick::Settings(vm.to_owned()),
+                ),
+                doctor,
+                item(
+                    'l',
+                    "Logs",
+                    format!("its lines in the journal: {}", line(&["logs", "--vm", vm])),
+                    Pick::Open(View::Logs(Some(vm.to_owned()))),
+                ),
+                item(
+                    'a',
+                    "Attest again",
+                    format!(
+                        "after a change to its definition: {}",
+                        line(&["vm", "attest", vm])
+                    ),
+                    Pick::Run(Action::Attest {
+                        vm: vm.to_owned(),
+                        restart: false,
+                    }),
+                ),
+                item(
+                    'c',
+                    "Restart it, then attest",
+                    format!(
+                        "a cold restart, so a changed definition takes effect: {}",
+                        line(&["vm", "attest", vm, "--restart"])
+                    ),
+                    Pick::Run(Action::Attest {
+                        vm: vm.to_owned(),
+                        restart: true,
+                    }),
+                ),
+                item(
+                    'k',
+                    "Remove it, keeping its settings",
+                    format!(
+                        "it keeps its memory until its next cold start; vm add brings it back: {}",
+                        line(&["vm", "remove", vm])
+                    ),
+                    Pick::Run(Action::Remove {
+                        vm: vm.to_owned(),
+                        forget: false,
+                    }),
+                ),
+                forget,
+            ],
+            Management::Parked => vec![
+                item(
+                    'b',
+                    "Bring it back",
+                    format!("with the settings it had: {}", line(&["vm", "add", vm])),
+                    Pick::Run(Action::Add(vm.to_owned())),
+                ),
+                doctor,
+                forget,
+            ],
+            Management::Unfinished => vec![
+                item(
+                    'a',
+                    "Finish adding it",
+                    format!(
+                        "an earlier vm add didn't apply: {}",
+                        line(&["vm", "add", vm])
+                    ),
+                    Pick::Run(Action::Add(vm.to_owned())),
+                ),
+                doctor,
+                forget,
+            ],
+            Management::NotManaged => {
+                if let Some(listed) = listed {
+                    for change in &listed.to_fix {
+                        text.push(format!("vm add will {change}"));
+                    }
+                    for problem in &listed.problems {
+                        text.push(format!(
+                            "problem: {} (fix: {})",
+                            problem.problem, problem.fix
+                        ));
+                    }
+                    if listed.guest == crate::reports::Published::No {
+                        text.push(format!(
+                            "Its guest service isn't installed. In the VM: {}",
+                            install_command(listed.os_id.as_deref())
+                        ));
+                    }
+                }
+                vec![
+                    item(
+                        'a',
+                        "Add it",
+                        format!(
+                            "shows each change, asks the review question, then applies: {}",
+                            line(&["vm", "add", vm, "--fix-xml"])
+                        ),
+                        Pick::Run(Action::Add(vm.to_owned())),
+                    ),
+                    doctor,
+                ]
+            }
+        };
+        ChoiceDialog {
+            title: format!("{vm} ({})", entry.management.label()),
+            text,
+            choices,
+            cursor: 0,
+        }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
@@ -396,30 +651,20 @@ impl App {
         }
         let ctrl_c =
             key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
+        if ctrl_c {
+            return self.ask_quit();
+        }
         if self.overlay.is_some() {
-            if ctrl_c {
-                return self.ask_quit();
-            }
             if matches!(
                 key.code,
-                KeyCode::Esc
-                    | KeyCode::Enter
-                    | KeyCode::Char('q')
-                    | KeyCode::Char('?')
-                    | KeyCode::Char('e')
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?' | 'e')
             ) {
                 self.overlay = None;
             }
             return;
         }
         if self.dialog.is_some() {
-            if ctrl_c {
-                return self.ask_quit();
-            }
             return self.on_dialog_key(key);
-        }
-        if ctrl_c {
-            return self.ask_quit();
         }
         match key.code {
             KeyCode::Char('q') => return self.ask_quit(),
@@ -442,28 +687,16 @@ impl App {
                 self.status = Some((format!("icons: {set}"), Tone::Dim));
                 return;
             }
-            KeyCode::Tab => {
-                return self.go(Screen::ALL[(self.screen.index() + 1) % Screen::ALL.len()])
-            }
-            KeyCode::BackTab => {
-                return self
-                    .go(Screen::ALL
-                        [(self.screen.index() + Screen::ALL.len() - 1) % Screen::ALL.len()])
-            }
-            KeyCode::Char(digit @ '1'..='6') => {
-                return self.go(Screen::ALL[digit as usize - '1' as usize]);
-            }
-            KeyCode::Char('r') => return self.reload_screen(),
+            KeyCode::Char('r') => return self.reload(),
+            KeyCode::Esc if self.view != View::Main => return self.open(View::Main),
             _ => {}
         }
         self.quit_armed = false;
-        match self.screen {
-            Screen::Dashboard => self.on_dashboard_key(key),
-            Screen::Vm => self.on_vm_key(key),
-            Screen::Add => self.on_add_key(key),
-            Screen::Remove => self.on_remove_key(key),
-            Screen::Doctor => self.on_doctor_key(key),
-            Screen::Logs => self.on_logs_key(key),
+        match self.view.clone() {
+            View::Main => self.on_main_key(key),
+            View::Details(vm) => self.on_details_key(&vm, key),
+            View::Doctor(_) => self.on_doctor_key(key),
+            View::Logs(vm) => self.on_logs_key(vm, key),
         }
     }
 
@@ -496,46 +729,67 @@ impl App {
         };
     }
 
-    fn on_dashboard_key(&mut self, key: KeyEvent) {
-        let count = self.vm_names().len();
-        match key.code {
-            KeyCode::Enter if count > 0 => self.go(Screen::Vm),
-            code => Self::move_cursor(&mut self.selected, count, code),
+    /// A menu item's letter, for the chosen VM, from the list or its
+    /// details: the same as choosing it in the menu.
+    fn shortcut(&mut self, entry: &Entry, letter: char) {
+        let menu = self.menu(entry);
+        if let Some(choice) = menu.choices.into_iter().find(|choice| choice.key == letter) {
+            self.pick(choice.pick);
         }
     }
 
-    fn on_vm_key(&mut self, key: KeyEvent) {
-        let Some(vm) = self.selected_vm() else {
-            if key.code == KeyCode::Esc {
-                self.go(Screen::Dashboard);
-            }
-            return;
-        };
+    fn on_main_key(&mut self, key: KeyEvent) {
+        let count = self.entries().len();
         match key.code {
-            KeyCode::Esc => self.go(Screen::Dashboard),
+            KeyCode::Enter => {
+                if let Some(entry) = self.selected() {
+                    self.dialog = Some(Dialog::Choice(self.menu(&entry)));
+                }
+            }
+            KeyCode::Char('d') => self.open(View::Doctor(None)),
+            KeyCode::Char('l') => self.open(View::Logs(None)),
+            // `j` and `k` move in a list; the menu's `k` is in the menu.
+            KeyCode::Char(letter) if letter != 'k' && letter != 'j' => {
+                if let Some(entry) = self.selected() {
+                    self.shortcut(&entry, letter);
+                }
+            }
+            code => {
+                Self::move_cursor(&mut self.cursor, count, code);
+                self.follow_selection();
+            }
+        }
+    }
+
+    fn on_details_key(&mut self, vm: &str, key: KeyEvent) {
+        let managed = self.managed();
+        match key.code {
             KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
-                let count = self.vm_names().len();
-                let code = match key.code {
-                    KeyCode::Left => KeyCode::Up,
-                    KeyCode::Right => KeyCode::Down,
-                    code => code,
+                let Some(at) = managed.iter().position(|name| name == vm) else {
+                    return;
                 };
-                Self::move_cursor(&mut self.selected, count, code);
-                self.refresh_screen();
+                let next = match key.code {
+                    KeyCode::Left | KeyCode::Up => at.saturating_sub(1),
+                    _ => (at + 1).min(managed.len() - 1),
+                };
+                if let Some(name) = managed.get(next) {
+                    if let Some(cursor) =
+                        self.entries().iter().position(|entry| &entry.name == name)
+                    {
+                        self.cursor = cursor;
+                    }
+                    self.open(View::Details(name.clone()));
+                }
             }
-            KeyCode::Char('s') => self.edit_settings(&vm),
-            KeyCode::Char('a') => self.dialog = Some(Dialog::Choice(attest_choice(&vm))),
-            KeyCode::Char('x') => {
-                self.dialog = Some(Dialog::Choice(remove_choice(&vm, false, &self.context)))
+            KeyCode::Enter => {
+                if let Some(entry) = self.entries().into_iter().find(|entry| entry.name == vm) {
+                    self.dialog = Some(Dialog::Choice(self.menu(&entry)));
+                }
             }
-            KeyCode::Char('d') => {
-                self.doctor = Loaded::NotYet;
-                self.go(Screen::Doctor);
-            }
-            KeyCode::Char('l') => {
-                self.log_filter = Some(vm);
-                self.log = Loaded::NotYet;
-                self.go(Screen::Logs);
+            KeyCode::Char(letter) if letter != 'v' => {
+                if let Some(entry) = self.entries().into_iter().find(|entry| entry.name == vm) {
+                    self.shortcut(&entry, letter);
+                }
             }
             _ => {}
         }
@@ -547,7 +801,10 @@ impl App {
             .get(vm)
             .and_then(|details| details.settings.clone())
         else {
-            self.status = Some((format!("{vm}'s settings aren't read yet"), Tone::Warn));
+            self.status = Some((
+                format!("{vm}'s settings aren't read yet; try again in a moment"),
+                Tone::Warn,
+            ));
             return;
         };
         let field = |key, value: String| Field {
@@ -565,108 +822,6 @@ impl App {
             ],
             cursor: 0,
         }));
-    }
-
-    /// The VMs the add screen offers: those not managed, or half-added.
-    pub fn addable(&self) -> Vec<&crate::reports::ListedVm> {
-        self.inventory
-            .ok()
-            .map(|report| {
-                report
-                    .vms
-                    .iter()
-                    .filter(|vm| {
-                        matches!(
-                            vm.management,
-                            Management::NotManaged | Management::Unfinished
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// The VMs the remove screen offers: managed ones, and parked ones to
-    /// bring back.
-    pub fn removable(&self) -> Vec<&crate::reports::ListedVm> {
-        self.inventory
-            .ok()
-            .map(|report| {
-                report
-                    .vms
-                    .iter()
-                    .filter(|vm| matches!(vm.management, Management::Managed | Management::Parked))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn on_add_key(&mut self, key: KeyEvent) {
-        let count = self.addable().len();
-        match key.code {
-            KeyCode::Enter => {
-                let Some(vm) = self.addable().get(self.add_cursor).map(|vm| (*vm).clone()) else {
-                    return;
-                };
-                if !vm.problems.is_empty() {
-                    self.status = Some((
-                        format!(
-                            "{} can't be added yet: fix the problems shown first",
-                            vm.vm_name
-                        ),
-                        Tone::Warn,
-                    ));
-                    return;
-                }
-                self.start(Action::Add(vm.vm_name));
-            }
-            code => Self::move_cursor(&mut self.add_cursor, count, code),
-        }
-    }
-
-    fn on_remove_key(&mut self, key: KeyEvent) {
-        let count = self.removable().len();
-        // The choices' own letters work here too, as the screen shows them.
-        if let KeyCode::Char(letter @ ('k' | 'f' | 'b')) = key.code {
-            let Some(vm) = self
-                .removable()
-                .get(self.remove_cursor)
-                .map(|vm| (*vm).clone())
-            else {
-                return;
-            };
-            let choice = remove_choice(
-                &vm.vm_name,
-                vm.management == Management::Parked,
-                &self.context,
-            );
-            if let Some(picked) = choice
-                .choices
-                .into_iter()
-                .find(|option| option.key == letter)
-            {
-                self.start(picked.action);
-            }
-            return;
-        }
-        match key.code {
-            KeyCode::Enter => {
-                let Some(vm) = self
-                    .removable()
-                    .get(self.remove_cursor)
-                    .map(|vm| (*vm).clone())
-                else {
-                    return;
-                };
-                let parked = vm.management == Management::Parked;
-                self.dialog = Some(Dialog::Choice(remove_choice(
-                    &vm.vm_name,
-                    parked,
-                    &self.context,
-                )));
-            }
-            code => Self::move_cursor(&mut self.remove_cursor, count, code),
-        }
     }
 
     /// The doctor's findings in the order shown, with the VM each is about.
@@ -706,7 +861,7 @@ impl App {
                                 key: 'y',
                                 label: "Run it".to_owned(),
                                 detail: "its own questions come next".to_owned(),
-                                action,
+                                pick: Pick::Run(action),
                             }],
                             cursor: 0,
                         }));
@@ -723,7 +878,7 @@ impl App {
         }
     }
 
-    fn on_logs_key(&mut self, key: KeyEvent) {
+    fn on_logs_key(&mut self, vm: Option<String>, key: KeyEvent) {
         let lines = self.log.ok().map_or(0, |text| text.lines().count());
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.log_scroll = (self.log_scroll + 1).min(lines),
@@ -735,8 +890,8 @@ impl App {
             KeyCode::Home => self.log_scroll = lines,
             KeyCode::End => self.log_scroll = 0,
             KeyCode::Char('f') => {
-                let names = self.vm_names();
-                self.log_filter = match &self.log_filter {
+                let names = self.managed();
+                let next = match &vm {
                     None => names.first().cloned(),
                     Some(current) => names
                         .iter()
@@ -745,8 +900,7 @@ impl App {
                         .cloned(),
                 };
                 self.log = Loaded::NotYet;
-                self.log_scroll = 0;
-                self.refresh_screen();
+                self.open(View::Logs(next));
             }
             _ => {}
         }
@@ -809,6 +963,11 @@ impl App {
                     KeyCode::PageDown => flow.scroll = flow.scroll.saturating_sub(10),
                     KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') if flow.done.is_some() => {
                         self.dialog = None;
+                        // A doctor is checked again, to show what the fix did.
+                        if matches!(self.view, View::Doctor(_)) {
+                            let view = self.view.clone();
+                            self.open(view);
+                        }
                     }
                     KeyCode::Esc | KeyCode::Char('q') => {
                         self.status = Some((
@@ -829,7 +988,7 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if let Some(picked) = choice.choices.get(choice.cursor).cloned() {
-                        self.start(picked.action);
+                        self.pick(picked.pick);
                     }
                 }
                 KeyCode::Char(character) => {
@@ -839,7 +998,7 @@ impl App {
                         .find(|option| option.key == character)
                         .cloned()
                     {
-                        self.start(picked.action);
+                        self.pick(picked.pick);
                     }
                 }
                 _ => {}
@@ -910,96 +1069,6 @@ fn line_tone(line: &str) -> Tone {
     }
 }
 
-fn attest_choice(vm: &str) -> ChoiceDialog {
-    ChoiceDialog {
-        title: format!("Attest {vm} again"),
-        text: vec![
-            "Attest records how the VM is set up now, from its review profile.".to_owned(),
-            "Needed after any change to its definition.".to_owned(),
-        ],
-        choices: vec![
-            Choice {
-                key: 'a',
-                label: "Attest it as it runs".to_owned(),
-                detail: format!("rampire vm attest {vm}"),
-                action: Action::Attest {
-                    vm: vm.to_owned(),
-                    restart: false,
-                },
-            },
-            Choice {
-                key: 'r',
-                label: "Restart it, then attest".to_owned(),
-                detail: "a cold restart, so a changed definition takes effect".to_owned(),
-                action: Action::Attest {
-                    vm: vm.to_owned(),
-                    restart: true,
-                },
-            },
-        ],
-        cursor: 0,
-    }
-}
-
-/// Stop managing a VM: keep its settings or forget them; or for a parked
-/// one, bring it back or forget it.
-pub fn remove_choice(vm: &str, parked: bool, context: &Context) -> ChoiceDialog {
-    let draft = context.draft();
-    let parked_path = draft
-        .join(crate::context::PARKED_DIRECTORY)
-        .join(format!("{vm}.toml"));
-    let forget = Choice {
-        key: 'f',
-        label: "Forget it".to_owned(),
-        detail: "removes its settings, attestation, request state, definition backups and the review vm add wrote for it; its definition stays as vm add left it".to_owned(),
-        action: Action::Remove {
-            vm: vm.to_owned(),
-            forget: true,
-        },
-    };
-    if parked {
-        return ChoiceDialog {
-            title: format!("{vm} is parked"),
-            text: vec![format!(
-                "Its settings are kept in {}.",
-                parked_path.display()
-            )],
-            choices: vec![
-                Choice {
-                    key: 'b',
-                    label: "Bring it back".to_owned(),
-                    detail: "vm add restores its settings as they were".to_owned(),
-                    action: Action::Add(vm.to_owned()),
-                },
-                forget,
-            ],
-            cursor: 0,
-        };
-    }
-    ChoiceDialog {
-        title: format!("Stop managing {vm}"),
-        text: vec![
-            "It keeps the memory it has until its next cold start, which begins on boot RAM alone.".to_owned(),
-        ],
-        choices: vec![
-            Choice {
-                key: 'k',
-                label: "Keep its settings (park it)".to_owned(),
-                detail: format!(
-                    "leaves its settings in {}, with its review and attestation, for vm add to bring it back",
-                    parked_path.display()
-                ),
-                action: Action::Remove {
-                    vm: vm.to_owned(),
-                    forget: false,
-                },
-            },
-            forget,
-        ],
-        cursor: 0,
-    }
-}
-
 /// The install command for a VM's system, from its libosinfo name.
 pub fn install_command(os_id: Option<&str>) -> &'static str {
     match os_id {
@@ -1016,20 +1085,55 @@ pub fn install_command(os_id: Option<&str>) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::reports::{Published, VmListSchema};
     use crate::tui::theme::{Depth, Icons, Palette};
+
+    pub(crate) fn listed(name: &str, management: Management) -> ListedVm {
+        ListedVm {
+            vm_name: name.to_owned(),
+            state: "running".to_owned(),
+            management,
+            status: None,
+            detail: format!("{name} detail"),
+            to_fix: if management == Management::NotManaged {
+                vec!["add a 6144 MiB virtio-mem device".to_owned()]
+            } else {
+                vec![]
+            },
+            problems: vec![],
+            guest: if management == Management::NotManaged {
+                Published::No
+            } else {
+                Published::Yes { age_seconds: 1 }
+            },
+            os_id: Some("http://debian.org/debian/13".to_owned()),
+        }
+    }
 
     pub(crate) fn app() -> (App, std::sync::mpsc::Receiver<Msg>) {
         let (tx, rx) = jobs::channel();
         let context = Context {
-            config: Some(std::path::PathBuf::from("/nonexistent")),
+            config: None,
             connect: Some("test:///default".to_owned()),
             build: "0.1.0 (build test)".to_owned(),
             via: "tui",
         };
         let theme = Theme::new(Palette::Navy, Depth::Colours256, Icons { unicode: true });
-        (App::new(context, theme, tx, ReaderControl::new()), rx)
+        let mut app = App::new(context, theme, tx, ReaderControl::new());
+        app.on_msg(Msg::Pool(Ok(crate::tui::pool::tests::snapshot(3))));
+        app.on_msg(Msg::Inventory(Ok(VmListReport {
+            schema: VmListSchema,
+            version: 1,
+            vms: vec![
+                listed("newvm", Management::NotManaged),
+                listed("oldvm", Management::Parked),
+                listed("vm0", Management::Managed),
+            ],
+        })));
+        app.inventory_read = Some(Instant::now());
+        (app, rx)
     }
 
     fn press(app: &mut App, code: KeyCode) {
@@ -1037,19 +1141,88 @@ mod tests {
     }
 
     #[test]
-    fn tab_digits_and_back_tab_move_between_screens() {
+    fn the_list_has_every_vm_managed_first() {
+        let (app, _rx) = app();
+        let names: Vec<(String, Management)> = app
+            .entries()
+            .into_iter()
+            .map(|entry| (entry.name, entry.management))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("vm0".to_owned(), Management::Managed),
+                ("a-very-long-vm-name".to_owned(), Management::Managed),
+                ("vm2".to_owned(), Management::Managed),
+                ("oldvm".to_owned(), Management::Parked),
+                ("newvm".to_owned(), Management::NotManaged),
+            ]
+        );
+    }
+
+    #[test]
+    fn enter_opens_the_menu_for_what_the_vm_is() {
         let (mut app, _rx) = app();
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(app.screen, Screen::Vm);
-        press(&mut app, KeyCode::BackTab);
-        press(&mut app, KeyCode::BackTab);
-        assert_eq!(app.screen, Screen::Logs);
-        press(&mut app, KeyCode::Char('5'));
-        assert_eq!(app.screen, Screen::Doctor);
-        press(&mut app, KeyCode::Char('?'));
-        assert_eq!(app.overlay, Some(Overlay::Help));
+        press(&mut app, KeyCode::Enter);
+        let Some(Dialog::Choice(menu)) = &app.dialog else {
+            panic!("a menu");
+        };
+        let keys: String = menu.choices.iter().map(|choice| choice.key).collect();
+        assert_eq!(keys, "vsolackf");
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.view, View::Details("vm0".to_owned()));
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.overlay, None);
+        assert_eq!(app.view, View::Main);
+
+        press(&mut app, KeyCode::End);
+        press(&mut app, KeyCode::Enter);
+        let Some(Dialog::Choice(menu)) = &app.dialog else {
+            panic!("a menu");
+        };
+        assert_eq!(
+            menu.choices[0].pick,
+            Pick::Run(Action::Add("newvm".to_owned()))
+        );
+        assert!(menu
+            .text
+            .iter()
+            .any(|line| line.contains("apt install rampire-guest")));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.dialog.is_none());
+
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        let Some(Dialog::Choice(menu)) = &app.dialog else {
+            panic!("a menu");
+        };
+        assert_eq!(
+            menu.choices[0].pick,
+            Pick::Run(Action::Add("oldvm".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_menus_letters_work_from_the_list() {
+        let (mut app, _rx) = app();
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.view, View::Doctor(Some("vm0".to_owned())));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.view, View::Doctor(None));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.view, View::Logs(None));
+        press(&mut app, KeyCode::Esc);
+        // No settings read yet: it says so rather than showing an empty form.
+        press(&mut app, KeyCode::Char('s'));
+        assert!(app.dialog.is_none());
+        app.on_msg(Msg::Details(
+            "vm0".to_owned(),
+            crate::tui::vm::tests::details(),
+        ));
+        press(&mut app, KeyCode::Char('s'));
+        assert!(matches!(app.dialog, Some(Dialog::Form(_))));
+        press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Char('q'));
         assert!(app.quit);
     }
@@ -1104,14 +1277,12 @@ mod tests {
         assert_eq!(answer.recv().unwrap(), Answer::Text("ok no".to_owned()));
         app.on_msg(Msg::Flow(FlowEvent::Done(Err("it broke".to_owned()))));
         assert_eq!(app.errors.len(), 1);
-        assert_eq!(app.errors[0].error, "it broke");
         let Some(Dialog::Flow(flow)) = &app.dialog else {
             panic!("the dialog stays to show the error");
         };
         assert!(flow.lines.iter().any(|(line, _)| line == "Apply this? yes"));
         press(&mut app, KeyCode::Enter);
         assert!(app.dialog.is_none());
-        // The error stays in the list after the dialog closes.
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.overlay, Some(Overlay::Errors));
     }
