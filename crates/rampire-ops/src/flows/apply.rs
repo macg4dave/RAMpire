@@ -36,10 +36,15 @@ fn show_difference(ui: &mut dyn Ui, from: Option<&Path>, to: &Path) -> Result<bo
     let shown = match output.status.code() {
         Some(0) => false,
         Some(1) => {
-            // Name the two sides, not the temporary paths behind them.
-            let text = String::from_utf8_lossy(&output.stdout)
+            // Name the two sides, not the temporary paths behind them, and
+            // leave out diff's own command line before each file.
+            let text: String = String::from_utf8_lossy(&output.stdout)
                 .replace(&from.display().to_string(), "applied")
-                .replace(&to.display().to_string(), "draft");
+                .replace(&to.display().to_string(), "draft")
+                .lines()
+                .filter(|line| !line.starts_with("diff -ruN"))
+                .map(|line| format!("{line}\n"))
+                .collect();
             ui.show(&text);
             true
         }

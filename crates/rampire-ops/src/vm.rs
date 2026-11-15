@@ -17,6 +17,9 @@ pub struct Device {
     pub requested_bytes: u64,
 }
 
+/// The QEMU guest agent's virtio-serial channel.
+pub const GUEST_AGENT_CHANNEL_NAME: &str = "org.qemu.guest_agent.0";
+
 /// What `vm add` reads from a domain's definition.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inspection {
@@ -29,6 +32,9 @@ pub struct Inspection {
     pub other_memory_devices: usize,
     pub devices: Vec<Device>,
     pub control_channel: bool,
+    /// The QEMU guest agent's channel, through which `vm add` reads the
+    /// guest's kernel release.
+    pub guest_agent_channel: bool,
     pub hostdevs: usize,
     pub vdpa: bool,
     pub vhost_user: bool,
@@ -57,6 +63,7 @@ impl Inspection {
     pub fn runs_behind(&self, live: &Self) -> bool {
         live.device().is_none()
             || live.control_channel != self.control_channel
+            || live.guest_agent_channel != self.guest_agent_channel
             || live.balloon != self.balloon
     }
 
@@ -107,6 +114,11 @@ impl Inspection {
         if !self.control_channel {
             changes.push(format!(
                 "add the control channel {MEMORY_CONTROL_CHANNEL_NAME}"
+            ));
+        }
+        if !self.guest_agent_channel {
+            changes.push(format!(
+                "add the guest agent channel {GUEST_AGENT_CHANNEL_NAME}, so the guest's kernel is read, not asked"
             ));
         }
         match self.device() {
@@ -331,11 +343,11 @@ fn look(
                 current.alias = attribute(element, b"name")?;
             }
         }
-        (b"target", Some(b"channel")) => {
-            if attribute(element, b"name")?.as_deref() == Some(MEMORY_CONTROL_CHANNEL_NAME) {
-                inspection.control_channel = true;
-            }
-        }
+        (b"target", Some(b"channel")) => match attribute(element, b"name")?.as_deref() {
+            Some(MEMORY_CONTROL_CHANNEL_NAME) => inspection.control_channel = true,
+            Some(GUEST_AGENT_CHANNEL_NAME) => inspection.guest_agent_channel = true,
+            _ => {}
+        },
         (b"hostdev", Some(b"devices")) => inspection.hostdevs += 1,
         (b"interface", Some(b"devices")) => match attribute(element, b"type")?.as_deref() {
             Some("vdpa") => inspection.vdpa = true,
@@ -441,6 +453,14 @@ pub fn fix_xml(xml: &str, inspection: &Inspection) -> Result<Option<String>, Str
             &mut text,
             &format!(
                 "    <channel type='unix'>\n      <target type='virtio' name='{MEMORY_CONTROL_CHANNEL_NAME}'/>\n      <alias name='ua-rampire-control'/>\n    </channel>\n"
+            ),
+        )?;
+    }
+    if !inspection.guest_agent_channel {
+        insert_device(
+            &mut text,
+            &format!(
+                "    <channel type='unix'>\n      <target type='virtio' name='{GUEST_AGENT_CHANNEL_NAME}'/>\n    </channel>\n"
             ),
         )?;
     }
@@ -736,6 +756,9 @@ mod tests {
     <channel type='unix'>
       <target type='virtio' name='org.rampire.control.0'/>
     </channel>
+    <channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
     <memballoon model='none'/>
     <memory model='virtio-mem'>
       <target>
@@ -826,9 +849,9 @@ mod tests {
         );
 
         let desk = inspect(PLAIN).unwrap();
-        assert_eq!(desk.fixable().len(), 3, "{:?}", desk.fixable());
+        assert_eq!(desk.fixable().len(), 4, "{:?}", desk.fixable());
         let fixed = inspect(&fix_xml(PLAIN, &desk).unwrap().unwrap()).unwrap();
-        assert!(fixed.control_channel);
+        assert!(fixed.control_channel && fixed.guest_agent_channel);
         // The balloon is off, so its review question answers itself.
         assert_eq!(fixed.balloon.as_deref(), Some("none"));
         assert!(review_answers(&fixed, false)
@@ -861,7 +884,7 @@ mod tests {
             .collect();
         assert!(problems.iter().any(|p| p.contains("NUMA")));
         assert!(problems.iter().any(|p| p.contains("maxMemory")));
-        assert_eq!(inspection.fixable().len(), 4, "{:?}", inspection.fixable());
+        assert_eq!(inspection.fixable().len(), 5, "{:?}", inspection.fixable());
         let text = fix_xml(bare, &inspection).unwrap().unwrap();
         assert!(
             text.contains("<cpu mode='host-passthrough' check='none'>\n    <numa>"),
