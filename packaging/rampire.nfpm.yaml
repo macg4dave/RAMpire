@@ -91,8 +91,13 @@ overrides:
       - libvirt-client
       - polkit
       - systemd
+    # vm add installs the guest package with them when it can't log in.
+    recommends:
+      - guestfs-tools
   deb:
     depends:
       - libvirt-clients
       - polkitd
       - systemd
+    recommends:
+      - libguestfs-tools

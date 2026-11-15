@@ -457,7 +457,7 @@ mod tests {
         press(&mut app, KeyCode::End);
         press(&mut app, KeyCode::Enter);
         let text = text(&app, 120, 40);
-        assert!(text.contains("Add it"), "{text}");
+        assert!(text.contains("Install RAMpire"), "{text}");
     }
 
     #[test]

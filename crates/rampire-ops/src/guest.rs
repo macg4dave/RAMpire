@@ -1,7 +1,9 @@
 //! Reaching inside a VM from the host, so `vm add` can install or upgrade
 //! its guest package: through the QEMU guest agent when it runs commands,
 //! else over SSH with RAMpire's own key ([`GUEST_KEY`], made on first use)
-//! beside root's.
+//! beside root's; and when neither gets in, with libvirt's disk tools while
+//! the VM is shut down ([`install_offline`]), the install running at its
+//! next boot.
 //!
 //! The host package carries the guest packages of its own build in
 //! [`GUEST_PACKAGES`]: the guest always gets the build the host runs.
@@ -135,14 +137,11 @@ impl<'a> Guest<'a> {
                     let Route::Ssh(login) = &self.route else {
                         return Err(error);
                     };
-                    let user = login.split('@').next().unwrap_or("root");
                     return Err(format!(
-                        "can't log in to {} as {login} ({}). Let RAMpire in once: add this line to \
-                         ~{user}/.ssh/authorized_keys in {}, then add it again:\n{}",
+                        "can't log in to {} as {login}: {} (RAMpire's key, to let it in next time: {}.pub)",
                         self.vm,
                         error.trim_end_matches('.'),
-                        self.vm,
-                        public_key()?
+                        GUEST_KEY
                     ));
                 }
             }
@@ -278,6 +277,133 @@ impl<'a> Guest<'a> {
     }
 }
 
+/// Whether libguestfs' `virt-customize` and `virt-ls` are on the host, for
+/// [`install_offline`].
+pub fn offline_available() -> bool {
+    ["virt-customize", "virt-ls"].iter().all(|tool| {
+        Command::new(tool)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
+}
+
+/// Where the packages wait in the guest for its next boot.
+const OFFLINE_FOLDER: &str = "/var/lib/rampire-guest-install";
+
+/// Run at the guest's next boot: install the package its system takes,
+/// then boot again when the package turned on what needs a fresh start.
+const FIRST_BOOT: &str = r#"#!/bin/sh
+# Written by rampire vm add: installs the guest service, then goes.
+set -e
+dir=/var/lib/rampire-guest-install
+if command -v dpkg >/dev/null 2>&1; then
+    dpkg -i "$dir/rampire-guest.deb"
+else
+    rpm -U --replacepkgs "$dir/rampire-guest.rpm"
+fi
+rm -rf "$dir"
+[ -e /proc/pressure/memory ] || systemctl reboot
+"#;
+
+/// Install the guest package of this build in a VM without logging in:
+/// with it shut down (it is, when `running` is false; else it is shut down
+/// here), put the packages on its disk and an install that runs at its
+/// next boot. The VM is left shut off for the caller to start. Returns
+/// its newest installed kernel.
+pub fn install_offline(libvirt: &Libvirt, vm: &str, running: bool) -> Result<String, String> {
+    if !offline_available() {
+        return Err(
+            "libvirt's disk tools aren't installed: install guestfs-tools (RHEL, Fedora) or libguestfs-tools (Debian)"
+                .to_owned(),
+        );
+    }
+    for kind in ["deb", "rpm"] {
+        if !package_path(kind).exists() {
+            return Err(format!(
+                "{} is missing: this host's RAMpire was installed without the guest packages",
+                package_path(kind).display()
+            ));
+        }
+    }
+    if running {
+        crate::attest::shut_down(vm, libvirt, Duration::from_secs(300))?;
+    }
+    let modules = tool("virt-ls", &["-d", vm, "/lib/modules"])?;
+    let kernel = newest(
+        modules
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty()),
+    )
+    .ok_or_else(|| format!("{vm} has no kernel in /lib/modules"))?;
+    let temporary = crate::context::TempDir::new(vm)?;
+    let script = temporary.path().join("rampire-guest-install.sh");
+    std::fs::write(&script, FIRST_BOOT).map_err(|error| error.to_string())?;
+    let upload = |kind: &str| {
+        format!(
+            "{}:{OFFLINE_FOLDER}/rampire-guest.{kind}",
+            package_path(kind).display()
+        )
+    };
+    let script = script
+        .to_str()
+        .ok_or("the install script's path is not UTF-8")?
+        .to_owned();
+    tool(
+        "virt-customize",
+        &[
+            "-q",
+            "-d",
+            vm,
+            "--no-network",
+            "--mkdir",
+            OFFLINE_FOLDER,
+            "--upload",
+            &upload("deb"),
+            "--upload",
+            &upload("rpm"),
+            "--firstboot",
+            &script,
+            "--selinux-relabel",
+        ],
+    )?;
+    Ok(kernel)
+}
+
+/// Run a libguestfs tool; its output, or why it failed.
+fn tool(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("run {program}: {error}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(format!(
+            "{program}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+/// The newest of these kernel releases, comparing their numbers as numbers.
+fn newest<'a>(releases: impl Iterator<Item = &'a str>) -> Option<String> {
+    let key = |release: &str| -> Vec<u64> {
+        release
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.parse().unwrap_or(0))
+            .collect()
+    };
+    releases
+        .filter(|release| release.starts_with(|c: char| c.is_ascii_digit()))
+        .max_by(|a, b| key(a).cmp(&key(b)))
+        .map(str::to_owned)
+}
+
 /// The guest package of this build for a `deb` or `rpm` guest.
 pub fn package_path(kind: &str) -> PathBuf {
     Path::new(GUEST_PACKAGES).join(format!("rampire-guest.{kind}"))
@@ -405,6 +531,21 @@ mod tests {
 ";
         assert_eq!(first_ipv4(table).as_deref(), Some("192.168.122.57"));
         assert_eq!(first_ipv4(" Name MAC Protocol Address\n---\n"), None);
+    }
+
+    #[test]
+    fn the_newest_kernel_is_chosen_by_its_numbers() {
+        let releases = [
+            "6.12.0-55.el10.x86_64",
+            "6.12.0-124.el10.x86_64",
+            "6.9.0-1.el10.x86_64",
+            "extramodules",
+        ];
+        assert_eq!(
+            newest(releases.into_iter()).as_deref(),
+            Some("6.12.0-124.el10.x86_64")
+        );
+        assert_eq!(newest(std::iter::empty()), None);
     }
 
     #[test]

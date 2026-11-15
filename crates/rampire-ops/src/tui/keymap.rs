@@ -309,7 +309,7 @@ pub static BINDINGS: &[Binding] = &[
     bind(Only(L::List), &[ch('v')], C::Letter('v'), "its details, live"),
     bind(Only(L::List), &[ch('s')], C::Letter('s'), "its settings: priority and its RAM limits"),
     bind(Only(L::List), &[ch('o')], C::Letter('o'), "its doctor"),
-    bind(Only(L::List), &[ch('a')], C::Letter('a'), "add it: its settings, then what adding does; or finish adding it"),
+    bind(Only(L::List), &[ch('a')], C::Letter('a'), "install RAMpire on it, or finish installing"),
     bind(Only(L::List), &[ch('c')], C::Letter('c'), "restart it, so its saved definition takes effect"),
     hinted(Only(L::List), &[ch('d')], C::Doctor, "the doctor, for the host and every VM", "doctor"),
     bind(Only(L::List), &[ch('l')], C::Logs, "the logs"),

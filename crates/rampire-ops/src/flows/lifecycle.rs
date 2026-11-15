@@ -170,7 +170,11 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         plan.push(format!("its definition: {change}"));
     }
     if !options.no_guest_install {
-        plan.push("install or upgrade rampire-guest in it, the build this host runs".to_owned());
+        plan.push(
+            "install or upgrade rampire-guest in it, the build this host runs: logged in to it, \
+             or with it shut down for a moment when it can't be logged in to"
+                .to_owned(),
+        );
     }
     if !running {
         plan.push("start it".to_owned());
@@ -215,30 +219,59 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
             &[("backup", &backup.display().to_string())],
         );
     }
-    if !running {
+    // The guest package: a VM that is off gets it on its disk before it
+    // first starts; a running one through a login, else the same way with
+    // it shut down for a moment. An install on the disk runs at the boot.
+    let offline = |running: bool, ui: &mut dyn Ui| -> Result<crate::guest::Installed, String> {
+        ui.say(&format!(
+            "putting rampire-guest on {name}'s disk; it installs as {name} starts"
+        ));
+        let kernel = crate::guest::install_offline(&libvirt, name, running)?;
+        libvirt.virsh(&["start", name])?;
+        ui.say(&format!("{name} started"));
+        Ok(crate::guest::Installed {
+            kernel,
+            build: String::new(),
+            restart_needed: false,
+        })
+    };
+    let mut installed = None;
+    if !running && !options.no_guest_install && crate::guest::offline_available() {
+        installed = Some(offline(false, ui)?);
+    } else if !running {
         libvirt.virsh(&["start", name])?;
         ui.say(&format!("{name} started"));
     }
-    let installed = if options.no_guest_install {
-        None
-    } else {
-        let guest = crate::guest::Guest::reach(
+    if !options.no_guest_install && installed.is_none() {
+        let logged_in = crate::guest::Guest::reach(
             &libvirt,
             name,
             options.guest_login.as_deref(),
             Duration::from_secs(180),
-        )?;
-        ui.say(&format!(
-            "installing rampire-guest in {name} {}",
-            guest.way()
-        ));
-        let installed = guest.install()?;
-        ui.say(&format!(
-            "{name} has rampire-guest {}, on Linux {}",
-            installed.build, installed.kernel
-        ));
-        Some(installed)
-    };
+        )
+        .and_then(|guest| {
+            ui.say(&format!(
+                "installing rampire-guest in {name} {}",
+                guest.way()
+            ));
+            guest.install()
+        });
+        installed = Some(match logged_in {
+            Ok(done) => {
+                ui.say(&format!(
+                    "{name} has rampire-guest {}, on Linux {}",
+                    done.build, done.kernel
+                ));
+                done
+            }
+            Err(why) => {
+                ui.say(&why);
+                // Shut down and started again: its new definition is in.
+                restart = false;
+                offline(true, ui)?
+            }
+        });
+    }
     if restart
         || installed
             .as_ref()
@@ -267,7 +300,8 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         crate::audit::record(context, "vm_add", Some(name), &[]);
     }
     let changed = super::apply::apply_agreed(context, ui)?;
-    guest_reports_in(context, ui, name, Duration::from_secs(180));
+    // An install at boot may boot the VM once more.
+    guest_reports_in(context, ui, name, Duration::from_secs(300));
     Ok(changed)
 }
 

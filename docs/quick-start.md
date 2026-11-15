@@ -54,7 +54,7 @@ ssh -t HOST sudo rampire     # from another computer
 ```
 
 Every VM on the host is listed. Choose the VM with the arrows, press
-**Enter** and choose **Add it** (`a`):
+**Enter** and choose **Install RAMpire** (`a`):
 
 1. Its settings come up, filled in from its definition: priority, minimum,
    maximum and free RAM, and how to log in to it. Change any, then
@@ -72,12 +72,13 @@ rampire vm add webserver
 
 To install the guest service, RAMpire logs in to the VM: through its QEMU
 guest agent when that runs commands, else over SSH as root at the address
-libvirt has for it, with RAMpire's own key. The first time a VM doesn't
-let it in, `vm add` prints the one line to add to that user's
-`~/.ssh/authorized_keys` in the VM (the key is
-`/var/lib/rampire/ssh/id_ed25519.pub`). Give another login with
-`--guest-login USER@HOST`, or in the form. The guest service needs
-systemd 253 or later: Debian 13, RHEL 10, current Fedora.
+libvirt has for it, with RAMpire's own key
+(`/var/lib/rampire/ssh/id_ed25519.pub`), or as `--guest-login USER@HOST`
+(Guest login in the form). When it can't log in, or the VM is off, it
+uses libvirt's disk tools instead (`guestfs-tools`, which the host package
+recommends): with the VM shut down, it puts the package on its disk, and
+the package installs as the VM starts. The guest service needs systemd
+253 or later: Debian 13, RHEL 10, current Fedora.
 
 ## 4. Watch it work
 

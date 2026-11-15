@@ -807,7 +807,7 @@ impl App {
                 vec![
                     item(
                         'a',
-                        "Add it: choose its settings, then see what adding does",
+                        "Install RAMpire",
                         line(&["vm", "add", vm]),
                         Pick::Add(vec![vm.to_owned()]),
                     ),

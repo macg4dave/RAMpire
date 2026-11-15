@@ -161,6 +161,13 @@ fn still_safe(libvirt: &Libvirt, ui: &mut dyn Ui, vm: &str) -> Result<bool, Stri
 /// Shut the VM down, wait for it to stop, and start it again, so its saved
 /// definition takes effect.
 pub fn cold_restart(vm: &str, libvirt: &Libvirt, shutdown_timeout: Duration) -> Result<(), String> {
+    shut_down(vm, libvirt, shutdown_timeout)?;
+    libvirt.virsh(&["start", vm])?;
+    Ok(())
+}
+
+/// Shut the VM down and wait for it to stop.
+pub fn shut_down(vm: &str, libvirt: &Libvirt, shutdown_timeout: Duration) -> Result<(), String> {
     if libvirt.state(vm)? != "shut off" {
         libvirt.virsh(&["shutdown", vm])?;
         let started = Instant::now();
@@ -174,7 +181,6 @@ pub fn cold_restart(vm: &str, libvirt: &Libvirt, shutdown_timeout: Duration) -> 
             std::thread::sleep(Duration::from_secs(2));
         }
     }
-    libvirt.virsh(&["start", vm])?;
     Ok(())
 }
 
