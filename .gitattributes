@@ -1,0 +1,5 @@
+# LF everywhere, as the Linux build container sees the files: a CRLF
+# checkout would make every build there a dirty development version.
+* text=auto eol=lf
+*.png binary
+*.ico binary
