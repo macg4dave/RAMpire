@@ -10,9 +10,10 @@ use ratatui::widgets::{Cell, Paragraph, Row, StatefulWidget, Table, TableState, 
 
 use super::theme::{Icon, Theme};
 use super::widgets::{self, panel};
-use crate::dashboard::{mib, GIB};
+use crate::dashboard::mib;
 use crate::tone::{self, Tone};
 use crate::top::{short_gib, PoolSnapshot, STALE_PUBLICATION};
+use rampire_core::GIB;
 
 /// Below this width the VM table drops its RAM limits.
 pub const WIDE: u16 = 110;

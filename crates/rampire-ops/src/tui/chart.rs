@@ -15,10 +15,10 @@ use ratatui::widgets::{Axis, Block, Chart, Dataset, GraphType, Paragraph, Widget
 
 use super::theme::{Icon, Theme};
 use super::widgets::panel;
-use crate::dashboard::GIB;
 use crate::tone::{self, Tone};
 use crate::top::PoolSnapshot;
 use crate::watch::VmSnapshot;
+use rampire_core::GIB;
 
 /// One line of a chart.
 struct Plot {

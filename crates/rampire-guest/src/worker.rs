@@ -298,8 +298,7 @@ mod tests {
     use std::cell::Cell;
     use std::path::PathBuf;
 
-    const MIB: u64 = 1024 * 1024;
-    const GIB: u64 = 1024 * MIB;
+    use rampire_core::{GIB, MIB};
 
     /// 1 GiB of fixed RAM plus what the device has plugged; nothing in swap.
     struct Memory {

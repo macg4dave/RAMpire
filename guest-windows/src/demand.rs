@@ -324,7 +324,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    const GIB: u64 = 1024 * 1024 * 1024;
+    use rampire_core::GIB;
 
     fn snapshot(available: u64, commit: u64) -> MemoryTelemetrySnapshot {
         MemoryTelemetrySnapshot {

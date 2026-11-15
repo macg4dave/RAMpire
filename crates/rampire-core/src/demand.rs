@@ -261,7 +261,7 @@ pub enum DemandError {
 mod tests {
     use super::*;
 
-    const GIB: u64 = 1024 * 1024 * 1024;
+    use crate::units::GIB;
 
     fn snapshot() -> MemoryTelemetrySnapshot {
         MemoryTelemetrySnapshot {

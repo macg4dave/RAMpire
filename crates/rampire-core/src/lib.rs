@@ -52,8 +52,8 @@ pub use target_controller::{
     TargetSample,
 };
 pub use units::{
-    bytes_to_kibibytes, kibibytes_to_bytes, libvirt_unit_bytes, meminfo_bytes, parse_byte_size,
-    BYTES_PER_KIB,
+    bytes_to_kibibytes, format_byte_size, kibibytes_to_bytes, libvirt_unit_bytes, meminfo_bytes,
+    parse_byte_size, BYTES_PER_KIB, GIB, MIB,
 };
 pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES};
 pub use virtio_mem_xml::{

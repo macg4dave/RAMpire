@@ -438,7 +438,7 @@ pub fn environment() -> BTreeMap<String, String> {
 mod tests {
     use super::*;
 
-    const GIB: u64 = 1 << 30;
+    use rampire_core::GIB;
 
     const ZONEINFO: &str = "Node 0, zone      DMA\n  pages free     3839\n        managed  3839\n\
         Node 0, zone   Normal\n        present  327680\n        managed  295424\n\

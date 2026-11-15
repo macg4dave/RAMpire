@@ -481,8 +481,7 @@ mod tests {
     use crate::memory_request::MemoryOutcome;
     use crate::{HostStatusSchema, MemoryTelemetrySnapshot};
 
-    const MIB: u64 = 1024 * 1024;
-    const GIB: u64 = 1024 * MIB;
+    use crate::units::{GIB, MIB};
 
     fn policy() -> GuestMemoryPolicy {
         GuestMemoryPolicy {

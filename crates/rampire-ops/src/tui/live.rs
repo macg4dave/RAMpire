@@ -78,14 +78,14 @@ pub fn watch(command: crate::watch::Command, cwd: &Path) -> Result<(), String> {
                     snapshot.samples
                 ),
             );
-            super::vm::render(body, buf, theme, snapshot, details.as_ref());
+            super::vm::render(body, buf, theme, snapshot, Some(&details));
         },
         |snapshot| crate::watch::full_events(&snapshot.journal.events),
     )
 }
 
 /// The details `watch` shows beside the readings: the VM's state.
-fn live_details(command: &crate::watch::Command) -> Option<super::vm::VmDetails> {
+fn live_details(command: &crate::watch::Command) -> super::vm::VmDetails {
     let libvirt = crate::attest::Libvirt {
         connection: command.connect.clone(),
         timeout: Duration::from_secs(10),
@@ -96,13 +96,13 @@ fn live_details(command: &crate::watch::Command) -> Option<super::vm::VmDetails>
         .and_then(|xml| crate::vm::inspect(&xml).ok())
         .map(|inspection| inspection.boot_bytes)
         .filter(|bytes| *bytes > 0);
-    Some(super::vm::VmDetails {
+    super::vm::VmDetails {
         settings: None,
         boot_bytes,
         state: libvirt
             .state(&command.vm)
             .unwrap_or_else(|_| "unknown".to_owned()),
-    })
+    }
 }
 
 fn header_layout(area: Rect) -> [Rect; 2] {

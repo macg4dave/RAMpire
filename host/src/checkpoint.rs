@@ -438,8 +438,7 @@ mod tests {
     use rampire_core::{MemoryRequest, RequestIdentity, MEMORY_REQUEST_VERSION};
     use std::time::Duration;
 
-    const GIB: u64 = 1024 * 1024 * 1024;
-    const MIB: u64 = 1024 * 1024;
+    use rampire_core::{GIB, MIB};
 
     fn config(name: &str) -> HostConfig {
         let base =

@@ -5,11 +5,8 @@
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
-use rampire_core::{libvirt_unit_bytes, MEMORY_CONTROL_CHANNEL_NAME};
+use rampire_core::{format_byte_size, libvirt_unit_bytes, GIB, MEMORY_CONTROL_CHANNEL_NAME, MIB};
 use rampire_host::attestation::AnswerSource;
-
-const MIB: u64 = 1 << 20;
-const GIB: u64 = 1 << 30;
 
 /// A virtio-mem device in a domain's definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -695,10 +692,10 @@ pub fn review_toml(
 /// The VM's settings file.
 pub fn vm_toml(alias: &str, priority: u32, review: &str, suggested: &Suggested) -> String {
     format!(
-        "# Added by `rampire vm add`. Change a value with `rampire set VM KEY=VALUE`.\nalias = \"{alias}\"\npriority = {priority}\nreview = \"{review}\"\nguest_os = \"linux\"\n# The least RAM the VM's system sees, here its boot RAM. The kernel keeps\n# some boot RAM for itself, so RAMpire may add a little to reach this.\nmin_ram = \"{}MB\"\n# The largest it may grow.\nmax_ram = \"{}MB\"\n# Spare memory it keeps ready.\nfree_ram = \"{}MB\"\n",
-        suggested.min_ram / MIB,
-        suggested.max_ram / MIB,
-        suggested.free_ram / MIB
+        "# Added by `rampire vm add`. Change a value with `rampire set VM KEY=VALUE`.\nalias = \"{alias}\"\npriority = {priority}\nreview = \"{review}\"\nguest_os = \"linux\"\n# The least RAM the VM's system sees, here its boot RAM. The kernel keeps\n# some boot RAM for itself, so RAMpire may add a little to reach this.\nmin_ram = \"{}\"\n# The largest it may grow.\nmax_ram = \"{}\"\n# Spare memory it keeps ready.\nfree_ram = \"{}\"\n",
+        format_byte_size(suggested.min_ram),
+        format_byte_size(suggested.max_ram),
+        format_byte_size(suggested.free_ram)
     )
 }
 

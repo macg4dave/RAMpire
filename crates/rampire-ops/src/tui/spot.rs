@@ -61,8 +61,14 @@ pub fn facts(app: &App, entry: &Entry) -> Vec<Fact> {
     if let (Some(index), Some(Ok(pool))) = (entry.pool_index, &app.pool) {
         if let (Some(settings), Some(sample)) = (pool.command.vms.get(index), pool.vms.get(index)) {
             fact("Priority", settings.priority.to_string());
-            fact("Minimum RAM", super::app::byte_text(settings.min_ram));
-            fact("Maximum RAM", super::app::byte_text(settings.max_ram));
+            fact(
+                "Minimum RAM",
+                rampire_core::format_byte_size(settings.min_ram),
+            );
+            fact(
+                "Maximum RAM",
+                rampire_core::format_byte_size(settings.max_ram),
+            );
             match sample.device {
                 Some(device) => {
                     fact("Device size", crate::reports::size(device.size_bytes));
@@ -100,7 +106,10 @@ pub fn facts(app: &App, entry: &Entry) -> Vec<Fact> {
     }
     if let Some(details) = app.details.get(vm) {
         if let Some(settings) = &details.settings {
-            fact("Free RAM", super::app::byte_text(settings.free_ram));
+            fact(
+                "Free RAM",
+                rampire_core::format_byte_size(settings.free_ram),
+            );
         }
         if let Some(boot) = details.boot_bytes {
             fact("Boot RAM", crate::reports::size(boot));

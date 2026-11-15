@@ -198,7 +198,7 @@ impl CacheFloor {
 mod tests {
     use super::*;
 
-    const MIB: u64 = 1024 * 1024;
+    use rampire_core::MIB;
     const PAGE: u64 = 4096;
     const STEP: u64 = 256 * MIB;
     /// Pages a second that refault 100 MiB a second.

@@ -103,7 +103,7 @@ fn linux_removal_retry_after_seconds(retries: u32) -> u64 {
 pub const GLOBAL_FILE: &str = "global.toml";
 /// The folder of VM settings files, in the configuration directory.
 pub const VMS_DIRECTORY: &str = "vms.d";
-const GIB: u64 = 1 << 30;
+use crate::units::GIB;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]

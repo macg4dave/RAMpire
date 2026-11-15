@@ -222,8 +222,7 @@ pub fn status_line(status: &ControllerStatusSnapshot) -> String {
 
 /// A size as a person writes it: MiB below a GiB, else GiB to one place.
 pub fn size(bytes: u64) -> String {
-    const MIB: u64 = 1 << 20;
-    const GIB: u64 = 1 << 30;
+    use rampire_core::{GIB, MIB};
     if bytes >= GIB {
         format!("{:.1} GiB", bytes as f64 / GIB as f64)
     } else {
@@ -243,7 +242,7 @@ mod tests {
 
     use super::*;
 
-    const GIB: u64 = 1 << 30;
+    use rampire_core::GIB;
 
     #[test]
     fn sizes_read_as_a_person_would_write_them() {

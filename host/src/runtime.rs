@@ -347,8 +347,7 @@ mod tests {
     use crate::resize_sink::ResizeSinkError;
     use rampire_core::settings::GuestOs;
 
-    const MIB: u64 = 1024 * 1024;
-    const GIB: u64 = 1024 * MIB;
+    use rampire_core::{GIB, MIB};
 
     struct DeviceState {
         live: VirtioMemState,

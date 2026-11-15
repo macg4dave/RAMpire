@@ -17,13 +17,14 @@ use rampire_host::config::HostSettings;
 use rampire_host::guest_channel::publication_copy_path;
 use rampire_host::virsh::Virsh;
 
-use crate::dashboard::{mib, GIB};
+use crate::dashboard::mib;
 use crate::host_readings::{
     device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
 };
 use crate::journal::{self, field};
 use crate::process;
 use crate::tone::{self, Tone};
+use rampire_core::GIB;
 
 pub const HELP: &str = "Pool options (read-only live dashboard of every VM):
   --config PATH                 Required host list; the VMs, pool size and

@@ -20,12 +20,13 @@ use rampire_host::guest_channel::{PublicationCopyFirst, PublicationSource};
 use rampire_host::qga::{GuestFileReader, VirshGuestFiles};
 use rampire_host::virsh::Virsh;
 
-use crate::dashboard::{mib, MIB};
+use crate::dashboard::mib;
 use crate::host_readings::{
     device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
 };
 use crate::journal::{self, field};
 use crate::tone::{self, Tone};
+use rampire_core::MIB;
 
 pub const HELP: &str = "Watch options (read-only live dashboard):
   --config PATH                 Required host TOML; the VM, device alias,

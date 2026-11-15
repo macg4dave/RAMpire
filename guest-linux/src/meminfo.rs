@@ -192,7 +192,7 @@ pub fn snapshot_from_meminfo(
 mod tests {
     use super::*;
 
-    const MIB: u64 = 1024 * 1024;
+    use rampire_core::MIB;
     const NOT_ENFORCED: CommitModel = CommitModel::NotEnforced;
 
     fn meminfo(available_kb: u64, swap_free_kb: u64) -> String {

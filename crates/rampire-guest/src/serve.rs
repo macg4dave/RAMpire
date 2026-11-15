@@ -146,7 +146,7 @@ mod tests {
         host_status_path, HostMemoryStatus, HostStatusSchema, MEMORY_REQUEST_VERSION,
     };
 
-    const GIB: u64 = 1 << 30;
+    use rampire_core::GIB;
 
     fn now_millis() -> u64 {
         u64::try_from(

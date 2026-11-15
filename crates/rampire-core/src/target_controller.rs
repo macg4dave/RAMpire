@@ -9,9 +9,7 @@ use crate::{MemoryResourceNotificationState, MemoryTelemetrySnapshot};
 
 const MAX_TARGET_HISTORY_ENTRIES: usize = 4096;
 #[cfg(test)]
-const MIB: u64 = 1024 * 1024;
-#[cfg(test)]
-const GIB: u64 = 1024 * MIB;
+use crate::units::{GIB, MIB};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

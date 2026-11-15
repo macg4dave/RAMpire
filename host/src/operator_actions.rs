@@ -191,7 +191,7 @@ mod tests {
     use crate::virsh::{VirshCommand, VirshError};
     use rampire_core::VirtioMemCompatibility;
 
-    const GIB: u64 = 1 << 30;
+    use rampire_core::GIB;
     const SHRINK_PENDING_XML: &str = "<domain><devices><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>6</current></target><alias name='memory0'/></memory></devices></domain>";
 
     struct RecoveryVirsh {

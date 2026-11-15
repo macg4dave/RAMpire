@@ -6,7 +6,7 @@
 //! keeps all its memory, so all of it is set aside. The pool is what is left
 //! of the host's memory after the host's own reserve.
 
-const GIB: u64 = 1 << 30;
+use rampire_core::GIB;
 
 /// The memory one domain needs, read from its definition.
 #[derive(Debug, Clone, PartialEq, Eq)]

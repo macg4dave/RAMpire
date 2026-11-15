@@ -141,7 +141,8 @@ fn run_app(context: Context) -> Result<(), String> {
     jobs::spawn_keys(tx);
     let result = (|| -> Result<(), String> {
         let mut dirty = true;
-        let mut drawn = Instant::now() - FRAME;
+        // When the last frame was drawn; none yet, so the first is due.
+        let mut drawn: Option<Instant> = None;
         while !app.quit && !stop.load(Ordering::Acquire) {
             // A terminal that has gone away (a dropped SSH connection
             // under sudo's own pty sends no SIGHUP) ends the TUI.
@@ -149,15 +150,15 @@ fn run_app(context: Context) -> Result<(), String> {
                 return Ok(());
             }
             let now = Instant::now();
-            if dirty && now >= drawn + FRAME {
+            if dirty && drawn.is_none_or(|drawn| now >= drawn + FRAME) {
                 screen.draw(|frame| views::draw(frame, &app))?;
-                drawn = now;
+                drawn = Some(now);
                 dirty = false;
             }
             // Asleep until something comes, or the screen changes by
             // itself (a notice moving, the clock), or a frame is due.
             let deadline = if dirty {
-                drawn + FRAME
+                drawn.map_or(now, |drawn| drawn + FRAME)
             } else {
                 app.next_wake(now)
             };

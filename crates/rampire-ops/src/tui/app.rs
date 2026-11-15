@@ -35,6 +35,7 @@ use crate::reports::{ControllerUnit, ListedVm, Management, VmListReport};
 use crate::tone::Tone;
 use crate::top::PoolSnapshot;
 use crate::watch::VmSnapshot;
+use rampire_core::format_byte_size;
 
 /// What fills the screen below the header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,15 +347,14 @@ impl App {
         // figure goes last either way.
         entries.sort_by(|a, b| {
             let ordering = match self.list.sort {
-                SortBy::Name => Some(a.name.cmp(&b.name)),
+                SortBy::Name => a.name.cmp(&b.name),
                 _ => match (self.figure(a), self.figure(b)) {
-                    (Some(x), Some(y)) => Some(x.cmp(&y)),
+                    (Some(x), Some(y)) => x.cmp(&y),
                     (Some(_), None) => return Ordering::Less,
                     (None, Some(_)) => return Ordering::Greater,
                     (None, None) => return Ordering::Equal,
                 },
             };
-            let ordering = ordering.unwrap_or(Ordering::Equal);
             if self.list.reverse {
                 ordering.reverse()
             } else {
@@ -957,9 +957,9 @@ impl App {
                 };
                 vec![
                     Field::new("priority", Some(settings.priority.to_string())),
-                    Field::new("min_ram", Some(byte_text(settings.min_ram))),
-                    Field::new("max_ram", Some(byte_text(settings.max_ram))),
-                    Field::new("free_ram", Some(byte_text(settings.free_ram))),
+                    Field::new("min_ram", Some(format_byte_size(settings.min_ram))),
+                    Field::new("max_ram", Some(format_byte_size(settings.max_ram))),
+                    Field::new("free_ram", Some(format_byte_size(settings.free_ram))),
                 ]
             }
             _ => ["priority", "min_ram", "max_ram", "free_ram"]
@@ -1079,20 +1079,6 @@ fn capitalised(text: &str) -> String {
     characters.next().map_or(String::new(), |first| {
         first.to_uppercase().chain(characters).collect()
     })
-}
-
-/// A size as `set` takes it and the docs write it: whole GB or MB where it
-/// divides (binary units, as RAMpire reads them).
-pub fn byte_text(bytes: u64) -> String {
-    const MIB: u64 = 1 << 20;
-    const GIB: u64 = 1 << 30;
-    if bytes.is_multiple_of(GIB) {
-        format!("{}GB", bytes / GIB)
-    } else if bytes.is_multiple_of(MIB) {
-        format!("{}MB", bytes / MIB)
-    } else {
-        bytes.to_string()
-    }
 }
 
 /// The install command for a VM's system, from its libosinfo name.
@@ -1216,7 +1202,5 @@ pub(crate) mod tests {
             "dnf install rampire-guest"
         );
         assert!(install_command(None).contains("apt"));
-        assert_eq!(byte_text(8 << 30), "8GB");
-        assert_eq!(byte_text(512 << 20), "512MB");
     }
 }

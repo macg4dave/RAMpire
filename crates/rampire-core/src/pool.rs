@@ -104,8 +104,7 @@ fn align_down(value: u64, alignment: u64) -> u64 {
 mod tests {
     use super::*;
 
-    const MIB: u64 = 1024 * 1024;
-    const GIB: u64 = 1024 * MIB;
+    use crate::units::{GIB, MIB};
 
     fn member(priority: u32, charged: u64, desired: u64) -> PoolMember {
         PoolMember {

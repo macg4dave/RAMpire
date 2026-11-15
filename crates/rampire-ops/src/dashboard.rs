@@ -3,8 +3,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const MIB: u64 = 1 << 20;
-pub const GIB: u64 = 1 << 30;
+use rampire_core::{GIB, MIB};
 
 pub fn gib(bytes: u64) -> String {
     format!("{:.3} GiB", bytes as f64 / GIB as f64)

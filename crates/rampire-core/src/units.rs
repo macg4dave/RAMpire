@@ -1,6 +1,8 @@
 //! Checked conversions at external memory-unit boundaries.
 
 pub const BYTES_PER_KIB: u64 = 1 << 10;
+pub const MIB: u64 = 1 << 20;
+pub const GIB: u64 = 1 << 30;
 
 /// Convert an external KiB value to the canonical byte unit.
 pub fn kibibytes_to_bytes(value_kib: u64) -> Option<u64> {
@@ -95,6 +97,18 @@ pub fn parse_byte_size(text: &str) -> Result<u64, String> {
     u64::try_from(scaled / scale).map_err(|_| format!("size {text:?} is too large"))
 }
 
+/// A size as the settings files are written and [`parse_byte_size`] reads
+/// it back exactly: whole `GB` or `MB` where it divides, else bytes.
+pub fn format_byte_size(bytes: u64) -> String {
+    if bytes != 0 && bytes.is_multiple_of(GIB) {
+        format!("{}GB", bytes / GIB)
+    } else if bytes != 0 && bytes.is_multiple_of(MIB) {
+        format!("{}MB", bytes / MIB)
+    } else {
+        bytes.to_string()
+    }
+}
+
 /// Serde field adapter: reads a byte count as a number or a size string
 /// (see [`parse_byte_size`]) and always writes a plain number.
 pub mod byte_size {
@@ -170,7 +184,6 @@ mod tests {
 
     #[test]
     fn parses_human_sizes_as_binary_units() {
-        const GIB: u64 = 1 << 30;
         assert_eq!(parse_byte_size("8GB"), Ok(8 * GIB));
         assert_eq!(parse_byte_size("8.5GB"), Ok(8 * GIB + GIB / 2));
         assert_eq!(parse_byte_size("1024MB"), Ok(GIB));
@@ -197,6 +210,20 @@ mod tests {
             "20000000TB",
         ] {
             assert!(parse_byte_size(bad).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    #[test]
+    fn formatted_sizes_read_back_exactly() {
+        for (bytes, text) in [
+            (8 * GIB, "8GB"),
+            (512 * MIB, "512MB"),
+            (GIB + MIB, "1025MB"),
+            (MIB + 1, "1048577"),
+            (0, "0"),
+        ] {
+            assert_eq!(format_byte_size(bytes), text);
+            assert_eq!(parse_byte_size(text), Ok(bytes));
         }
     }
 

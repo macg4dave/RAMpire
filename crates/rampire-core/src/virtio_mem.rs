@@ -98,7 +98,7 @@ pub(crate) fn maximum_target_bytes(size_bytes: u64, block_size_bytes: u64) -> u6
 mod tests {
     use super::*;
     const BLOCK: u64 = 2 * 1024 * 1024;
-    const GIB: u64 = 1 << 30;
+    use crate::units::GIB;
     fn valid_state() -> VirtioMemState {
         VirtioMemState {
             size_bytes: 8 * GIB,

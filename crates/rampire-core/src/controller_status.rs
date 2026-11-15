@@ -268,8 +268,7 @@ fn validate_optional_reason(value: Option<&str>) -> Result<(), ControllerStatusE
 mod tests {
     use super::*;
 
-    const GIB: u64 = 1024 * 1024 * 1024;
-    const MIB: u64 = 1024 * 1024;
+    use crate::units::{GIB, MIB};
 
     fn status() -> ControllerStatusSnapshot {
         ControllerStatusSnapshot {

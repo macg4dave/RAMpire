@@ -15,7 +15,7 @@ use rampire_core::{
     MemoryTelemetrySnapshot, RawTelemetryEnvelope, RequestIdentity, MEMORY_REQUEST_VERSION,
 };
 
-const GIB: u64 = 1 << 30;
+use rampire_core::GIB;
 const VM: &str = "guest";
 const SERVICE: &str = "rampire-guest";
 

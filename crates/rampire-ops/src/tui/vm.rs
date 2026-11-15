@@ -10,10 +10,11 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use super::theme::{Icon, Theme};
 use super::widgets::{self, panel};
-use crate::dashboard::{gib, mib, GIB};
+use crate::dashboard::{gib, mib};
 use crate::reports::size;
 use crate::tone::{self, Tone};
 use crate::watch::{memory_signal, VmSnapshot};
+use rampire_core::GIB;
 
 /// What the details show beside the live readings: the VM's settings and
 /// its boot RAM, read when it is chosen.
@@ -121,11 +122,20 @@ fn settings_panel(
                     Span::styled("  Priority ", theme.text()),
                     Span::styled(settings.priority.to_string(), theme.value()),
                     Span::styled("  Min RAM ", theme.text()),
-                    Span::styled(super::app::byte_text(settings.min_ram), theme.value()),
+                    Span::styled(
+                        rampire_core::format_byte_size(settings.min_ram),
+                        theme.value(),
+                    ),
                     Span::styled("  Max RAM ", theme.text()),
-                    Span::styled(super::app::byte_text(settings.max_ram), theme.value()),
+                    Span::styled(
+                        rampire_core::format_byte_size(settings.max_ram),
+                        theme.value(),
+                    ),
                     Span::styled("  Free RAM ", theme.text()),
-                    Span::styled(super::app::byte_text(settings.free_ram), theme.value()),
+                    Span::styled(
+                        rampire_core::format_byte_size(settings.free_ram),
+                        theme.value(),
+                    ),
                 ]);
             }
             if let Some(boot) = details.boot_bytes {
