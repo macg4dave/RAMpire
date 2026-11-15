@@ -10,7 +10,7 @@ use ratatui::Frame;
 use super::app::{App, Dialog, Entry, Loaded, Overlay, View};
 use super::jobs::Question;
 use super::theme::{Icon, Theme};
-use super::widgets::{self, panel};
+use super::widgets::{self, panel, raised_panel};
 use crate::reports::Published;
 use crate::tone::Tone;
 
@@ -34,7 +34,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &App) {
             area.width, area.height
         );
         Paragraph::new(text)
-            .style(theme.base())
+            .style(theme.card())
             .wrap(Wrap { trim: true })
             .render(area, buf);
         return;
@@ -65,29 +65,31 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &App) {
 
 fn header_bar(area: Rect, buf: &mut Buffer, app: &App) {
     let theme = &app.theme;
-    let controller = match &app.controller {
-        Some(unit) => {
-            let running = unit.active_state == "active";
-            Span::styled(
-                format!(
-                    "{} controller {} ({})",
-                    theme.icon(if running {
-                        Icon::Running
-                    } else {
-                        Icon::Problem
-                    }),
-                    unit.active_state,
-                    unit.sub_state
-                ),
-                theme.bar(),
-            )
-        }
-        None => Span::styled("controller ...", theme.bar()),
+    let bar = theme.bar();
+    let bold = ratatui::style::Modifier::BOLD;
+    let (state, tone) = match &app.controller {
+        Some(unit) if unit.active_state == "active" => (
+            format!("{} {}", theme.icon(Icon::Running), unit.sub_state),
+            Tone::Good,
+        ),
+        Some(unit) => (
+            format!("{} {}", theme.icon(Icon::Problem), unit.active_state),
+            Tone::Bad,
+        ),
+        None => ("...".to_owned(), Tone::Dim),
     };
+    // RAM in white, pire in the cape's magenta, as the logo writes it.
     let left = Line::from(vec![
-        Span::styled(format!(" {} RAMpire  ", theme.icon(Icon::Vm)), theme.bar()),
-        Span::styled(format!("{}  ", short_host()), theme.bar()),
-        controller,
+        Span::styled(" ", bar),
+        Span::styled("RAM", bar.patch(theme.value())),
+        Span::styled("pire", bar.patch(theme.accent())),
+        Span::styled("   ", bar),
+        Span::styled(
+            format!("{} {}", theme.icon(Icon::Host), short_host()),
+            bar.add_modifier(bold),
+        ),
+        Span::styled("   controller ", bar),
+        Span::styled(state, bar.patch(theme.tone(tone))),
     ]);
     // The build, without the version's words: `(build 5bac9b55a758)`.
     let build = app
@@ -98,11 +100,11 @@ fn header_bar(area: Rect, buf: &mut Buffer, app: &App) {
             rest.trim_end_matches(')')
         });
     let right = format!("build {build}  {} ", crate::dashboard::clock());
-    buf.set_style(area, theme.bar());
-    Paragraph::new(left).style(theme.bar()).render(area, buf);
+    buf.set_style(area, bar);
+    Paragraph::new(left).style(bar).render(area, buf);
     let width = right.chars().count() as u16;
-    if area.width > width + 45 {
-        buf.set_string(area.right() - width, area.y, right, theme.bar());
+    if area.width > width + 50 {
+        buf.set_string(area.right() - width, area.y, right, bar.patch(theme.dim()));
     }
 }
 
@@ -116,25 +118,45 @@ fn short_host() -> String {
 fn status_bar(area: Rect, buf: &mut Buffer, app: &App) {
     let theme = &app.theme;
     buf.set_style(area, theme.bar());
-    let hint = match (&app.dialog, &app.view) {
-        (Some(Dialog::Flow(flow)), _) if flow.done.is_some() => "Enter close  arrows scroll",
+    let hint: &[(&str, &str)] = match (&app.dialog, &app.view) {
+        (Some(Dialog::Flow(flow)), _) if flow.done.is_some() => {
+            &[("Enter", "close"), ("arrows", "scroll")]
+        }
         (Some(Dialog::Flow(flow)), _) => match &flow.pending {
             Some(pending) if matches!(pending.question, Question::Text(_)) => {
-                "type, Enter answer  Esc stop"
+                &[("type", ""), ("Enter", "answer"), ("Esc", "stop")]
             }
-            Some(_) => "y yes  n no  Esc stop",
-            None => "running...  arrows scroll",
+            Some(_) => &[("y", "yes"), ("n", "no"), ("Esc", "stop")],
+            None => &[("", "running..."), ("arrows", "scroll")],
         },
-        (Some(Dialog::Choice(_)), _) => "letter or Enter choose  Esc back",
-        (Some(Dialog::Form(_)), _) => "type to edit  Tab next  Enter apply  Esc back",
-        (None, View::Main) => "arrows choose  Enter what to do  d doctor  l logs  ? keys  q quit",
-        (None, View::Details(_)) => {
-            "Enter menu  s settings  o doctor  l logs  left right VM  Esc back"
-        }
-        (None, View::Doctor(_)) => "arrows choose  Enter run the fix  r check again  Esc back",
-        (None, View::Logs(_)) => "arrows scroll  f one VM  r reload  Esc back",
+        (Some(Dialog::Choice(_)), _) => &[("letter", "do it"), ("Esc", "back")],
+        (Some(Dialog::Form(_)), _) => &[("Tab", "next"), ("Enter", "apply"), ("Esc", "back")],
+        (None, View::Main) => &[
+            ("Enter", "VM menu"),
+            ("d", "doctor"),
+            ("l", "logs"),
+            ("?", "keys"),
+            ("q", "quit"),
+        ],
+        (None, View::Details(_)) => &[
+            ("Enter", "menu"),
+            ("s", "settings"),
+            ("o", "doctor"),
+            ("arrows", "VM"),
+            ("Esc", "back"),
+        ],
+        (None, View::Doctor(_)) => &[("Enter", "run the fix"), ("r", "again"), ("Esc", "back")],
+        (None, View::Logs(_)) => &[("f", "one VM"), ("r", "reload"), ("Esc", "back")],
     };
-    let mut spans = vec![Span::styled(format!(" {hint}"), theme.bar())];
+    let mut spans = vec![Span::styled(" ", theme.bar())];
+    for (key, label) in hint {
+        if !key.is_empty() {
+            spans.push(Span::styled(format!(" {key} "), theme.key()));
+        }
+        if !label.is_empty() {
+            spans.push(Span::styled(format!(" {label}  "), theme.bar()));
+        }
+    }
     if let Some((text, tone)) = &app.status {
         spans.push(Span::styled("  |  ", theme.bar()));
         let style = match tone {
@@ -344,9 +366,9 @@ fn vm_list(
     let table = Table::new(rows, widths)
         .header(Row::new(header).style(theme.dim()))
         .block(block)
-        .style(theme.base())
+        .style(theme.card())
         .row_highlight_style(theme.selected())
-        .highlight_symbol(Line::from(theme.icon(Icon::Pointer)))
+        .highlight_symbol(Line::styled(theme.icon(Icon::Pointer), theme.accent()))
         .highlight_spacing(HighlightSpacing::Always);
     let selected = (!empty).then(|| app.cursor.min(entries.len() - 1));
     let mut state = TableState::new().with_selected(selected);
@@ -529,7 +551,7 @@ fn doctor_screen(area: Rect, buf: &mut Buffer, app: &App, vm: Option<&str>) {
         let prefix = if selected {
             Span::styled(format!("{} ", theme.icon(Icon::Pointer)), theme.selected())
         } else {
-            Span::styled("  ", theme.base())
+            Span::styled("  ", theme.card())
         };
         let spans: Vec<Span> = std::iter::once(prefix)
             .chain(line.spans.into_iter().map(|span| {
@@ -557,7 +579,7 @@ fn doctor_screen(area: Rect, buf: &mut Buffer, app: &App, vm: Option<&str>) {
         .take(height)
         .map(|(line, _)| line)
         .collect();
-    Paragraph::new(shown).style(theme.base()).render(inner, buf);
+    Paragraph::new(shown).style(theme.card()).render(inner, buf);
 }
 
 fn logs_screen(area: Rect, buf: &mut Buffer, app: &App, vm: Option<&str>) {
@@ -607,7 +629,7 @@ fn logs_screen(area: Rect, buf: &mut Buffer, app: &App, vm: Option<&str>) {
                 )
             })
             .collect();
-        Paragraph::new(shown).style(theme.base()).render(inner, buf);
+        Paragraph::new(shown).style(theme.card()).render(inner, buf);
         return;
     }
     loading(area, buf, theme, "LOGS", &app.log);
@@ -662,7 +684,7 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
                 Some(Ok(_)) => "done".to_owned(),
                 Some(Err(_)) => "failed".to_owned(),
             };
-            let block = panel(theme, Icon::Settings, &flow.title, &detail);
+            let block = raised_panel(theme, Icon::Settings, &flow.title, &detail);
             let inner = block.inner(rect);
             block.render(rect, buf);
             let mut lines: Vec<Line> = flow
@@ -714,7 +736,7 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
             let end = rows.len().saturating_sub(flow.scroll);
             let start = end.saturating_sub(height);
             Paragraph::new(rows[start..end].to_vec())
-                .style(theme.base())
+                .style(theme.card())
                 .render(inner, buf);
         }
         Dialog::Choice(choice) => {
@@ -760,10 +782,10 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
             ));
             let rect = centred(area, box_width, (lines.len() as u16 + 2).min(height));
             Clear.render(rect, buf);
-            let block = panel(theme, Icon::Settings, &choice.title, "");
+            let block = raised_panel(theme, Icon::Vm, &choice.title, "");
             let inner = block.inner(rect);
             block.render(rect, buf);
-            Paragraph::new(lines).style(theme.base()).render(inner, buf);
+            Paragraph::new(lines).style(theme.card()).render(inner, buf);
         }
         Dialog::Form(form) => {
             let rect = centred(
@@ -772,7 +794,7 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
                 (form.fields.len() as u16 + 6).min(height),
             );
             Clear.render(rect, buf);
-            let block = panel(
+            let block = raised_panel(
                 theme,
                 Icon::Settings,
                 &format!("{} settings", form.vm),
@@ -809,7 +831,7 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
             };
             lines.push(widgets::line(theme, command, Tone::Info));
             lines.push(widgets::line(theme, "sizes like 4GiB or 512MiB", Tone::Dim));
-            Paragraph::new(lines).style(theme.base()).render(inner, buf);
+            Paragraph::new(lines).style(theme.card()).render(inner, buf);
         }
     }
 }
@@ -869,7 +891,7 @@ fn help(area: Rect, buf: &mut Buffer, app: &App) {
     let theme = &app.theme;
     let rect = centred(area, 76, 22);
     Clear.render(rect, buf);
-    let block = panel(theme, Icon::Settings, "KEYS", "Esc closes");
+    let block = raised_panel(theme, Icon::Settings, "KEYS", "Esc closes");
     let inner = block.inner(rect);
     block.render(rect, buf);
     let rows: [(&str, &str); 18] = [
@@ -888,7 +910,7 @@ fn help(area: Rect, buf: &mut Buffer, app: &App) {
         ("Esc", "back, or close a dialog"),
         ("r", "read again"),
         ("e", "the errors list"),
-        ("t", "next colour theme: navy, light, terminal"),
+        ("t", "next theme: midnight, midnight 256, light, terminal"),
         ("i", "Unicode or ASCII icons"),
         ("q, Ctrl+C", "quit"),
         ("", ""),
@@ -907,7 +929,7 @@ fn help(area: Rect, buf: &mut Buffer, app: &App) {
             ])
         })
         .collect();
-    Paragraph::new(lines).style(theme.base()).render(inner, buf);
+    Paragraph::new(lines).style(theme.card()).render(inner, buf);
 }
 
 fn errors(area: Rect, buf: &mut Buffer, app: &App) {
@@ -918,7 +940,7 @@ fn errors(area: Rect, buf: &mut Buffer, app: &App) {
         area.height.saturating_sub(2),
     );
     Clear.render(rect, buf);
-    let block = panel(
+    let block = raised_panel(
         theme,
         Icon::Problem,
         "ERRORS",
@@ -939,7 +961,7 @@ fn errors(area: Rect, buf: &mut Buffer, app: &App) {
         ));
     }
     Paragraph::new(lines)
-        .style(theme.base())
+        .style(theme.card())
         .wrap(Wrap { trim: false })
         .render(inner, buf);
 }
@@ -1151,7 +1173,7 @@ mod tests {
             let text = text(&app, width, height);
             assert!(text.contains("rampire vm add newvm --fix-xml"), "{text}");
             assert!(text.contains("like this? [y/N]"), "{text}");
-            assert!(text.contains("y yes"), "{text}");
+            assert!(text.contains("yes"), "{text}");
         }
         app.dialog = Some(Dialog::Choice(ChoiceDialog {
             title: "Run the fix".to_owned(),

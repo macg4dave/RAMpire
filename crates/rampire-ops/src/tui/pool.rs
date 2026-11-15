@@ -177,7 +177,7 @@ pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: 
         sizes,
         Line::from(state),
     ])
-    .style(theme.base())
+    .style(theme.card())
     .render(inner, buf);
 }
 
@@ -283,9 +283,9 @@ fn vm_table(
     let table = Table::new(rows, widths)
         .header(Row::new(header).style(theme.dim()))
         .block(block)
-        .style(theme.base())
+        .style(theme.card())
         .row_highlight_style(theme.selected())
-        .highlight_symbol(Line::from(theme.icon(Icon::Pointer)))
+        .highlight_symbol(Line::styled(theme.icon(Icon::Pointer), theme.accent()))
         .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     let mut state = TableState::new().with_selected(selected);
     StatefulWidget::render(table, area, buf, &mut state);
@@ -413,7 +413,7 @@ pub(crate) fn events_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot
                 .collect()
         }
     };
-    Paragraph::new(lines).style(theme.base()).render(inner, buf);
+    Paragraph::new(lines).style(theme.card()).render(inner, buf);
 }
 
 #[cfg(test)]
@@ -489,7 +489,7 @@ pub(crate) mod tests {
     pub(crate) fn themes() -> Vec<Theme> {
         let mut themes = Vec::new();
         for palette in Palette::ALL {
-            for depth in [Depth::Colours256, Depth::Colours16, Depth::None] {
+            for depth in [Depth::TrueColor, Depth::Colours16, Depth::None] {
                 for unicode in [true, false] {
                     themes.push(Theme::new(palette, depth, Icons { unicode }));
                 }

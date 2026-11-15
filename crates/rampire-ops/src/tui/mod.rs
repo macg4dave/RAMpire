@@ -27,11 +27,11 @@ use ratatui::crossterm::event::{self, Event};
 use crate::context::Context;
 use theme::{Depth, Icons, Palette, Theme};
 
-/// The look for this terminal: the navy palette at the terminal's depth,
+/// The look for this terminal: the midnight palette at the terminal's depth,
 /// with Unicode icons where the locale allows.
 pub fn theme_from_environment() -> Theme {
     Theme::new(
-        Palette::Navy,
+        Palette::Midnight,
         Depth::from_environment(),
         Icons::from_environment(),
     )

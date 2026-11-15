@@ -1120,7 +1120,7 @@ pub(crate) mod tests {
             build: "0.1.0 (build test)".to_owned(),
             via: "tui",
         };
-        let theme = Theme::new(Palette::Navy, Depth::Colours256, Icons { unicode: true });
+        let theme = Theme::new(Palette::Midnight, Depth::TrueColor, Icons { unicode: true });
         let mut app = App::new(context, theme, tx, ReaderControl::new());
         app.on_msg(Msg::Pool(Ok(crate::tui::pool::tests::snapshot(3))));
         app.on_msg(Msg::Inventory(Ok(VmListReport {

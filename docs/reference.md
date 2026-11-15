@@ -54,7 +54,7 @@ without opening the menu.
 | `y`, `n` | Answer a question |
 | `r` | Read again |
 | `e` | The errors list |
-| `t` | The next colour theme: navy, light, or the terminal's own 16 colours |
+| `t` | The next colour theme: midnight (the mascot's purple, white and green, in true colour), midnight in 256 colours for a terminal without true colour, light, or the terminal's own 16 colours |
 | `i` | Unicode or ASCII icons |
 | `?` | The keys |
 | `q`, Ctrl+C | Quit |
@@ -62,8 +62,9 @@ without opening the menu.
 Every action runs the same steps as its command, asks the same
 questions in a dialog, and shows the command line that does the same.
 Each change is logged to the journal as `event=operator_change` with the
-person and `via=tui` ([journal](journal.md)). Colour follows the terminal:
-256 colours, 16, or none with `NO_COLOR` or `TERM=dumb`; icons are ASCII
+person and `via=tui` ([journal](journal.md)). Colour follows the terminal: true colour on any `256color` terminal (the
+midnight theme in 256 colours is a `t` away for one that lacks it), 16
+colours, or none with `NO_COLOR` or `TERM=dumb`; icons are ASCII
 when the locale isn't UTF-8. If the TUI fails, the terminal is given back
 and the error printed, and logged as `event=operator_change
 action=tui_failed`.

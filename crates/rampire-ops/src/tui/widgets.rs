@@ -10,11 +10,12 @@ use ratatui::widgets::{Block, Borders, Widget};
 use super::theme::{Icon, Theme};
 use crate::tone::{self, Tone};
 
-/// A bordered panel titled with its icon.
+/// A panel: a card with rounded corners, titled with a chip that holds its
+/// icon and name, and a dim note after it.
 pub fn panel<'a>(theme: &Theme, icon: Icon, title: &str, detail: &str) -> Block<'a> {
     let mut spans = vec![
-        Span::styled(format!(" {} ", theme.icon(icon)), theme.frame()),
-        Span::styled(title.to_owned(), theme.title()),
+        Span::styled(" ", theme.frame()),
+        Span::styled(format!(" {} {} ", theme.icon(icon), title), theme.chip()),
         Span::styled(" ", theme.frame()),
     ];
     if !detail.is_empty() {
@@ -24,8 +25,15 @@ pub fn panel<'a>(theme: &Theme, icon: Icon, title: &str, detail: &str) -> Block<
         .borders(Borders::ALL)
         .border_set(theme.border_set())
         .border_style(theme.frame())
-        .style(theme.base())
+        .style(theme.card())
         .title(Line::from(spans))
+}
+
+/// A dialog's panel: raised above the cards, with an accent border.
+pub fn raised_panel<'a>(theme: &Theme, icon: Icon, title: &str, detail: &str) -> Block<'a> {
+    panel(theme, icon, title, detail)
+        .style(theme.raised())
+        .border_style(theme.accent())
 }
 
 /// A bar `width` cells wide, `fraction` of it full.
@@ -37,11 +45,8 @@ pub fn bar<'a>(theme: &Theme, fraction: f64, width: usize, tone: Tone) -> Vec<Sp
     };
     let filled = ((fraction * width as f64).round() as usize).min(width);
     vec![
-        Span::styled(theme.icon(Icon::Full).repeat(filled), theme.tone(tone)),
-        Span::styled(
-            theme.icon(Icon::Empty).repeat(width - filled),
-            theme.track(),
-        ),
+        Span::styled(theme.icon(Icon::Line).repeat(filled), theme.tone(tone)),
+        Span::styled(theme.icon(Icon::Rule).repeat(width - filled), theme.track()),
     ]
 }
 
@@ -227,7 +232,7 @@ mod tests {
     #[test]
     fn bars_are_as_wide_as_asked_in_either_icon_set() {
         for unicode in [true, false] {
-            let theme = Theme::new(Palette::Navy, Depth::None, Icons { unicode });
+            let theme = Theme::new(Palette::Midnight, Depth::None, Icons { unicode });
             let spans = bar(&theme, 0.25, 8, Tone::Good);
             let cells: usize = spans.iter().map(|span| span.content.chars().count()).sum();
             assert_eq!(cells, 8);

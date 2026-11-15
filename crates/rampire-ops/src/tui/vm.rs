@@ -140,7 +140,7 @@ fn settings_panel(
         ),
     ]);
     Paragraph::new(vec![Line::from(first), Line::from(second)])
-        .style(theme.base())
+        .style(theme.card())
         .render(inner, buf);
 }
 
@@ -220,7 +220,7 @@ fn device_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsh
             ),
         ]),
     });
-    Paragraph::new(lines).style(theme.base()).render(inner, buf);
+    Paragraph::new(lines).style(theme.card()).render(inner, buf);
 }
 
 fn guest_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapshot) {
@@ -303,7 +303,7 @@ fn guest_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsho
             ]
         }
     };
-    Paragraph::new(lines).style(theme.base()).render(inner, buf);
+    Paragraph::new(lines).style(theme.card()).render(inner, buf);
 }
 
 fn history_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapshot) {
@@ -369,7 +369,7 @@ fn events_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsh
             })
             .collect()
     };
-    Paragraph::new(lines).style(theme.base()).render(inner, buf);
+    Paragraph::new(lines).style(theme.card()).render(inner, buf);
 }
 
 #[cfg(test)]
