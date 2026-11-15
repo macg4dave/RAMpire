@@ -330,16 +330,30 @@ const OFFLINE_SCRIPTS: &str = "/usr/lib/virt-sysprep/scripts/*rampire-guest-inst
 
 /// Run at the guest's next boot: install the package its system takes,
 /// then boot again when the package turned on what needs a fresh start.
+///
+/// rpm runs without its plugins: from the first-boot service, its SELinux
+/// plugin can't move the package's scripts into their own domain, so every
+/// script fails ("failed to exec scriptlet interpreter /bin/sh") and the
+/// older package is never removed. The files get their SELinux labels after,
+/// as the plugin would have given them, and the service is restarted onto
+/// the new binary whatever the package's scripts did.
 const FIRST_BOOT: &str = r#"#!/bin/sh
-# Written by rampire vm add: installs the guest service, then goes.
+# Written by rampire: installs the guest service, then goes.
 set -e
 dir=/var/lib/rampire-guest-install
 if command -v dpkg >/dev/null 2>&1; then
     dpkg -i "$dir/rampire-guest.deb"
 else
-    rpm -U --replacepkgs "$dir/rampire-guest.rpm"
+    rpm -U --replacepkgs --noplugins "$dir/rampire-guest.rpm"
+    if command -v restorecon >/dev/null 2>&1; then
+        rpm -ql rampire-guest | xargs -r restorecon -F 2>/dev/null || true
+    fi
 fi
 rm -rf "$dir"
+systemctl daemon-reload
+if systemctl is-enabled --quiet rampire-guest.service; then
+    systemctl restart rampire-guest.service
+fi
 [ -e /proc/pressure/memory ] || systemctl reboot
 "#;
 
