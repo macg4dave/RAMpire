@@ -234,4 +234,59 @@ mod tests {
         set(&root, GLOBAL, &assignments(&["pool=8GB"])).expect("a pool lets two VMs load");
         std::fs::remove_dir_all(&root).unwrap();
     }
+
+    /// Every `rampire set TARGET KEY=` the product and its docs tell a
+    /// person to run names a setting that file has.
+    #[test]
+    fn every_suggested_change_names_a_real_setting() {
+        use rampire_core::settings_reference;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = vec![root.join("README.md")];
+        let mut directories = vec![root.join("docs"), root.join("crates"), root.join("rampire")];
+        while let Some(directory) = directories.pop() {
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    directories.push(path);
+                } else if path
+                    .extension()
+                    .is_some_and(|extension| extension == "rs" || extension == "md")
+                {
+                    files.push(path);
+                }
+            }
+        }
+        let mut seen = 0;
+        for path in files {
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (at, _) in text.match_indices("rampire set ") {
+                let mut words = text[at + "rampire set ".len()..].split_whitespace();
+                let (Some(target), Some(change)) = (words.next(), words.next()) else {
+                    continue;
+                };
+                let Some((key, _)) = change.split_once('=') else {
+                    continue;
+                };
+                if key == "KEY"
+                    || key.is_empty()
+                    || !key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                {
+                    continue;
+                }
+                let file = if target == GLOBAL {
+                    settings_reference::GLOBAL
+                } else {
+                    settings_reference::VM
+                };
+                assert!(
+                    file.names().contains(&key),
+                    "{}: rampire set {target} {key}= names no {} setting",
+                    path.display(),
+                    file.path
+                );
+                seen += 1;
+            }
+        }
+        assert!(seen > 5, "found only {seen} suggested changes");
+    }
 }

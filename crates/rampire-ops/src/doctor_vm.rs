@@ -19,10 +19,6 @@ use crate::doctor::Finding;
 use crate::inventory::Known;
 use crate::reports::{CheckedVm, Management};
 
-/// A publication older than this is stale: the guest service has stopped
-/// or can't reach the host.
-pub const STALE_PUBLICATION: Duration = Duration::from_secs(30);
-
 /// Every check for `vm`.
 pub fn run(context: &Context, vm: &str) -> Result<Vec<Finding>, String> {
     let known = Known::read(context)?;
@@ -325,7 +321,7 @@ pub fn publication_age(publication: Option<&RawTelemetryEnvelope>, now_millis: u
                 .as_ref()
                 .map(|diagnostics| format!(", from build {}", diagnostics.build_id))
                 .unwrap_or_default();
-            if age >= STALE_PUBLICATION {
+            if age >= crate::top::STALE_PUBLICATION {
                 Finding::problem(
                     check,
                     format!("the newest publication is {}s old{build}", age.as_secs()),
@@ -497,7 +493,7 @@ pub(crate) fn last_request_finding(vm: &str, lines: &[&str]) -> Finding {
                 "the host is near its reserve: free host memory, or lower host_reserve (rampire set global host_reserve=SIZE)".to_owned(),
             ),
             "pool" => Some(
-                "the pool is fully used: raise pool_size (rampire set global pool_size=SIZE) or this VM's priority".to_owned(),
+                "the pool is fully used: raise the pool (rampire set global pool=SIZE) or this VM's priority".to_owned(),
             ),
             "guest_maximum" => Some(format!("raise max_ram: rampire set {vm} max_ram=SIZE")),
             "device_capacity" => Some(format!(
@@ -655,7 +651,7 @@ mod tests {
         assert!(!finding.ok);
         let fix = finding.fix.unwrap();
         assert!(fix.contains("rampire set web max_ram=SIZE"), "{fix}");
-        assert!(fix.contains("pool_size"), "{fix}");
+        assert!(fix.contains("rampire set global pool=SIZE"), "{fix}");
         assert!(last_request_finding("web", &[]).ok);
     }
 

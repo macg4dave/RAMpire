@@ -438,7 +438,7 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
             watch.events = *events;
             watch.guest_interval = Duration::from_secs(*guest_interval_seconds);
             watch.guest = !no_guest;
-            rampire_ops::tui::live::watch(watch, cwd)?;
+            rampire_ops::tui::live::watch(&context, watch, cwd)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Check => reporting::check(cli),

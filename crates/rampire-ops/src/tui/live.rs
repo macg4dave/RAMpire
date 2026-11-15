@@ -51,10 +51,15 @@ pub fn top(command: crate::top::Command, cwd: &Path) -> Result<(), String> {
     )
 }
 
-/// `rampire watch`.
-pub fn watch(command: crate::watch::Command, cwd: &Path) -> Result<(), String> {
+/// `rampire watch`, with the VM's settings, boot RAM and state as the
+/// TUI's details show them.
+pub fn watch(
+    context: &crate::context::Context,
+    command: crate::watch::Command,
+    cwd: &Path,
+) -> Result<(), String> {
     let (once, interval) = (command.once, command.interval);
-    let details = live_details(&command);
+    let details = super::jobs::details(context, &command.vm);
     let mut reader = VmReader::new(command);
     run(
         once,
@@ -82,27 +87,6 @@ pub fn watch(command: crate::watch::Command, cwd: &Path) -> Result<(), String> {
         },
         |snapshot| crate::watch::full_events(&snapshot.journal.events),
     )
-}
-
-/// The details `watch` shows beside the readings: the VM's state.
-fn live_details(command: &crate::watch::Command) -> super::vm::VmDetails {
-    let libvirt = crate::attest::Libvirt {
-        connection: command.connect.clone(),
-        timeout: Duration::from_secs(10),
-    };
-    let boot_bytes = libvirt
-        .virsh(&["dumpxml", "--inactive", &command.vm])
-        .ok()
-        .and_then(|xml| crate::vm::inspect(&xml).ok())
-        .map(|inspection| inspection.boot_bytes)
-        .filter(|bytes| *bytes > 0);
-    super::vm::VmDetails {
-        settings: None,
-        boot_bytes,
-        state: libvirt
-            .state(&command.vm)
-            .unwrap_or_else(|_| "unknown".to_owned()),
-    }
 }
 
 fn header_layout(area: Rect) -> [Rect; 2] {

@@ -30,7 +30,8 @@ use rampire_core::GIB;
 /// Samples kept for the chart: more than the widest terminal shows.
 pub const HISTORY_SAMPLES: usize = 300;
 
-/// A publication older than this is shown as stale.
+/// A publication older than this is stale: the guest service has stopped
+/// or can't reach the host. The views show it so and the doctor reports it.
 pub const STALE_PUBLICATION: Duration = Duration::from_secs(30);
 
 /// A managed VM as the pool sees it.
