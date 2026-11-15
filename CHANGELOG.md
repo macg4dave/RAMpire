@@ -24,6 +24,11 @@ controller: remove an old install and install again.
   VM's disk with libvirt's disk tools. `rampire vm remove VM` takes it
   out again and puts the definition back to plain RAM, so Cockpit or
   `virsh` can change its memory again.
+- `rampire vm upgrade VM` upgrades a VM's guest service to the build the
+  host runs, the same ways `vm add` installs it. The TUI shows **update
+  available** for a VM whose guest runs another build, `u` upgrades it,
+  and `rampire doctor VM` reports it. Changing a VM's settings upgrades
+  its guest service too.
 - A TUI: `sudo rampire` on a terminal, or `ssh -t HOST sudo rampire`
   from any computer. The pool and each VM live; adding, removing and
   bringing back VMs; changing a VM's settings; the doctor, with fixes it

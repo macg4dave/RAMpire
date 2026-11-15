@@ -310,6 +310,7 @@ pub static BINDINGS: &[Binding] = &[
     bind(Only(L::List), &[ch('s')], C::Letter('s'), "its settings: priority and its RAM limits"),
     bind(Only(L::List), &[ch('o')], C::Letter('o'), "its doctor"),
     bind(Only(L::List), &[ch('x')], C::Letter('x'), "remove RAMpire from it"),
+    bind(Only(L::List), &[ch('u')], C::Letter('u'), "upgrade its guest service, when an update is available"),
     bind(Only(L::List), &[ch('a')], C::Letter('a'), "install RAMpire on it, or finish installing"),
     hinted(Only(L::List), &[ch('d')], C::Doctor, "the doctor, for the host and every VM", "doctor"),
     bind(Only(L::List), &[ch('l')], C::Logs, "the logs"),
@@ -337,6 +338,7 @@ pub static BINDINGS: &[Binding] = &[
     hinted(Only(L::Details), &[ch('s')], C::Letter('s'), "its settings", "settings"),
     bind(Only(L::Details), &[ch('o')], C::Letter('o'), "its doctor"),
     bind(Only(L::Details), &[ch('l')], C::Letter('l'), "its logs"),
+    bind(Only(L::Details), &[ch('u')], C::Letter('u'), "upgrade its guest service, when an update is available"),
     bind(Only(L::Details), &[ch('x')], C::Letter('x'), "remove RAMpire from it"),
     // The doctor.
     hinted(Only(L::Doctor), &[of(K::Enter)], C::RunFix, "run the chosen fix, when RAMpire can run it", "run the fix"),

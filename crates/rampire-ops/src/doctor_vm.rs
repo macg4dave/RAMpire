@@ -81,11 +81,33 @@ pub fn run(context: &Context, vm: &str) -> Result<Vec<Finding>, String> {
         crate::process::unix_millis()?,
     ));
     if let Some(publication) = &publication {
+        findings.extend(guest_build(vm, context.build_id(), publication));
         findings.extend(readiness(publication, config.max_ram));
     }
 
     findings.push(last_request(&config, Path::new("/")));
     Ok(findings)
+}
+
+/// Whether the guest service runs the build this host carries for it.
+/// Nothing when either build is unknown.
+pub fn guest_build(
+    vm: &str,
+    host: Option<&str>,
+    publication: &RawTelemetryEnvelope,
+) -> Option<Finding> {
+    let check = "guest build";
+    let guest = crate::guest::publication_build(Some(publication))?;
+    let host = host?;
+    Some(if guest == host {
+        Finding::ok(check, format!("{guest}, the build this host runs"))
+    } else {
+        Finding::problem(
+            check,
+            format!("an update is available: the guest runs build {guest}, this host {host}"),
+            format!("rampire vm upgrade {vm}"),
+        )
+    })
 }
 
 /// The controller's copy of the guest's publication, if it has one.
@@ -621,6 +643,19 @@ mod tests {
             problems(&readiness(&publication(&[]), 1)),
             ["guest readiness"]
         );
+    }
+
+    #[test]
+    fn a_guest_of_another_build_has_an_update() {
+        let guest = publication(&READY);
+        let build = crate::guest::publication_build(Some(&guest))
+            .unwrap()
+            .to_owned();
+        assert!(guest_build("web", Some(&build), &guest).unwrap().ok);
+        let behind = guest_build("web", Some("newer"), &guest).unwrap();
+        assert!(!behind.ok);
+        assert_eq!(behind.fix.as_deref(), Some("rampire vm upgrade web"));
+        assert!(guest_build("web", None, &guest).is_none());
     }
 
     #[test]

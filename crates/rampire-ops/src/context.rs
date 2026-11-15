@@ -83,6 +83,14 @@ impl Context {
     /// The command line that does what the TUI just did, so a person can
     /// learn it and script it: `rampire` with the global options this
     /// context was given, then `args`.
+    /// This build's identity, from `build` ("0.5.0 (build ID)"): the build
+    /// of the guest packages the host package carries. None for a build
+    /// that wasn't stamped.
+    pub fn build_id(&self) -> Option<&str> {
+        let id = self.build.split_once("(build ")?.1.strip_suffix(')')?;
+        (!id.is_empty() && id != "unversioned").then_some(id)
+    }
+
     pub fn command_line(&self, args: &[&str]) -> String {
         let mut words = vec!["rampire".to_owned()];
         if let Some(config) = &self.config {
@@ -191,6 +199,21 @@ mod tests {
         );
         assert_eq!(quote("it's"), r"'it'\''s'");
         assert_eq!(quote(""), "''");
+    }
+
+    #[test]
+    fn the_build_id_is_read_from_the_version() {
+        let mut context = Context {
+            config: None,
+            connect: None,
+            build: "0.5.0 (build 6b0e2db1a2c3-dirty.0123456789ab)".to_owned(),
+            via: "command",
+        };
+        assert_eq!(context.build_id(), Some("6b0e2db1a2c3-dirty.0123456789ab"));
+        for build in ["0.5.0 (build unversioned)", "", "0.5.0"] {
+            context.build = build.to_owned();
+            assert_eq!(context.build_id(), None, "{build}");
+        }
     }
 
     #[test]

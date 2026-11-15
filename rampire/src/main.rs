@@ -225,7 +225,7 @@ enum Command {
         /// Why it is safe to resume, recorded in the VM's state.
         reason: String,
     },
-    /// Add, restart and remove the VMs RAMpire manages.
+    /// Add, restart, upgrade and remove the VMs RAMpire manages.
     Vm {
         #[command(subcommand)]
         command: VmCommand,
@@ -313,6 +313,19 @@ enum VmCommand {
     Restart {
         /// The VM.
         vm: String,
+    },
+    /// Upgrade rampire-guest in a managed VM to the build this host runs:
+    /// logged in to it as `vm add` does, else, agreed to, on its disk with
+    /// it shut down for a moment. `rampire set VM` does it too while the
+    /// VM runs.
+    Upgrade {
+        /// The VM.
+        vm: String,
+        /// How to log in to the guest, USER@HOST. Default: its guest agent
+        /// when it runs commands, else root at the address libvirt knows
+        /// for it, with RAMpire's SSH key.
+        #[arg(long, value_name = "USER@HOST")]
+        guest_login: Option<String>,
     },
 }
 
@@ -457,6 +470,10 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
             VmCommand::List => reporting::vm_list(cli),
             VmCommand::Restart { vm } => {
                 lifecycle::vm_restart(&context, ui, vm).map(|()| ExitCode::SUCCESS)
+            }
+            VmCommand::Upgrade { vm, guest_login } => {
+                lifecycle::vm_upgrade(&context, ui, vm, guest_login.as_deref())
+                    .map(|()| ExitCode::SUCCESS)
             }
             VmCommand::Add {
                 vm,
@@ -814,6 +831,12 @@ mod tests {
         assert!(Cli::try_parse_from(["rampire", "set", "web"]).is_err());
         assert!(Cli::try_parse_from(["rampire", "vm", "restart", "web"]).is_ok());
         assert!(Cli::try_parse_from(["rampire", "vm", "restart"]).is_err());
+        assert!(Cli::try_parse_from(["rampire", "vm", "upgrade", "web"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["rampire", "vm", "upgrade", "web", "--guest-login", "a@b"])
+                .is_ok()
+        );
+        assert!(Cli::try_parse_from(["rampire", "vm", "upgrade"]).is_err());
         let cli = Cli::try_parse_from([
             "rampire",
             "vm",

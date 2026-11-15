@@ -79,4 +79,4 @@ rampire: vm=web event=operator_change action=set user=alice via=tui changes=max_
 
 | Event | Keys | When |
 |---|---|---|
-| `operator_change` | `action`, `user` (the person who ran sudo), `via` (`command` or `tui`), sometimes `vm`, `to`, `changes`, `backup` and `reason` | `apply`, `rollback`, `set`, `init`, `fix_xml`, `vm_add`, `vm_remove`, `vm_restart` and `recover` made a change; `vm_recorded` when `apply` recorded a VM's current setup; `tui_failed` when the TUI stopped on an error, with the error as `reason` |
+| `operator_change` | `action`, `user` (the person who ran sudo), `via` (`command` or `tui`), sometimes `vm`, `to`, `changes`, `backup` and `reason` | `apply`, `rollback`, `set`, `init`, `fix_xml`, `vm_add`, `vm_remove`, `vm_restart`, `vm_upgrade` and `recover` made a change; `vm_recorded` when `apply` recorded a VM's current setup; `tui_failed` when the TUI stopped on an error, with the error as `reason` |

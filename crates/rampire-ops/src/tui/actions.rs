@@ -22,6 +22,8 @@ pub enum Action {
     Remove(String),
     /// `vm restart VM`, so its saved definition takes effect.
     Restart(String),
+    /// `vm upgrade VM`: the guest package of this host's build.
+    Upgrade(String),
     /// `set TARGET KEY=VALUE...`.
     Set {
         target: String,
@@ -70,6 +72,7 @@ impl Action {
             }
             Self::Remove(vm) => owned(&["vm", "remove", vm]),
             Self::Restart(vm) => owned(&["vm", "restart", vm]),
+            Self::Upgrade(vm) => owned(&["vm", "upgrade", vm]),
             Self::Set { target, changes } => {
                 let mut words = owned(&["set", target]);
                 words.extend(changes.iter().cloned());
@@ -91,9 +94,11 @@ impl Action {
     /// The VM this action is about, if it is about one.
     pub fn vm(&self) -> Option<&str> {
         match self {
-            Self::Add { vm, .. } | Self::Remove(vm) | Self::Restart(vm) | Self::Recover(vm) => {
-                Some(vm)
-            }
+            Self::Add { vm, .. }
+            | Self::Remove(vm)
+            | Self::Restart(vm)
+            | Self::Upgrade(vm)
+            | Self::Recover(vm) => Some(vm),
             Self::Set { target, .. } if target != crate::set::GLOBAL => Some(target),
             _ => None,
         }
@@ -125,6 +130,10 @@ impl Action {
             Self::Restart(vm) => {
                 lifecycle::vm_restart(context, ui, vm)?;
                 Ok(format!("{vm} restarted"))
+            }
+            Self::Upgrade(vm) => {
+                lifecycle::vm_upgrade(context, ui, vm, None)?;
+                Ok(format!("{vm}'s guest service is upgraded"))
             }
             Self::Set { target, changes } => {
                 let changes = changes
@@ -211,6 +220,7 @@ pub fn from_fix(fix: &str) -> Option<Action> {
         ["init", ..] => Some(Action::Init),
         ["vm", "add", vm] => Some(Action::add(vm)),
         ["vm", "restart", vm] => Some(Action::Restart((*vm).to_owned())),
+        ["vm", "upgrade", vm] => Some(Action::Upgrade((*vm).to_owned())),
         ["vm", "remove", vm] => Some(Action::Remove((*vm).to_owned())),
         ["recover", vm, ..] => Some(Action::Recover((*vm).to_owned())),
         ["set", target, changes @ ..]
@@ -294,6 +304,10 @@ mod tests {
         assert_eq!(
             from_fix("rampire vm restart web"),
             Some(Action::Restart("web".to_owned()))
+        );
+        assert_eq!(
+            from_fix("rampire vm upgrade web"),
+            Some(Action::Upgrade("web".to_owned()))
         );
         assert_eq!(
             from_fix("rampire init on a new host, or rampire apply"),

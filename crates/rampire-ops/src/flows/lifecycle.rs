@@ -797,8 +797,153 @@ pub fn vm_restart(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(), St
     Ok(())
 }
 
+/// `rampire vm upgrade`: install the guest package of the build this host
+/// runs in a managed VM, logged in to it as `vm add` does; when it can't be
+/// logged in to, and that is agreed to, on its disk with it shut down for a
+/// moment. Then wait for the new build to report in.
+pub fn vm_upgrade(
+    context: &Context,
+    ui: &mut dyn Ui,
+    vm: &str,
+    login: Option<&str>,
+) -> Result<(), String> {
+    crate::attest::vm_settings(&context.draft(), vm)?;
+    let host = context.build_id();
+    let running = crate::guest::running_build(vm);
+    if let (Some(guest), Some(host)) = (running.as_deref(), host) {
+        if guest == host {
+            ui.say(&format!(
+                "{vm} runs rampire-guest {host} already, the build this host runs"
+            ));
+            return Ok(());
+        }
+    }
+    let from = running.map_or("the build it runs".to_owned(), |build| {
+        format!("build {build}")
+    });
+    let to = host.map_or("the build this host runs".to_owned(), |host| {
+        format!("build {host}, the one this host runs")
+    });
+    if !ui.confirm(&format!(
+        "Upgrade rampire-guest in {vm} from {from} to {to}?"
+    ))? {
+        ui.say("nothing changed");
+        return Ok(());
+    }
+    let libvirt = context.libvirt()?;
+    upgrade_guest(ui, &libvirt, vm, login, true)?;
+    crate::audit::record(context, "vm_upgrade", Some(vm), &[]);
+    wait_for_build(ui, vm, host, std::time::Duration::from_secs(300));
+    Ok(())
+}
+
+/// Install the guest package of this host's build in `vm`: logged in to it
+/// while it runs; else, when `may_shut_down` and it is agreed to, on its
+/// disk with it shut down for a moment, the package installing as it starts
+/// again. A VM that is off gets it on its disk without asking.
+fn upgrade_guest(
+    ui: &mut dyn Ui,
+    libvirt: &crate::attest::Libvirt,
+    vm: &str,
+    login: Option<&str>,
+    may_shut_down: bool,
+) -> Result<(), String> {
+    use std::time::Duration;
+    let offline = |running: bool, ui: &mut dyn Ui| -> Result<(), String> {
+        ui.say(&format!(
+            "putting rampire-guest on {vm}'s disk; it installs as {vm} starts"
+        ));
+        crate::guest::install_offline(libvirt, vm, running)?;
+        libvirt.virsh(&["start", vm])?;
+        ui.say(&format!("{vm} started"));
+        Ok(())
+    };
+    if libvirt.state(vm)? != "running" {
+        return offline(false, ui);
+    }
+    let logged_in = crate::guest::Guest::reach(libvirt, vm, login, Duration::from_secs(60))
+        .and_then(|guest| {
+            ui.say(&format!("installing rampire-guest in {vm} {}", guest.way()));
+            guest.install()
+        });
+    match logged_in {
+        Ok(installed) => {
+            ui.say(&format!("{vm} has rampire-guest {}", installed.build));
+            if installed.restart_needed {
+                ui.say(&format!(
+                    "the package turned on what takes a restart: rampire vm restart {vm}"
+                ));
+            }
+            Ok(())
+        }
+        Err(why) => {
+            ui.say(&why);
+            if !may_shut_down || !crate::guest::offline_available() {
+                return Err(format!("rampire-guest in {vm} wasn't upgraded: {why}"));
+            }
+            if !ui.confirm(&format!(
+                "Shut {vm} down for a moment to put the package on its disk?"
+            ))? {
+                return Err(format!("rampire-guest in {vm} wasn't upgraded"));
+            }
+            offline(true, ui)
+        }
+    }
+}
+
+/// Wait for `vm`'s guest service to publish from `build`, and say so.
+fn wait_for_build(ui: &mut dyn Ui, vm: &str, build: Option<&str>, limit: std::time::Duration) {
+    let Some(build) = build else {
+        return;
+    };
+    ui.say(&format!("waiting for {vm}'s guest service to report in"));
+    let started = std::time::Instant::now();
+    while started.elapsed() < limit {
+        if crate::guest::running_build(vm).as_deref() == Some(build) {
+            ui.say(&format!("{vm} runs rampire-guest {build}"));
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    ui.say(&format!(
+        "{vm}'s guest service hasn't reported in from build {build} after {} s: rampire doctor {vm} says why",
+        limit.as_secs()
+    ));
+}
+
+/// After a VM's settings change: when its guest runs another build than
+/// this host's, upgrade it while it runs. One that can't be logged in to is
+/// left for `rampire vm upgrade`, which can shut it down for a moment.
+fn upgrade_if_behind(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(), String> {
+    let host = context.build_id();
+    let publication =
+        crate::top::read_publication(&rampire_host::guest_channel::publication_copy_path(vm));
+    if !crate::guest::update_available(host, publication.as_ref()) {
+        return Ok(());
+    }
+    let libvirt = context.libvirt()?;
+    if libvirt.state(vm)? != "running" {
+        return Ok(());
+    }
+    ui.say(&format!(
+        "{vm} runs rampire-guest {}; upgrading it to this host's build",
+        crate::guest::publication_build(publication.as_ref()).unwrap_or("of another build")
+    ));
+    match upgrade_guest(ui, &libvirt, vm, None, false) {
+        Ok(()) => {
+            crate::audit::record(context, "vm_upgrade", Some(vm), &[]);
+            wait_for_build(ui, vm, host, std::time::Duration::from_secs(120));
+        }
+        Err(why) => ui.say(&format!(
+            "{why}; rampire vm upgrade {vm} does it, shutting {vm} down for a moment if it must"
+        )),
+    }
+    Ok(())
+}
+
 /// `rampire set`: change settings in the draft, then apply unless
-/// `no_apply`.
+/// `no_apply`. A VM whose guest runs another build than this host's has
+/// its guest upgraded as well.
 pub fn set(
     context: &Context,
     ui: &mut dyn Ui,
@@ -823,6 +968,7 @@ pub fn set(
     );
     if target != crate::set::GLOBAL {
         grow_for_max_ram(context, ui, target)?;
+        upgrade_if_behind(context, ui, target)?;
     }
     if no_apply {
         ui.say("not applied: run rampire apply when ready");
@@ -926,6 +1072,14 @@ mod tests {
         let draft = TempDir::new("test-unmanaged").unwrap();
         let mut ui = Transcript::default();
         assert!(vm_remove(&context(draft.path()), &mut ui, "web").is_err());
+        assert!(ui.said.is_empty());
+    }
+
+    #[test]
+    fn only_a_managed_vm_is_upgraded() {
+        let draft = TempDir::new("test-upgrade").unwrap();
+        let mut ui = Transcript::default();
+        assert!(vm_upgrade(&context(draft.path()), &mut ui, "web", None).is_err());
         assert!(ui.said.is_empty());
     }
 }

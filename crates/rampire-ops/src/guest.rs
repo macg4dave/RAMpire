@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use rampire_core::RawTelemetryEnvelope;
+
 use crate::attest::Libvirt;
 
 /// Where the host package keeps `rampire-guest.deb` and `rampire-guest.rpm`.
@@ -277,6 +279,35 @@ impl<'a> Guest<'a> {
     }
 }
 
+/// The build a guest's service runs, from its publication.
+pub fn publication_build(publication: Option<&RawTelemetryEnvelope>) -> Option<&str> {
+    publication?
+        .diagnostics
+        .as_ref()
+        .map(|diagnostics| diagnostics.build_id.as_str())
+        .filter(|build| !build.is_empty())
+}
+
+/// Whether the guest runs another build than `host_build`, the build of
+/// the guest packages this host carries: an update is available. Unknown
+/// (no publication, or a host build without an identity) is not.
+pub fn update_available(
+    host_build: Option<&str>,
+    publication: Option<&RawTelemetryEnvelope>,
+) -> bool {
+    matches!(
+        (host_build, publication_build(publication)),
+        (Some(host), Some(guest)) if host != guest
+    )
+}
+
+/// The build `vm`'s guest service publishes now, from the controller's copy.
+pub fn running_build(vm: &str) -> Option<String> {
+    let publication =
+        crate::top::read_publication(&rampire_host::guest_channel::publication_copy_path(vm));
+    publication_build(publication.as_ref()).map(str::to_owned)
+}
+
 /// Whether libguestfs' `virt-customize` and `virt-ls` are on the host, for
 /// [`install_offline`].
 pub fn offline_available() -> bool {
@@ -521,6 +552,19 @@ fn base64_decode(text: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_is_available_when_the_guest_runs_another_build() {
+        let text = include_str!("../../../fixtures/publication.json");
+        let mut publication: RawTelemetryEnvelope = serde_json::from_str(text).unwrap();
+        let build = publication_build(Some(&publication)).unwrap().to_owned();
+        assert!(!update_available(Some(&build), Some(&publication)));
+        assert!(update_available(Some("newer"), Some(&publication)));
+        assert!(!update_available(None, Some(&publication)));
+        assert!(!update_available(Some("newer"), None));
+        publication.diagnostics = None;
+        assert!(!update_available(Some("newer"), Some(&publication)));
+    }
 
     #[test]
     fn the_first_ipv4_address_is_read_from_domifaddr() {

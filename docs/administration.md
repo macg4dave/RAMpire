@@ -481,7 +481,14 @@ version; a reader refuses one it doesn't know, so it never guesses. The
    `/var/lib/rampire` stay.
 2. `sudo rampire apply`, which records each VM's setup again where it
    changed, then check with `sudo rampire status`.
-3. Upgrade each guest service: in the VM, install the guest package from
-   the host's `/usr/share/rampire/guest/` (the new build's) or from the
-   release. `sudo rampire doctor VM` shows the build each guest's
-   publications come from.
+3. Upgrade each guest service. The TUI marks each VM whose guest runs
+   another build with **update available**; `u` upgrades it, the same as
+
+   ```bash
+   sudo rampire vm upgrade VM
+   ```
+
+   which installs the guest package the new host package carries, logged
+   in to the VM or, agreed to, on its disk with it shut down for a moment.
+   Changing a VM's settings upgrades its guest too. `sudo rampire doctor
+   VM` reports a guest of another build, with this fix.

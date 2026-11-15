@@ -365,6 +365,20 @@ impl App {
         entries
     }
 
+    /// Whether `entry`'s guest service runs another build than this host's,
+    /// which has the guest package of its own build to upgrade it to.
+    pub fn update_available(&self, entry: &Entry) -> bool {
+        let sample = self
+            .pool
+            .as_ref()
+            .and_then(|pool| pool.as_ref().ok())
+            .zip(entry.pool_index)
+            .and_then(|(pool, index)| pool.vms.get(index));
+        sample.is_some_and(|sample| {
+            crate::guest::update_available(self.context.build_id(), sample.guest.as_ref())
+        })
+    }
+
     /// The figure the list is sorted by, for a VM the pool reads.
     fn figure(&self, entry: &Entry) -> Option<u64> {
         let pool = self.pool.as_ref()?.as_ref().ok()?;
@@ -758,28 +772,43 @@ impl App {
             text.push(listed.detail.clone());
         }
         let choices = match entry.management {
-            Management::Managed => vec![
-                item(
-                    'v',
-                    "Live details",
-                    line(&["watch", vm]),
-                    Pick::Open(View::Details(vm.to_owned())),
-                ),
-                item(
-                    's',
-                    "Settings",
-                    line(&["set", vm, "KEY=VALUE"]),
-                    Pick::Settings(vec![vm.to_owned()]),
-                ),
-                doctor,
-                item(
-                    'l',
-                    "Logs",
-                    line(&["logs", "--vm", vm]),
-                    Pick::Open(View::Logs(Some(vm.to_owned()))),
-                ),
-                remove,
-            ],
+            Management::Managed => {
+                let mut choices = vec![
+                    item(
+                        'v',
+                        "Live details",
+                        line(&["watch", vm]),
+                        Pick::Open(View::Details(vm.to_owned())),
+                    ),
+                    item(
+                        's',
+                        "Settings",
+                        line(&["set", vm, "KEY=VALUE"]),
+                        Pick::Settings(vec![vm.to_owned()]),
+                    ),
+                    doctor,
+                    item(
+                        'l',
+                        "Logs",
+                        line(&["logs", "--vm", vm]),
+                        Pick::Open(View::Logs(Some(vm.to_owned()))),
+                    ),
+                ];
+                if self.update_available(entry) {
+                    text.push(
+                        "Update available: its guest service runs another build than this host's"
+                            .to_owned(),
+                    );
+                    choices.push(item(
+                        'u',
+                        "Upgrade the guest service",
+                        line(&["vm", "upgrade", vm]),
+                        Pick::Run(Action::Upgrade(vm.to_owned())),
+                    ));
+                }
+                choices.push(remove);
+                choices
+            }
             Management::Unfinished => vec![
                 item(
                     'a',
@@ -1112,7 +1141,8 @@ pub(crate) mod tests {
         let context = Context {
             config: None,
             connect: Some("test:///default".to_owned()),
-            build: "0.1.0 (build test)".to_owned(),
+            // The build of the fixture's guest: no update is available.
+            build: "0.5.0 (build ab447c26ff67)".to_owned(),
             via: "tui",
         };
         let theme = Theme::new(Palette::Midnight, Depth::TrueColor, Icons { unicode: true });

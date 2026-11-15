@@ -37,9 +37,15 @@ offers only what fits that VM:
 
 | The VM is | Its menu |
 |---|---|
-| Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `x` Remove RAMpire |
+| Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `u` Upgrade the guest service, when an update is available; `x` Remove RAMpire |
 | Not managed | What would stop adding it; `x` Remove RAMpire, when its definition still has RAMpire's parts; `a` Install RAMpire: its settings (Priority, Minimum, Maximum and Free RAM, filled in from its definition, and Guest login), then everything adding will do, asked once; `o` its doctor |
 | Half-added | `a` finish adding it; `o` its doctor |
+
+A managed VM whose guest service runs another build than the host's
+shows **update available (u)** in the list's NOTE column: the host
+package carries the guest package of its own build, and `u` installs it
+in the VM (`rampire vm upgrade VM`). Changing a VM's settings upgrades
+its guest service too, while the VM runs.
 
 A menu's letters also work from the list and from a VM's details,
 without opening the menu (in the list, `k` moves; removing is in the
@@ -168,7 +174,7 @@ logged as `event=operator_change action=tui_failed`.
 | `rampire diff` | Shows the draft against the applied copy |
 | `rampire apply [--detailed-exitcode]` | Copies the draft, checks the copy while the controller runs, shows the difference, asks, then makes it current and reloads or restarts the controller. A failing draft changes nothing |
 | `rampire rollback` | Returns to the applied copy before the current one, through the same checks |
-| `rampire set TARGET KEY=VALUE... [--no-apply]` | Changes settings in a VM's file, or in `global.toml` with `global`, keeping comments, then applies. The controller takes a change at once; a `max_ram` more than the VM's virtio-mem device holds also grows the device in its definition, which takes a restart: asked whether now, or at the VM's next start |
+| `rampire set TARGET KEY=VALUE... [--no-apply]` | Changes settings in a VM's file, or in `global.toml` with `global`, keeping comments, then applies. The controller takes a change at once; a `max_ram` more than the VM's virtio-mem device holds also grows the device in its definition, which takes a restart: asked whether now, or at the VM's next start. For a running VM whose guest service runs another build than the host's, it also upgrades the guest service, logged in to it as `vm upgrade` does; one it can't log in to is left for `vm upgrade` |
 
 ### VMs
 
@@ -176,6 +182,7 @@ logged as `event=operator_change action=tui_failed`.
 |---|---|
 | `rampire vm add VM [--guest-login USER@HOST] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE] [--review PROFILE] [--kernel RELEASE] [--no-guest-install]` | Starts managing a VM. It shows everything it will do and asks once; then it fixes the definition, keeping the old one (a NUMA cell, `maxMemory`, the device, the control channel and the guest agent channel, and the memory balloon turned off), starts the VM, installs or upgrades `rampire-guest` in it (through its guest agent, or over SSH as `--guest-login`, default root at the address libvirt has for it; when neither gets in, or the VM is off, with libvirt's disk tools while it is shut down, the package installing as it starts), restarts it if that is needed, writes its review and settings, applies, and waits for the guest to report in. The sizes default to ones suggested from the definition. It stops first if another managed VM would fail `apply`'s checks |
 | `rampire vm restart VM` | Shuts a VM down and starts it again, so its saved definition takes effect, then applies |
+| `rampire vm upgrade VM [--guest-login USER@HOST]` | Upgrades `rampire-guest` in a managed VM to the build the host runs, from the guest packages the host package carries. It logs in as `vm add` does (the guest agent, else root over SSH with RAMpire's key, or `--guest-login`); when it can't, and you agree, it puts the package on the VM's disk with the VM shut down for a moment, and it installs as the VM starts. A VM that is off gets it on its disk. Then it waits for the guest to report in from the new build. Nothing to do when the guest runs the host's build already |
 | `rampire vm list` | Every VM on the libvirt connection: managed, unfinished (a `vm add` that didn't apply) or not managed. For one that isn't managed, what `vm add` would change, what would still stop it, and whether its guest service is installed |
 | `rampire vm remove VM` | Removes RAMpire from a VM: stops managing it at once, puts its definition back to plain RAM (its boot RAM, without the virtio-mem device, control channel, `maxMemory` or a single NUMA cell, and with the memory balloon it had before `vm add`), so Cockpit or `virsh` can change its memory again, and removes its settings, recorded setup, request state, definition backups and the review profile `vm add` wrote for it. For a VM no longer managed whose definition still has RAMpire's parts, it puts the definition back the same way. The definition takes effect at the VM's next start |
 

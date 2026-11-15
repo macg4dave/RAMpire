@@ -877,6 +877,26 @@ mod tests {
     }
 
     #[test]
+    fn a_guest_of_another_build_can_be_upgraded_from_its_menu_and_the_list() {
+        let (mut app, _rx) = app();
+        app.context.build = "0.5.0 (build newer)".to_owned();
+        let entry = app.selected().expect("a VM");
+        assert!(app.update_available(&entry));
+        press(&mut app, KeyCode::Enter);
+        let which = app.which.as_ref().expect("a menu");
+        let keys: String = which
+            .cands
+            .iter()
+            .map(|cand| cand.keys[0].label())
+            .collect();
+        assert_eq!(keys, "vsolux");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('u'));
+        let queued: Vec<&Action> = app.tasks.list.iter().map(|task| &task.action).collect();
+        assert_eq!(queued, [&Action::Upgrade("vm0".to_owned())]);
+    }
+
+    #[test]
     fn enter_opens_a_menu_of_what_fits_the_vm_and_its_letters_do_it() {
         let (mut app, _rx) = app();
         press(&mut app, KeyCode::Enter);

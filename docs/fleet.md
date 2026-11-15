@@ -88,3 +88,6 @@ installs the guest service when a VM is created.
 Upgrade the controller first, then the guests. A controller serves guests
 from its own minor release and the one before it; the
 [changelog](../CHANGELOG.md) lists each release.
+`rampire vm upgrade VM` upgrades one guest to the controller's build, and
+`rampire doctor VM --json` reports a guest of another build as the
+`guest build` check.

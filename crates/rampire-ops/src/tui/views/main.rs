@@ -284,9 +284,19 @@ fn vm_list(
                                 gauge,
                             );
                             cells.push(Cell::from(guest));
-                            // A pending request, or a stale publication; nothing when quiet.
+                            // A pending request, or a stale publication; else an
+                            // update for its guest service; nothing when quiet.
                             let quiet = request.to_string() == "none";
-                            cells.push(Cell::from(if quiet { Line::default() } else { request }));
+                            cells.push(Cell::from(if !quiet {
+                                request
+                            } else if app.update_available(entry) {
+                                Line::from(Span::styled(
+                                    "update available (u)",
+                                    theme.tone(Tone::Warn),
+                                ))
+                            } else {
+                                Line::default()
+                            }));
                         }
                         Linemode::Limits => {
                             let free = app
