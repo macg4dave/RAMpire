@@ -886,7 +886,7 @@ mod tests {
             .iter()
             .map(|cand| cand.keys[0].label())
             .collect();
-        assert_eq!(keys, "vsolackf");
+        assert_eq!(keys, "vsolckf");
         press(&mut app, KeyCode::Char('v'));
         assert_eq!(app.view, View::Details("vm0".to_owned()));
         press(&mut app, KeyCode::Esc);
@@ -983,13 +983,13 @@ mod tests {
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Char(' '));
         assert_eq!(app.list.marks.len(), 2);
-        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('c'));
         let Some(Dialog::Confirm(confirm)) = &app.dialog else {
             panic!("one question for the marked VMs");
         };
         assert_eq!(confirm.list.len(), 2);
         assert!(
-            confirm.list[0].contains("vm attest vm0"),
+            confirm.list[0].contains("vm restart vm0"),
             "{:?}",
             confirm.list
         );
@@ -997,7 +997,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(app.dialog.is_none());
         assert!(app.tasks.list.is_empty());
-        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('c'));
         press(&mut app, KeyCode::Char('y'));
         assert_eq!(app.tasks.list.len(), 2);
         assert_eq!(app.tasks.active(), 2);

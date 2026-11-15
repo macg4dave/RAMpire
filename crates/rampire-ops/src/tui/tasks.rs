@@ -282,7 +282,6 @@ fn line_tone(line: &str) -> Tone {
     } else if line.starts_with("  fix:") || line.starts_with("to fix:") {
         Tone::Warn
     } else if line.starts_with("applied")
-        || line.starts_with("attested")
         || line.starts_with("wrote")
         || line.contains(" published")
         || line.ends_with("started")
@@ -539,11 +538,8 @@ mod tests {
         let mut tasks = Tasks::default();
         tasks.add(Action::Apply, "rampire apply".to_owned());
         tasks.add(
-            Action::Attest {
-                vm: "web".to_owned(),
-                restart: false,
-            },
-            "rampire vm attest web".to_owned(),
+            Action::Restart("web".to_owned()),
+            "rampire vm restart web".to_owned(),
         );
         tasks
     }

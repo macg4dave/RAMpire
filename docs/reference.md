@@ -37,7 +37,7 @@ offers only what fits that VM:
 
 | The VM is | Its menu |
 |---|---|
-| Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `a` attest it again; `c` restart it, then attest; `k` remove it, keeping its settings; `f` forget it |
+| Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `c` restart it, so its saved definition takes effect; `k` remove it, keeping its settings; `f` forget it |
 | Not managed | What `vm add --fix-xml` will change, what would stop it, and the guest service's install command when it isn't installed; `a` add it; `o` its doctor |
 | Parked | `b` bring it back; `o` its doctor; `f` forget it |
 | Half-added | `a` finish adding it; `o` its doctor; `f` forget it |
@@ -159,8 +159,8 @@ logged as `event=operator_change action=tui_failed`.
 | Command | What it does |
 |---|---|
 | `rampire init` | Checks the host as `doctor` does and stops on a problem; then suggests `global.toml` from the host's memory and its VMs (never over an existing one), creates the configuration folders, applies, and enables and starts the controller |
-| `rampire doctor [VM]` | Checks libvirt 10.1+, QEMU 8.2+ with virtio-mem's options, the service account, the socket group, libvirt access and an applied configuration, with the fix for each problem, and gives one line per managed VM. With a VM, everything about it: its saved and running definition (device, control channel, balloon, memory slots), its attestation, a latch, the guest's publication and readiness report (driver, onlining, pressure signal, `max_ram` against the movable zone), and the last request and what held it back |
-| `rampire check` | Checks the draft and every VM's attestation against the live VMs; changes nothing |
+| `rampire doctor [VM]` | Checks libvirt 10.1+, QEMU 8.2+ with virtio-mem's options, the service account, the socket group, libvirt access and an applied configuration, with the fix for each problem, and gives one line per managed VM. With a VM, everything about it: its saved and running definition (device, control channel, balloon, memory slots), its recorded setup, a latch, the guest's publication and readiness report (driver, onlining, pressure signal, `max_ram` against the movable zone), and the last request and what held it back |
+| `rampire check` | Checks the draft and every VM against its recorded setup; changes nothing |
 
 ### Changing the configuration
 
@@ -176,10 +176,9 @@ logged as `event=operator_change action=tui_failed`.
 | Command | What it does |
 |---|---|
 | `rampire vm add VM [--fix-xml] [--review PROFILE] [--kernel RELEASE] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE]` | Starts managing a VM: checks its definition (fixing it with `--fix-xml`, keeping the old one: a NUMA cell, `maxMemory`, the device and the control channel, and the memory balloon turned off), stops first if another managed VM would fail `apply`'s checks, starts or restarts the VM if it is off or its definition changed, fills in its review from the definition and the guest agent and asks the rest, writes its settings, and applies. A VM with a file in `parked/` gets that file back instead |
-| `rampire vm attest VM [--restart] [--no-apply]` | Attests a running VM again from its review profile, then applies. `--restart` cold-restarts it first |
-| `rampire vm attest --drifted` | Lists every running VM whose live evidence no longer matches its attestation, asks, and attests them again |
+| `rampire vm restart VM` | Shuts a VM down and starts it again, so its saved definition takes effect, then applies |
 | `rampire vm list` | Every VM on the libvirt connection: managed, parked, unfinished (a `vm add` that didn't apply) or not managed. For one that isn't managed, what `vm add --fix-xml` would change, what would still stop it, and whether its guest service is installed |
-| `rampire vm remove VM [--forget]` | Stops managing a VM at once. It keeps its memory until its next cold start, which begins on boot RAM alone. Its file is kept in `parked/`, for `vm add` to bring it back; `--forget`, for a VM being deleted, removes its settings, attestation, request state, definition backups and the review profile `vm add` wrote for it |
+| `rampire vm remove VM [--forget]` | Stops managing a VM at once. It keeps its memory until its next cold start, which begins on boot RAM alone. Its file is kept in `parked/`, for `vm add` to bring it back; `--forget`, for a VM being deleted, removes its settings, recorded setup, request state, definition backups and the review profile `vm add` wrote for it |
 
 ### Watching
 
@@ -204,7 +203,7 @@ logged as `event=operator_change action=tui_failed`.
 | `/etc/rampire/global.toml` | Settings for the whole host |
 | `/etc/rampire/vms.d/VM.toml` | One VM; the file's name is the VM's |
 | `/etc/rampire/reviews/PROFILE.toml` | A review profile |
-| `/etc/rampire/attestations/VM.attestation.json` | A VM's attestation |
+| `/etc/rampire/attestations/VM.attestation.json` | How a VM was set up when `apply` last checked it |
 | `/etc/rampire/parked/` | VM files `vm remove` took out |
 | `/var/lib/rampire/applied/ID/`, `current` | Applied copies, and the one the controller runs |
 | `/var/lib/rampire/evidence/` | What each apply and rollback did |
@@ -257,7 +256,7 @@ backups and `.rpmnew` files there are ignored.
 | `max_ram` | The largest it may grow. For Linux, at most about four times boot RAM |
 | `free_ram` | Spare memory the guest keeps; it asks for more below this and returns memory above it ([sizes](#sizes)) |
 | `guest_os` | `"linux"`, or omitted for Windows |
-| `review` | The review profile in `reviews/` it is attested with |
+| `review` | Its review profile in `reviews/` |
 | `telemetry_path` | Optional host file for a diagnostic copy of each publication |
 | `install_path`, `service_account` | Windows only: where the guest service is installed and the account it runs as |
 

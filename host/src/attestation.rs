@@ -24,6 +24,11 @@ pub(crate) const MAX_ATTESTATION_BYTES: usize = 64 * 1024;
 /// The review profile's version: `version` in `reviews/NAME.toml`.
 pub const REVIEW_VERSION: u32 = 1;
 
+/// How a VM that changed since its setup was recorded is described:
+/// "libvirt was upgraded since RAMpire last checked this VM". `apply`
+/// checks it again and records it.
+pub const CHECKED: &str = "RAMpire last checked this VM";
+
 /// Where a review answer came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -296,20 +301,15 @@ impl CompatibilityAttestation {
             .iter()
             .find(|(_, attested, observed)| attested != observed)
         {
-            // A digest is told apart by its start; all 64 characters only
-            // bury the message.
-            let short = |value: &str| -> String {
-                if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    value[..12].to_owned()
-                } else {
-                    value.to_owned()
-                }
+            // What changed, as a person would say it; a digest says nothing.
+            let what = match *field {
+                "domain_xml" => "its definition changed".to_owned(),
+                "qemu_argv" => "QEMU's command line changed".to_owned(),
+                "libvirt_version" => "libvirt was upgraded".to_owned(),
+                "qemu_version" => format!("QEMU went from {attested} to {observed}"),
+                _ => format!("{field} changed from {attested} to {observed}"),
             };
-            return Err(format!(
-                "live compatibility evidence drifted: {field} changed since it was attested ({} → {})",
-                short(attested),
-                short(observed)
-            ));
+            return Err(format!("{what} since {CHECKED}"));
         }
         Ok(())
     }

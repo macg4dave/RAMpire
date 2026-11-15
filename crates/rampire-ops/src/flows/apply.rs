@@ -24,8 +24,8 @@ fn show_difference(ui: &mut dyn Ui, from: Option<&Path>, to: &Path) -> Result<bo
             empty.path()
         }
     };
-    // An attestation is a machine record of hashes: a person can't check it
-    // line by line, so it is named rather than shown.
+    // A VM's recorded setup is a machine record of hashes: a person can't
+    // check it line by line, so it is named rather than shown.
     let output = std::process::Command::new("diff")
         .arg("-ruN")
         .arg(format!("--exclude=*{ATTESTATION_SUFFIX}"))
@@ -52,7 +52,7 @@ fn show_difference(ui: &mut dyn Ui, from: Option<&Path>, to: &Path) -> Result<bo
     };
     let attestations = attestation_changes(from, to)?;
     for (vm, change) in &attestations {
-        ui.say(&format!("attestation of {vm}: {change}"));
+        ui.say(&format!("{vm}: {change}"));
     }
     Ok(shown || !attestations.is_empty())
 }
@@ -91,13 +91,13 @@ fn attestation_changes(from: &Path, to: &Path) -> Result<Vec<(String, &'static s
     let mut changes = Vec::new();
     for (vm, bytes) in &after {
         match before.get(vm) {
-            None => changes.push((vm.clone(), "new, recording how the VM is set up now")),
-            Some(old) if old != bytes => changes.push((vm.clone(), "changed")),
+            None => changes.push((vm.clone(), "records how it is set up now")),
+            Some(old) if old != bytes => changes.push((vm.clone(), "records how it is set up now")),
             Some(_) => {}
         }
     }
     for vm in before.keys().filter(|vm| !after.contains_key(*vm)) {
-        changes.push((vm.clone(), "removed"));
+        changes.push((vm.clone(), "drops its recorded setup"));
     }
     changes.sort();
     Ok(changes)
@@ -134,11 +134,10 @@ fn stage_and_apply(
     staged: &Path,
 ) -> Result<bool, String> {
     let draft = context.draft();
-    // A VM with no attestation yet is attested here when its file names a
-    // review profile and it runs; a drifted one is not, since only a person
-    // may accept a changed VM (`rampire vm attest`).
-    for vm in crate::attest::attest_missing(&draft, &context.libvirt()?)? {
-        ui.say(&format!("attested {vm}, which had no attestation"));
+    // Each running VM's recorded setup is brought up to date first, so
+    // what is checked is the VMs as they are now.
+    for vm in crate::attest::keep_current(&draft, &context.libvirt()?, ui)? {
+        crate::audit::record(context, "vm_recorded", Some(&vm), &[]);
     }
     crate::applied::snapshot(&draft, staged)?;
     // Check the copy, so what is checked is exactly what is applied.
@@ -423,12 +422,9 @@ mod tests {
         assert_eq!(
             attestation_changes(from.path(), to.path()).unwrap(),
             [
-                (
-                    "added".to_owned(),
-                    "new, recording how the VM is set up now"
-                ),
-                ("edited".to_owned(), "changed"),
-                ("gone".to_owned(), "removed"),
+                ("added".to_owned(), "records how it is set up now"),
+                ("edited".to_owned(), "records how it is set up now"),
+                ("gone".to_owned(), "drops its recorded setup"),
             ]
         );
         // No attestations folder on either side is no change.

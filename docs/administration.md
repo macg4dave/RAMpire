@@ -29,7 +29,7 @@ Run one controller per host: separate controllers cannot share a pool.
 | Unit | `/etc/systemd/system/rampire.service` |
 | libvirt access rule | `/etc/polkit-1/rules.d/50-rampire.rules` |
 | Configuration (the draft) | `/etc/rampire/` (`global.toml`, `vms.d/<vm_name>.toml`, `reviews/`) |
-| Attestations | `/etc/rampire/attestations/<vm_name>.attestation.json`, apart from the settings |
+| Recorded setups | `/etc/rampire/attestations/<vm_name>.attestation.json`, kept by `apply` |
 | Applied copies | `/var/lib/rampire/applied/<id>/`, with `current` naming the one the controller runs |
 | What each apply did | `/var/lib/rampire/evidence/<id>-apply.json` (and `-rollback.json`): the build, the copies switched between, every file's SHA-256, the VMs checked, whether the controller restarted |
 | Durable request state | `/var/lib/rampire/state/<vm_name>-requests.json` (the unit's `StateDirectory`) |
@@ -37,8 +37,8 @@ Run one controller per host: separate controllers cannot share a pool.
 | Deployment backups | `/var/lib/rampire/deployment-backups/` |
 
 The unit runs `rampire daemon --config /var/lib/rampire/applied/current`.
-The controller takes its attestations from the `attestations/` folder of
-the copy it runs and its state from the unit's `StateDirectory`.
+The controller takes each VM's recorded setup from the `attestations/`
+folder of the copy it runs and its state from the unit's `StateDirectory`.
 
 ## Installing the controller
 
@@ -69,7 +69,7 @@ QEMU, `virsh` on the path, polkit, and Rust to build the controller.
    host (2 to 8 GiB) as `host_reserve`. It never overwrites an existing
    `global.toml`.
 
-3. Prepare each VM and attest it ([Adding a VM](#adding-a-vm)).
+3. Prepare each VM ([Adding a VM](#adding-a-vm)).
 
 4. Install the controller from its package (`dnf install` or
    `apt install`, see the [quick start](quick-start.md)), or, on a
@@ -82,9 +82,6 @@ QEMU, `virsh` on the path, polkit, and Rust to build the controller.
    ```
 
    On a new host `sudo rampire init` does both, after checking the host.
-
-   Every VM in `vms.d/` needs its attestation in
-   `/etc/rampire/attestations/<vm_name>.attestation.json`.
 
 ### Changing the configuration
 
@@ -112,8 +109,8 @@ written as a whole number, `true`/`false`, or text (`"12GB"`). Nothing is
 written unless the changed file is valid and the whole configuration still
 loads. `--no-apply` changes the draft only.
 
-`apply` copies the draft, checks the copy like `rampire check` (the
-settings and every VM's attestation against the live VM) while the
+`apply` first records how each running VM is set up now (below), then
+copies the draft and checks the copy like `rampire check` while the
 controller keeps running, shows the difference and asks. Only then does
 it keep the copy under `/var/lib/rampire/applied/`, point `current` at it
 and restart the controller. A draft that fails changes nothing.
@@ -131,7 +128,8 @@ changes the files under a running controller.
 ## Configuration
 
 One directory holds `global.toml`, one file per VM in `vms.d/`, review
-profiles in `reviews/` and attestations in `attestations/`. A missing
+profiles in `reviews/` and the recorded setups `apply` keeps in
+`attestations/`. A missing
 `global.toml` means every default. An empty `vms.d/` is valid: the
 controller runs and logs that it manages no VMs. Only `vms.d/*.toml` files
 are read, so editor backups and `.rpmnew` files there are ignored.
@@ -197,7 +195,7 @@ are what it does, for doing them by hand or in a fleet.
    ```
 
    QEMU must run the device with `dynamic-memslots` and
-   `unplugged-inaccessible` on. The attestation reads both from QEMU and
+   `unplugged-inaccessible` on. RAMpire reads both from QEMU and
    refuses a VM without them.
 
 2. **Control channel.**
@@ -232,26 +230,25 @@ are what it does, for doing them by hand or in a fleet.
    `viomem` driver version on Windows and the kernel release on Linux.
    `workload_reviewed` can only be confirmed by a person.
 
-4. **Attest.** With the VM running in its final configuration,
-   `sudo rampire apply` attests a VM whose file names a review profile and
-   has no attestation yet. After a change to its definition, attest it
-   again with `sudo rampire vm attest VM` (`--restart` cold-restarts it
-   first).
+4. **Settings.** Write `/etc/rampire/vms.d/<vm_name>.toml` and run
+   `sudo rampire apply` with the VM running.
 
-   The attestation binds the review to hashes of the live domain XML, QEMU's
-   arguments and versions, and the device options. Every resize checks them
-   again and refuses on any difference, so attest again after any change
-   to the VM's definition. The domain XML is read for every resize; what
-   cannot change while QEMU runs (its arguments, QEMU and libvirt versions,
-   device options) is collected again when the domain restarts and at
-   least every five minutes. A saved definition takes effect only after
-   a full shutdown and start of the VM; attest after that.
+   `apply` records how the VM is set up: hashes of its live domain XML,
+   QEMU's arguments and versions, and the device options, bound to the
+   review. Every resize checks them again and refuses on any difference.
+   The domain XML is read for every resize; what cannot change while QEMU
+   runs is collected again when the domain restarts and at least every
+   five minutes.
 
-5. **Settings.** Write `/etc/rampire/vms.d/<vm_name>.toml`, with the
-   attestation in `/etc/rampire/attestations/`, and run
-   `sudo rampire apply`.
+   When a VM changes (libvirt or QEMU upgraded, its definition edited),
+   the next `apply` reads its definition again for every review answer
+   taken from it, and records the new setup if they still hold. A change
+   it can't read is asked; one that makes the VM unsafe to resize is
+   said, and the VM stays refused. A saved definition takes effect only
+   after a full shutdown and start: `sudo rampire vm restart VM` does that
+   and applies.
 
-6. **Guest service.** Install it in the guest (below). It waits, saying so
+5. **Guest service.** Install it in the guest (below). It waits, saying so
    in its log, until the controller has published its settings.
 
 ## Linux guests
@@ -274,7 +271,7 @@ kernels build it in but boot with it off (`CONFIG_PSI_DEFAULT_DISABLED`),
 so on such a kernel the package adds `psi=1` to every installed kernel with
 `grubby`. It takes effect when the VM next starts, which `rampire vm add`
 does when it changes the VM's definition; a VM added before the package
-was installed needs one restart (`rampire vm attest VM --restart`). An
+was installed needs one restart (`rampire vm restart VM`). An
 explicit `psi=0` is left alone.
 
 At start the service checks and logs its readiness: virtio-mem driver bound,
@@ -405,7 +402,7 @@ The same command serves a person and a script:
 sudo rampire top            # every VM and the pool
 sudo rampire watch VM       # one VM
 sudo rampire status [VM]    # the controller's status, as JSON
-sudo rampire check          # settings and attestations against the live VMs
+sudo rampire check          # settings, and each VM against its recorded setup
 sudo rampire doctor         # what the host needs, with the fix for each problem
 sudo rampire logs --follow  # the controller's journal
 ```
@@ -426,7 +423,7 @@ recorder's files and incident bundles.
 **A latched controller.** When a resize ends in a state the controller
 cannot prove safe, it latches (`actuation_latched` in the journal, `watch`
 and `metrics`) and stops resizing until an operator clears it. Install the
-current controller and attestation, then:
+current controller, then:
 
 ```bash
 sudo rampire recover VM "why it is safe to resume"
@@ -447,9 +444,9 @@ request is durable and is sent again unchanged until the host resolves it.
 Never delete request state to get past an error: the request must still
 receive its result.
 
-**Attestation drift.** A resize refused with `live compatibility evidence
-drifted: FIELD` means the VM changed since it was attested. Check that the
-change was intended, attest again and install.
+**A VM that changed.** A resize refused with `... since RAMpire last
+checked this VM` means the VM changed. `sudo rampire apply` checks it
+again and records it, or says why it can't be resized.
 
 **Startup memory.** A guest reboot keeps QEMU's live device size. Only a
 full shutdown and start applies the saved definition (`requested` zero).
@@ -466,9 +463,8 @@ controller serves guests from its own minor release and the one before it
 (see "Versions and releases" in the previous roadmap,
 `git show 71f1de7~1:docs/roadmap.md`).
 
-1. If the release notes say the attestation format changed, attest every
-   VM again first.
-2. Install the new controller, then `sudo rampire apply` and
-   `sudo systemctl restart rampire`.
-3. Check with `sudo rampire status`.
-4. Upgrade each guest service with its package.
+1. Install the new controller, then `sudo rampire apply` and
+   `sudo systemctl restart rampire`. Applying records each VM's setup
+   again where it changed.
+2. Check with `sudo rampire status`.
+3. Upgrade each guest service with its package.

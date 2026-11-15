@@ -335,7 +335,7 @@ starts.
 | A VM grows, but slowly gives memory back | Normal. A VM returns memory gradually, and can take several minutes when the memory was busy | Wait |
 | A VM stays large after a restart | A restart from inside the VM keeps its size | Shut the VM down fully, then start it |
 | The log mentions **latched** | The controller stopped resizing after something it couldn't confirm was safe | It needs a person to check it. See [Recovering](administration.md#recovering) |
-| The log mentions **drifted** | The VM's setup was changed after it was checked | The VM must be checked again. See [Adding a VM](administration.md#adding-a-vm), step 4 |
+| The log says **since RAMpire last checked this VM** | The VM's setup changed: libvirt upgraded, or its definition edited | `sudo rampire apply` checks it again and records it, or says why it can't be resized |
 | A VM's line in the pool view says **stale** | The VM's guest service hasn't reported in | Check that the VM is running. Inside the VM, `systemctl status rampire-guest` should say `active (running)` |
 
 **Never delete files under `/var/lib/rampire/` or

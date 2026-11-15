@@ -5,7 +5,7 @@
 //!
 //! Everything starts from one screen: the pool and every VM on the host,
 //! managed or not. Enter on a VM opens its menu, which offers what can be
-//! done with it: its details, settings, doctor and logs, attesting it,
+//! done with it: its details, settings, doctor and logs, restarting it,
 //! removing it, or adding it when RAMpire doesn't manage it yet. What it
 //! does runs as a task, so the screen stays free.
 
@@ -780,22 +780,10 @@ impl App {
                     Pick::Open(View::Logs(Some(vm.to_owned()))),
                 ),
                 item(
-                    'a',
-                    "Attest again: record how it is set up now",
-                    line(&["vm", "attest", vm]),
-                    Pick::Run(Action::Attest {
-                        vm: vm.to_owned(),
-                        restart: false,
-                    }),
-                ),
-                item(
                     'c',
-                    "Restart it, then attest",
-                    line(&["vm", "attest", vm, "--restart"]),
-                    Pick::Run(Action::Attest {
-                        vm: vm.to_owned(),
-                        restart: true,
-                    }),
+                    "Restart it, so its saved definition takes effect",
+                    line(&["vm", "restart", vm]),
+                    Pick::Run(Action::Restart(vm.to_owned())),
                 ),
                 item(
                     'k',

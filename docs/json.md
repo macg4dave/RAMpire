@@ -52,7 +52,7 @@ One VM as the controller sees it.
 | `control_health` | `converged`, `growing`, `shrinking`, `recovery_required` or `latched` |
 | `actuation_latched`, `latch_reason` | Resizing stopped until a person runs `rampire recover`, and why |
 | `recovery_state`, `recovery_reason`, `last_latch_clear_reason` | Recovery's state and the reasons recorded |
-| `compatibility_fingerprint_sha256` | The attestation the controller runs on |
+| `compatibility_fingerprint_sha256` | The recorded setup the controller runs on |
 
 ### `rampire.check`
 
@@ -90,7 +90,7 @@ The exit code is 0 when `passed` is true and 1 otherwise.
 | File | `schema` | Version | Written by |
 |---|---|---|---|
 | `/var/lib/rampire/evidence/ID-apply.json`, `ID-rollback.json` | `rampire.apply-evidence` | 1 | `apply`, `rollback` |
-| `attestations/VM.attestation.json` | `rampire.attestation` | 1 | `vm attest`, `apply` |
+| `attestations/VM.attestation.json` | `rampire.attestation` | 1 | `apply` |
 | `/var/lib/rampire/state/VM-requests.json` | `rampire.checkpoint` | 1 | the controller |
 
 `rampire.apply-evidence` records the `action`, `unix_millis`, the `build`

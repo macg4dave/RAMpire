@@ -16,7 +16,7 @@ listed under **For scripts** in `rampire --help`, each command's
 | `--yes` | every command | Answers yes to every question a script may answer. Never a review question about a VM's programs: give `vm add` a reviewed profile with `--review` instead |
 | `--json` | `status`, `check`, `doctor`, `vm list` | A versioned JSON document instead of text |
 | `--detailed-exitcode` | `apply` | 0 unchanged, 2 changed, 1 failed |
-| `--no-apply` | `set`, `vm attest` | Change the draft only, to apply later |
+| `--no-apply` | `set` | Change the draft only, to apply later |
 | `--review`, `--kernel`, `--priority`, `--min-ram`, `--max-ram`, `--free-ram` | `vm add` | Every answer and setting given, so nothing is asked |
 | `--once`, `--interval-seconds`, `--events`, `--guest-interval-seconds`, `--no-guest` | `top`, `watch` | One plain snapshot, and how much is read |
 
@@ -60,10 +60,9 @@ priorities, limits or the pool reloads the controller; adding or removing
 a VM restarts it. Each apply is recorded under
 `/var/lib/rampire/evidence/`.
 
-Attestations are made on the host: `apply` attests a running VM that names
-a review profile and has none yet. A VM whose definition changed needs a
-person to confirm the change: `rampire vm attest VM`, or
-`rampire vm attest --drifted` for every such VM.
+Each VM's setup is recorded on the host by `apply`, for a running VM
+that names a review profile, and again when the VM changed and what the
+review read from its definition still holds.
 
 ## Adding VMs
 

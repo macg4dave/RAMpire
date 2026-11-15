@@ -150,7 +150,7 @@ pub const VM: SettingsFile = SettingsFile {
         Setting {
             names: "`review`",
             default: None,
-            meaning: "The review profile in `reviews/` it is attested with",
+            meaning: "Its review profile in `reviews/`",
         },
         Setting {
             names: "`telemetry_path`",

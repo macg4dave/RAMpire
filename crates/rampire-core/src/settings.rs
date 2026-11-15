@@ -249,7 +249,7 @@ pub struct VmSettings {
     /// Optional host-local diagnostic copy of each guest publication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry_path: Option<String>,
-    /// The review profile, `reviews/NAME.toml`, the VM is attested with.
+    /// The review profile, `reviews/NAME.toml`, the VM was reviewed with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<String>,
 }

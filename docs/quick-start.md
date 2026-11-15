@@ -85,9 +85,9 @@ rampire vm add webserver --fix-xml
   and taken back while they run;
 - writes `/etc/rampire/vms.d/webserver.toml`, with limits from the VM's
   boot RAM;
-- offers to restart the VM so its new definition takes effect, then
-  applies. Applying attests the VM: it records exactly how the VM looks,
-  and every resize checks that it still does.
+- offers to start or restart the VM so its new definition takes effect,
+  then applies. Applying records how the VM is set up, and every resize
+  checks that it still is.
 
 ## 5. Watch it work
 

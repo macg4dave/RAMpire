@@ -1,6 +1,7 @@
-//! `vm add`, `vm remove` and `vm attest`: bringing a VM under management
+//! `vm add`, `vm remove` and `vm restart`: bringing a VM under management
 //! (fixing its definition, writing its review and settings, restoring
-//! parked settings), parking or forgetting it, and attesting it again.
+//! parked settings), parking or forgetting it, and restarting it onto its
+//! saved definition.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -179,9 +180,10 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     // the questions. Say so before anything is asked or written.
     other_vms_pass(context, &libvirt, ui, name)?;
 
-    // A VM is attested while it runs, on the definition it was started
-    // with: a changed definition needs a cold restart first. It starts
-    // before its review is written, so its guest agent can give the kernel.
+    // A VM's setup is recorded while it runs, on the definition it was
+    // started with: a changed definition needs a cold restart first. It
+    // starts before its review is written, so its guest agent can give the
+    // kernel.
     let running = libvirt.state(name)? == "running";
     // The definition may have been fixed by an earlier run that stopped
     // before the restart: a running VM without the device or the channel
@@ -245,7 +247,8 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
 }
 
 /// Fail, saying why, when a VM other than `name` would fail `apply`'s
-/// checks. VMs `apply` would attest are attested first, as it does.
+/// checks. Their recorded setups are brought up to date first, as
+/// `apply` does.
 fn other_vms_pass(
     context: &Context,
     libvirt: &crate::attest::Libvirt,
@@ -253,8 +256,8 @@ fn other_vms_pass(
     name: &str,
 ) -> Result<(), String> {
     let draft = context.draft();
-    for vm in crate::attest::attest_missing(&draft, libvirt)? {
-        ui.say(&format!("attested {vm}, which had no attestation"));
+    for vm in crate::attest::keep_current(&draft, libvirt, ui)? {
+        crate::audit::record(context, "vm_recorded", Some(&vm), &[]);
     }
     let mut report = crate::check::run(&draft)?;
     report
@@ -660,54 +663,20 @@ fn still_managed_in(name: &str) -> Result<Option<PathBuf>, String> {
         .find(|copy| copy.join(VMS_DIRECTORY).join(&filename).exists()))
 }
 
-/// `rampire vm attest`. `vm` is the one VM, or with `drifted` every VM
-/// whose live evidence has drifted.
-pub fn vm_attest(
-    context: &Context,
-    ui: &mut dyn Ui,
-    vm: Option<&str>,
-    drifted: bool,
-    restart: bool,
-    no_apply: bool,
-) -> Result<(), String> {
-    use crate::attest;
-    let directory = context.draft();
-    let libvirt = context.libvirt()?;
-    let vms = if drifted {
-        let found = attest::drifted(&directory, &libvirt)?;
-        if found.is_empty() {
-            ui.say("no running VM has drifted from its attestation");
-            return Ok(());
-        }
-        for (name, change) in &found {
-            ui.say(&format!("{name}: {change}"));
-        }
-        if !ui.confirm("Attest these VMs again as they are now?")? {
-            ui.say("nothing changed");
-            return Ok(());
-        }
-        found.into_iter().map(|(name, _)| name).collect()
-    } else {
-        let vm = vm.ok_or("name a VM, or pass --drifted")?.to_owned();
-        if restart {
-            if !ui.confirm(&format!("Shut {vm} down and start it again?"))? {
-                ui.say("nothing changed");
-                return Ok(());
-            }
-            attest::cold_restart(&vm, &libvirt, std::time::Duration::from_secs(300))?;
-            ui.say(&format!("{vm} restarted"));
-        }
-        vec![vm]
-    };
-    for vm in &vms {
-        let path = attest::attest(&directory, vm, &libvirt)?;
-        ui.say(&format!("attested {vm}: {}", path.display()));
-        crate::audit::record(context, "vm_attest", Some(vm), &[]);
-    }
-    if no_apply {
-        ui.say("not applied: run rampire apply when ready");
+/// `rampire vm restart`: shut the VM down and start it again, so its saved
+/// definition takes effect, then apply, which records its new setup.
+pub fn vm_restart(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(), String> {
+    crate::attest::vm_settings(&context.draft(), vm)?;
+    if !ui.confirm(&format!(
+        "Shut {vm} down and start it again, so its saved definition takes effect?"
+    ))? {
+        ui.say("nothing changed");
         return Ok(());
     }
+    let libvirt = context.libvirt()?;
+    crate::attest::cold_restart(vm, &libvirt, std::time::Duration::from_secs(300))?;
+    ui.say(&format!("{vm} restarted"));
+    crate::audit::record(context, "vm_restart", Some(vm), &[]);
     apply(context, ui)?;
     Ok(())
 }

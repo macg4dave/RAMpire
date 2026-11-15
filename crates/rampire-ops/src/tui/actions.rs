@@ -21,11 +21,8 @@ pub enum Action {
         vm: String,
         forget: bool,
     },
-    /// `vm attest VM`, optionally restarting it first.
-    Attest {
-        vm: String,
-        restart: bool,
-    },
+    /// `vm restart VM`, so its saved definition takes effect.
+    Restart(String),
     /// `set TARGET KEY=VALUE...`.
     Set {
         target: String,
@@ -45,8 +42,7 @@ impl Action {
             Self::Add(vm) => owned(&["vm", "add", vm, "--fix-xml"]),
             Self::Remove { vm, forget: false } => owned(&["vm", "remove", vm]),
             Self::Remove { vm, forget: true } => owned(&["vm", "remove", vm, "--forget"]),
-            Self::Attest { vm, restart: false } => owned(&["vm", "attest", vm]),
-            Self::Attest { vm, restart: true } => owned(&["vm", "attest", vm, "--restart"]),
+            Self::Restart(vm) => owned(&["vm", "restart", vm]),
             Self::Set { target, changes } => {
                 let mut words = owned(&["set", target]);
                 words.extend(changes.iter().cloned());
@@ -68,10 +64,9 @@ impl Action {
     /// The VM this action is about, if it is about one.
     pub fn vm(&self) -> Option<&str> {
         match self {
-            Self::Add(vm)
-            | Self::Remove { vm, .. }
-            | Self::Attest { vm, .. }
-            | Self::Recover(vm) => Some(vm),
+            Self::Add(vm) | Self::Remove { vm, .. } | Self::Restart(vm) | Self::Recover(vm) => {
+                Some(vm)
+            }
             Self::Set { target, .. } if target != crate::set::GLOBAL => Some(target),
             _ => None,
         }
@@ -107,9 +102,9 @@ impl Action {
                     format!("{vm} is removed; its settings are kept")
                 })
             }
-            Self::Attest { vm, restart } => {
-                lifecycle::vm_attest(context, ui, Some(vm), false, *restart, false)?;
-                Ok(format!("{vm} is attested"))
+            Self::Restart(vm) => {
+                lifecycle::vm_restart(context, ui, vm)?;
+                Ok(format!("{vm} restarted"))
             }
             Self::Set { target, changes } => {
                 let changes = changes
@@ -195,14 +190,7 @@ pub fn from_fix(fix: &str) -> Option<Action> {
         ["vm", "add", vm, rest @ ..] if rest.iter().all(|word| *word == "--fix-xml") => {
             Some(Action::Add((*vm).to_owned()))
         }
-        ["vm", "attest", vm] => Some(Action::Attest {
-            vm: (*vm).to_owned(),
-            restart: false,
-        }),
-        ["vm", "attest", vm, "--restart"] => Some(Action::Attest {
-            vm: (*vm).to_owned(),
-            restart: true,
-        }),
+        ["vm", "restart", vm] => Some(Action::Restart((*vm).to_owned())),
         ["vm", "remove", vm] => Some(Action::Remove {
             vm: (*vm).to_owned(),
             forget: false,
@@ -265,19 +253,10 @@ mod tests {
 
     #[test]
     fn a_fix_that_is_a_whole_command_can_be_run() {
+        assert_eq!(from_fix("rampire apply"), Some(Action::Apply));
         assert_eq!(
-            from_fix("if the change was intended, rampire vm attest web"),
-            Some(Action::Attest {
-                vm: "web".to_owned(),
-                restart: false
-            })
-        );
-        assert_eq!(
-            from_fix("rampire vm attest web --restart"),
-            Some(Action::Attest {
-                vm: "web".to_owned(),
-                restart: true
-            })
+            from_fix("rampire vm restart web"),
+            Some(Action::Restart("web".to_owned()))
         );
         assert_eq!(
             from_fix("rampire init on a new host, or rampire apply"),

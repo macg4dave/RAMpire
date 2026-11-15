@@ -651,6 +651,20 @@ pub fn question_text(question: &str) -> &'static str {
     }
 }
 
+/// What a review answer that no longer holds means for the VM.
+pub fn unsafe_text(question: &str) -> &'static str {
+    match question {
+        "no_vdpa" => "it now has a vDPA device",
+        "no_mlock" => "it now locks its memory",
+        "no_secure_virtualization" => "it now uses secure virtualization (SEV, TDX)",
+        "no_rdma_migration" => "it may be live-migrated over RDMA",
+        "no_vfio_nvme" => "a passed-through device pins its memory",
+        "no_unsupported_vhost_user" => "a vhost-user device can't follow memory changes",
+        "balloon_resize_inactive" => "its memory balloon may resize it",
+        _ => "an answer in its review no longer holds",
+    }
+}
+
 /// Whether the host has RDMA hardware, which RDMA live migration needs:
 /// any device under `/sys/class/infiniband`.
 pub fn host_has_rdma() -> bool {

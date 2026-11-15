@@ -263,8 +263,8 @@ mod tests {
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(
-            base64(b"rampire vm attest web"),
-            "cmFtcGlyZSB2bSBhdHRlc3Qgd2Vi"
+            base64(b"rampire vm restart web"),
+            "cmFtcGlyZSB2bSByZXN0YXJ0IHdlYg=="
         );
     }
 

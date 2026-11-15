@@ -160,8 +160,8 @@ enum Command {
         #[arg(long, help_heading = SCRIPTS)]
         no_guest: bool,
     },
-    /// Check the configuration and every VM's attestation against the live
-    /// VMs; changes nothing.
+    /// Check the configuration and every VM against the setup RAMpire
+    /// recorded for it; changes nothing.
     Check,
     /// Show what `apply` would change: the draft against the applied copy.
     Diff,
@@ -225,7 +225,7 @@ enum Command {
         /// Why it is safe to resume, recorded in the VM's state.
         reason: String,
     },
-    /// Add, attest and remove the VMs RAMpire manages.
+    /// Add, restart and remove the VMs RAMpire manages.
     Vm {
         #[command(subcommand)]
         command: VmCommand,
@@ -301,30 +301,16 @@ enum VmCommand {
         /// The VM.
         vm: String,
         /// Forget the VM instead of parking it: for a VM that is being
-        /// deleted. Its settings, attestation, request state and definition
+        /// deleted. Its settings, recorded setup, request state and definition
         /// backups go, and the review profile `vm add` wrote for it.
         #[arg(long)]
         forget: bool,
     },
-    /// Attest a running VM again from its review profile, then apply.
-    ///
-    /// Needed after any change to the VM's definition: a VM whose live
-    /// evidence has drifted from its attestation is never re-attested
-    /// without a person.
-    Attest {
-        /// The VM; or --drifted for every VM whose evidence has drifted.
-        #[arg(required_unless_present = "drifted", conflicts_with = "drifted")]
-        vm: Option<String>,
-        /// Every running VM whose live evidence no longer matches.
-        #[arg(long)]
-        drifted: bool,
-        /// Shut the VM down and start it first, so its saved definition
-        /// takes effect.
-        #[arg(long, conflicts_with = "drifted")]
-        restart: bool,
-        /// Write the attestation to the draft only; apply later.
-        #[arg(long, help_heading = SCRIPTS)]
-        no_apply: bool,
+    /// Shut a VM down and start it again, so its saved definition takes
+    /// effect, then apply.
+    Restart {
+        /// The VM.
+        vm: String,
     },
 }
 
@@ -467,13 +453,9 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
         }
         Command::Vm { command } => match command {
             VmCommand::List => reporting::vm_list(cli),
-            VmCommand::Attest {
-                vm,
-                drifted,
-                restart,
-                no_apply,
-            } => lifecycle::vm_attest(&context, ui, vm.as_deref(), *drifted, *restart, *no_apply)
-                .map(|()| ExitCode::SUCCESS),
+            VmCommand::Restart { vm } => {
+                lifecycle::vm_restart(&context, ui, vm).map(|()| ExitCode::SUCCESS)
+            }
             VmCommand::Add {
                 vm,
                 fix_xml,
@@ -826,9 +808,8 @@ mod tests {
             matches!(cli.command, Some(Command::Set { ref changes, .. }) if changes.len() == 2)
         );
         assert!(Cli::try_parse_from(["rampire", "set", "web"]).is_err());
-        assert!(Cli::try_parse_from(["rampire", "vm", "attest", "web", "--restart"]).is_ok());
-        assert!(Cli::try_parse_from(["rampire", "vm", "attest", "--drifted"]).is_ok());
-        assert!(Cli::try_parse_from(["rampire", "vm", "attest"]).is_err());
+        assert!(Cli::try_parse_from(["rampire", "vm", "restart", "web"]).is_ok());
+        assert!(Cli::try_parse_from(["rampire", "vm", "restart"]).is_err());
         let cli = Cli::try_parse_from([
             "rampire",
             "vm",
@@ -860,7 +841,6 @@ mod tests {
         assert!(Cli::try_parse_from(["rampire", "vm", "list", "--json"]).is_ok());
         assert!(Cli::try_parse_from(["rampire", "logs", "--vm", "web"]).is_ok());
         assert!(Cli::try_parse_from(["rampire", "vm", "remove", "web"]).is_ok());
-        assert!(Cli::try_parse_from(["rampire", "vm", "attest", "web", "--drifted"]).is_err());
         // The live views' ranges.
         assert!(Cli::try_parse_from(["rampire", "top", "--events", "30"]).is_ok());
         for bad in [

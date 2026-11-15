@@ -3,7 +3,7 @@
 //! changes nothing.
 //!
 //! It checks the VM's saved and running definition (what `vm add`
-//! inspects), its attestation against the live VM (`check`), a latch, the
+//! inspects), the running VM against its recorded setup (`check`), a latch, the
 //! guest's publication and its readiness report, and the last request that
 //! was refused or held back.
 
@@ -225,7 +225,7 @@ pub fn definition(
             Finding::problem(
                 "running definition",
                 format!("{vm} isn't running its saved definition"),
-                format!("rampire vm attest {vm} --restart"),
+                format!("rampire vm restart {vm}"),
             )
         } else {
             Finding::ok(
@@ -237,23 +237,23 @@ pub fn definition(
     Ok(findings)
 }
 
-/// The attestation against the live VM, as `check` reads it.
+/// The running VM against the setup RAMpire recorded, as `check` reads it.
 fn attestation(context: &Context, vm: &str) -> Result<Finding, String> {
     let report = crate::check::run(&context.running())?;
     Ok(
         match report.vms.into_iter().find(|checked| checked.vm_name == vm) {
             Some(CheckedVm { problem: None, .. }) => {
-                Finding::ok("attestation", "matches the live VM")
+                Finding::ok("recorded setup", "matches the running VM")
             }
             Some(CheckedVm {
                 problem: Some(problem),
                 ..
             }) => {
                 let fix = crate::check::fix(vm, &problem);
-                Finding::problem("attestation", problem, fix)
+                Finding::problem("recorded setup", problem, fix)
             }
             None => Finding::problem(
-                "attestation",
+                "recorded setup",
                 format!("{vm} isn't in the configuration the controller runs"),
                 "rampire apply",
             ),
@@ -494,7 +494,7 @@ pub(crate) fn last_request_finding(vm: &str, lines: &[&str]) -> Finding {
             ),
             "guest_maximum" => Some(format!("raise max_ram: rampire set {vm} max_ram=SIZE")),
             "device_capacity" => Some(format!(
-                "the virtio-mem device is full: give {vm} a larger device with virsh edit, then rampire vm attest {vm} --restart"
+                "the virtio-mem device is full: give {vm} a larger device with virsh edit, then rampire vm restart {vm}"
             )),
             _ => None,
         })

@@ -1,5 +1,5 @@
-//! `rampire check`: validate the configuration and every VM's attestation
-//! against the live VM. It reads; it changes nothing.
+//! `rampire check`: validate the configuration and every VM against the
+//! setup RAMpire recorded for it. It reads; it changes nothing.
 
 use std::path::Path;
 
@@ -37,12 +37,11 @@ pub fn run(directory: &Path) -> Result<CheckReport, String> {
 /// The command that fixes a VM's problem, as `check`, `apply` and the
 /// doctor give it.
 pub fn fix(vm: &str, problem: &str) -> String {
-    if problem.contains("drifted") {
-        format!("if the change was intended, rampire vm attest {vm}")
-    } else if problem.contains(NO_DOMAIN) {
+    if problem.contains(NO_DOMAIN) {
         format!("rampire vm remove {vm}")
     } else {
-        format!("rampire vm attest {vm}")
+        // `apply` checks the VM again and records it, or says why it can't.
+        "rampire apply".to_owned()
     }
 }
 
@@ -144,15 +143,18 @@ error: Domain not found: no domain with matching name 'gone'"
             passed: false,
             vms: vec![
                 checked("web", None),
-                checked("db", Some("live evidence has drifted")),
+                checked(
+                    "db",
+                    Some("libvirt was upgraded since RAMpire last checked this VM"),
+                ),
                 checked("old", Some(&format!("{NO_DOMAIN} old"))),
             ],
         };
         assert_eq!(
             text(&report, false),
             "ok: web\n\
-             problem: db: live evidence has drifted\n  \
-             fix: if the change was intended, rampire vm attest db\n\
+             problem: db: libvirt was upgraded since RAMpire last checked this VM\n  \
+             fix: rampire apply\n\
              problem: old: libvirt has no domain old\n  fix: rampire vm remove old\n"
         );
         assert!(!text(&report, true).contains("ok: web"));

@@ -44,7 +44,7 @@ their own way of reading, and aren't part of T.
 | Screen | What it shows and does | Built on |
 |---|---|---|
 | Dashboard | Every managed VM and the pool: each VM's charge, the free pool, host memory against the floor, resizes under way, pool history, events | `rampire top` |
-| VM details | One VM: boot RAM, device size, requested and plugged memory, a resize under way and its progress, the guest's own figures, the last grant and what held it back, its events. Change its settings, attest it again, open its doctor | `rampire watch`, `rampire set`, `rampire vm attest` |
+| VM details | One VM: boot RAM, device size, requested and plugged memory, a resize under way and its progress, the guest's own figures, the last grant and what held it back, its events. Change its settings, restart it onto its saved definition, open its doctor | `rampire watch`, `rampire set`, `rampire vm restart` |
 | Add a VM | The host's VMs that RAMpire doesn't manage; for one, the guided add | `rampire vm add --fix-xml` |
 | Remove a VM | Stop managing a VM, keeping its settings or forgetting them; bring back a parked VM | `rampire vm remove` |
 | Doctor | The host's checks and each VM's, problems first, each with its fix | `rampire doctor` |
@@ -88,7 +88,7 @@ Done first, so the commands and the TUI share one owner for each job.
   one VM, each problem with its fix, as the host checks do:
   - its definition: the device, the control channel, the balloon, free
     `maxMemory` slots (what `vm add` inspects);
-  - its attestation against the live VM (`check`);
+  - the running VM against its recorded setup (`check`);
   - a latch, and the `recover` command that clears it;
   - the guest's publication: present, and how old it is;
   - the guest's readiness report: driver bound, how hot-plugged memory
@@ -112,7 +112,7 @@ Done first, so the commands and the TUI share one owner for each job.
 - [x] **T2.2** Dashboard (the table above). Enter on a VM opens its
   details.
 - [x] **T2.3** VM details, with its actions: change `priority`,
-  `min_ram`, `max_ram` and `free_ram` (`set`, then apply), attest again,
+  `min_ram`, `max_ram` and `free_ram` (`set`, then apply), restart,
   remove, doctor.
 - [x] **T2.4** Add a VM, from `vm list`'s unmanaged VMs, through T1.1:
   the definition change, the one review question, the files it will

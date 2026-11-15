@@ -345,9 +345,9 @@ mod tests {
                 vm: Some("vm0".to_owned()),
                 findings: vec![
                     crate::doctor::Finding::problem(
-                        "attestation",
-                        "drifted: domain_xml_sha256",
-                        "if the change was intended, rampire vm attest vm0",
+                        "recorded setup",
+                        "its definition changed since RAMpire last checked this VM",
+                        "rampire apply",
                     ),
                     crate::doctor::Finding::ok("latch", "none"),
                 ],
@@ -381,7 +381,7 @@ mod tests {
         let expected = [
             (View::Main, "EVENTS"),
             (View::Details("vm0".to_owned()), "DEVICE"),
-            (View::Doctor(None), "drifted"),
+            (View::Doctor(None), "definition changed"),
             (View::Logs(None), "operator_change"),
         ];
         for theme in themes() {
@@ -588,19 +588,13 @@ mod tests {
         let Some(Dialog::Confirm(confirm)) = &app.dialog else {
             panic!("a question before the fix runs");
         };
-        assert_eq!(
-            confirm.on_yes,
-            OnYes::Run(vec![Action::Attest {
-                vm: "vm0".to_owned(),
-                restart: false
-            }])
-        );
+        assert_eq!(confirm.on_yes, OnYes::Run(vec![Action::Apply]));
         press(&mut app, KeyCode::Esc);
         // Problems only, and a filter.
         press(&mut app, KeyCode::Char('p'));
         let text = super::tests::text(&app, 120, 40);
         assert!(
-            text.contains("drifted") && !text.contains("libvirt:"),
+            text.contains("definition changed") && !text.contains("libvirt:"),
             "{text}"
         );
     }

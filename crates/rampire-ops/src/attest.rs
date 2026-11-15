@@ -2,9 +2,8 @@
 //! review profile to its live evidence; it lands in the draft's
 //! `attestations/` folder, so the next applied copy carries it.
 //!
-//! A VM with no attestation yet is attested by `apply` when its file names a
-//! review profile and it is running. A VM whose live evidence has drifted
-//! from its attestation needs a person: `rampire vm attest`, never `apply` on its own.
+//! People never see or make one: `apply` keeps every running VM's record
+//! current ([`keep_current`]).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -17,6 +16,7 @@ use rampire_host::config::{attestation_path, ATTESTATION_DIRECTORY};
 use rampire_host::virsh::{Virsh, VirshCommand};
 
 use crate::applied::REVIEW_DIRECTORY;
+use crate::ui::Ui;
 
 /// What the commands need to reach libvirt.
 #[derive(Debug, Clone)]
@@ -87,43 +87,75 @@ pub fn attest(directory: &Path, vm: &str, libvirt: &Libvirt) -> Result<PathBuf, 
     Ok(path)
 }
 
-/// Attest every VM that has no attestation yet, names a review profile and
-/// is running. Returns the VMs attested.
-pub fn attest_missing(directory: &Path, libvirt: &Libvirt) -> Result<Vec<String>, String> {
+/// Keep the record of how each VM is set up current, so no person has to:
+/// a running VM that names a review profile is recorded when it has no
+/// record yet, or when it changed since (libvirt upgraded, its definition
+/// edited) and what its review read from the definition still holds.
+/// When a change makes it unsafe to resize, that is said and its old
+/// record kept, so `check` and the controller refuse it. Returns the VMs
+/// recorded.
+pub fn keep_current(
+    directory: &Path,
+    libvirt: &Libvirt,
+    ui: &mut dyn Ui,
+) -> Result<Vec<String>, String> {
     let (_, vms) = settings::load_configuration(directory)?;
-    let mut attested = Vec::new();
+    let mut recorded = Vec::new();
     for vm in vms {
-        if vm.review.is_none() || attestation_path(directory, &vm.vm_name).exists() {
+        let name = vm.vm_name.as_str();
+        if vm.review.is_none() || libvirt.state(name).ok().as_deref() != Some("running") {
             continue;
         }
-        if libvirt.state(&vm.vm_name).ok().as_deref() != Some("running") {
-            continue;
+        let path = attestation_path(directory, name);
+        if path.exists() {
+            let live = VirshCompatibilityEvidenceSource::new(libvirt.runner(), name, &vm.alias)
+                .collect()?;
+            let unchanged = read_attestation(&path)
+                .is_ok_and(|attestation| attestation.validate_live(&live, vm.guest_os).is_ok());
+            if unchanged || !still_safe(libvirt, ui, name)? {
+                continue;
+            }
         }
-        attest(directory, &vm.vm_name, libvirt)?;
-        attested.push(vm.vm_name);
+        attest(directory, name, libvirt)?;
+        recorded.push(vm.vm_name);
     }
-    Ok(attested)
+    Ok(recorded)
 }
 
-/// The VMs whose live evidence no longer matches their attestation, each
-/// with what changed. VMs that aren't running can't be compared and are
-/// left out.
-pub fn drifted(directory: &Path, libvirt: &Libvirt) -> Result<Vec<(String, String)>, String> {
-    let (_, vms) = settings::load_configuration(directory)?;
-    let mut found = Vec::new();
-    for vm in vms {
-        let path = attestation_path(directory, &vm.vm_name);
-        if !path.exists() || libvirt.state(&vm.vm_name).ok().as_deref() != Some("running") {
+/// Whether a VM that changed can still be resized: its definition is
+/// read again for what the review answered from it. What it can't show
+/// is asked; the review's question about the guest's programs is not,
+/// since a change to the setup doesn't change them.
+fn still_safe(libvirt: &Libvirt, ui: &mut dyn Ui, vm: &str) -> Result<bool, String> {
+    let inspection = crate::vm::inspect(&libvirt.virsh(&["dumpxml", vm])?)?;
+    if let Some((problem, fix)) = inspection.problems().into_iter().next() {
+        ui.say(&format!("{vm} changed and can't be resized: {problem}"));
+        ui.say(&format!("  fix: {fix}"));
+        return Ok(false);
+    }
+    for detected in crate::vm::review_answers(&inspection, crate::vm::host_has_rdma()) {
+        if detected.question == "workload_reviewed" {
             continue;
         }
-        let attestation = read_attestation(&path)?;
-        let live = VirshCompatibilityEvidenceSource::new(libvirt.runner(), &vm.vm_name, &vm.alias)
-            .collect()?;
-        if let Err(change) = attestation.validate_live(&live, vm.guest_os) {
-            found.push((vm.vm_name, change));
+        let safe = match detected.answer {
+            Some((value, _)) => value,
+            // Without a terminal to ask on, the VM waits for a person.
+            None => ui
+                .review(&format!(
+                    "{vm} changed. {}",
+                    crate::vm::question_text(detected.question)
+                ))
+                .unwrap_or(false),
+        };
+        if !safe {
+            ui.say(&format!(
+                "{vm} changed and can't be resized: {}",
+                crate::vm::unsafe_text(detected.question)
+            ));
+            return Ok(false);
         }
     }
-    Ok(found)
+    Ok(true)
 }
 
 /// Shut the VM down, wait for it to stop, and start it again, so its saved
@@ -195,10 +227,10 @@ mod tests {
     fn a_vm_without_a_review_profile_cannot_be_attested() {
         let root = configuration(None);
         let error = attest(&root, "web", &unreachable()).unwrap_err();
-        let missing = attest_missing(&root, &unreachable());
+        let recorded = keep_current(&root, &unreachable(), &mut crate::ui::Transcript::default());
         std::fs::remove_dir_all(&root).unwrap();
         assert!(error.contains("review profile"), "{error}");
-        assert_eq!(missing, Ok(vec![]), "nothing to attest without a profile");
+        assert_eq!(recorded, Ok(vec![]), "nothing to record without a profile");
     }
 
     #[test]
