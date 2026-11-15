@@ -877,10 +877,10 @@ fn upgrade_guest(
             Ok(())
         }
         Err(why) => {
-            ui.say(&why);
             if !may_shut_down || !crate::guest::offline_available() {
                 return Err(format!("rampire-guest in {vm} wasn't upgraded: {why}"));
             }
+            ui.say(&why);
             if !ui.confirm(&format!(
                 "Shut {vm} down for a moment to put the package on its disk?"
             ))? {
