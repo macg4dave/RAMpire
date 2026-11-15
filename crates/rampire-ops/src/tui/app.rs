@@ -15,7 +15,8 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use super::actions::Action;
-use super::dialog::{Confirm, Dialog, Field, Form, OnYes};
+use super::dialog::{Confirm, Dialog, OnYes};
+use super::form::{Field, Form};
 use super::help::Help;
 use super::input::{History, Input};
 use super::jobs::{self, Answer, DoctorSection, FlowEvent, Msg, Question, ReaderControl, TaskId};
@@ -415,7 +416,7 @@ impl App {
     /// Copy `text` to the clipboard of the person's own computer.
     pub fn copy(&mut self, text: String) {
         self.notify(
-            format!("copied: {}", super::widgets::fit(&text, 60)),
+            format!("Copied: {}", super::widgets::fit(&text, 60)),
             Tone::Good,
         );
         self.effects.push(Effect::Copy(text));
@@ -478,7 +479,7 @@ impl App {
             Msg::Controller(unit) => self.controller = Some(unit),
             // A failed re-read keeps the list it had.
             Msg::Inventory(Err(error)) if self.inventory.ok().is_some() => {
-                self.notify(format!("reading the VMs failed: {error}"), Tone::Warn);
+                self.notify(format!("Couldn't read the VMs: {error}"), Tone::Warn);
             }
             Msg::Inventory(report) => self.inventory = Loaded::Done(report),
             Msg::Doctor(sections) => self.doctor.loaded = Loaded::Done(sections),
@@ -565,20 +566,29 @@ impl App {
                 });
                 if !free {
                     let title = task.title.clone();
-                    self.notify(format!("a question waits (w): {title}"), Tone::Accent);
+                    self.notify(
+                        format!("A question is waiting (press w): {title}"),
+                        Tone::Accent,
+                    );
                 }
             }
             FlowEvent::Done(result) => {
                 let title = task.title.clone();
                 match &result {
-                    Ok(_) => self.notify(format!("done: {title}"), Tone::Good),
+                    Ok(_) => self
+                        .notices
+                        .push(Message::titled("Done", title.clone(), Tone::Good)),
                     Err(error) => {
                         self.errors.push(ErrorEntry {
                             time: crate::dashboard::clock(),
                             what: title.clone(),
                             error: error.clone(),
                         });
-                        self.notify(format!("failed: {title}"), Tone::Bad);
+                        self.notices.push(Message::titled(
+                            "Failed: in the errors list (e)",
+                            title.clone(),
+                            Tone::Bad,
+                        ));
                     }
                 }
                 self.tasks.finish(id, result, Instant::now());
@@ -606,7 +616,10 @@ impl App {
         let waiting = self.tasks.active() > 0;
         self.tasks.add(action, title.clone());
         if waiting {
-            self.notify(format!("queued after the running task: {title}"), Tone::Dim);
+            self.notify(
+                format!("Queued, after the task running now: {title}"),
+                Tone::Dim,
+            );
         }
         self.start_tasks();
     }
@@ -727,13 +740,13 @@ impl App {
         };
         let doctor = item(
             'o',
-            "Doctor",
+            "Doctor: check everything about it",
             line(&["doctor", vm]),
             Pick::Open(View::Doctor(Some(vm.to_owned()))),
         );
         let forget = item(
             'f',
-            "Forget it",
+            "Forget it: stop managing it and delete its settings",
             line(&["vm", "remove", vm, "--forget"]),
             Pick::Run(Action::Remove {
                 vm: vm.to_owned(),
@@ -749,7 +762,7 @@ impl App {
             Management::Managed => vec![
                 item(
                     'v',
-                    "Details, live",
+                    "Live details",
                     line(&["watch", vm]),
                     Pick::Open(View::Details(vm.to_owned())),
                 ),
@@ -768,7 +781,7 @@ impl App {
                 ),
                 item(
                     'a',
-                    "Attest again",
+                    "Attest again: record how it is set up now",
                     line(&["vm", "attest", vm]),
                     Pick::Run(Action::Attest {
                         vm: vm.to_owned(),
@@ -818,17 +831,17 @@ impl App {
             Management::NotManaged => {
                 if let Some(listed) = listed {
                     for change in &listed.to_fix {
-                        text.push(format!("vm add will {change}"));
+                        text.push(format!("Adding it will {change}."));
                     }
                     for problem in &listed.problems {
                         text.push(format!(
-                            "problem: {} (fix: {})",
+                            "Problem: {}. To fix it: {}",
                             problem.problem, problem.fix
                         ));
                     }
                     if listed.guest == crate::reports::Published::No {
                         text.push(format!(
-                            "Guest service: {}",
+                            "Install the guest service in the VM first: {}",
                             install_command(listed.os_id.as_deref())
                         ));
                     }
@@ -901,10 +914,7 @@ impl App {
         }
         if actions.is_empty() {
             return self.notify(
-                format!(
-                    "none of the {} marked VMs has that in its menu",
-                    marked.len()
-                ),
+                format!("None of the {} marked VMs can do that.", marked.len()),
                 Tone::Warn,
             );
         }
@@ -941,7 +951,7 @@ impl App {
                     .and_then(|details| details.settings.clone())
                 else {
                     return self.notify(
-                        format!("{vm}'s settings aren't read yet; try again in a moment"),
+                        format!("{vm}'s settings are still being read; try again in a moment."),
                         Tone::Warn,
                     );
                 };
@@ -1071,14 +1081,15 @@ fn capitalised(text: &str) -> String {
     })
 }
 
-/// A size as `set` takes it: whole GiB or MiB where it divides.
+/// A size as `set` takes it and the docs write it: whole GB or MB where it
+/// divides (binary units, as RAMpire reads them).
 pub fn byte_text(bytes: u64) -> String {
     const MIB: u64 = 1 << 20;
     const GIB: u64 = 1 << 30;
     if bytes.is_multiple_of(GIB) {
-        format!("{}GiB", bytes / GIB)
+        format!("{}GB", bytes / GIB)
     } else if bytes.is_multiple_of(MIB) {
-        format!("{}MiB", bytes / MIB)
+        format!("{}MB", bytes / MIB)
     } else {
         bytes.to_string()
     }
@@ -1205,7 +1216,7 @@ pub(crate) mod tests {
             "dnf install rampire-guest"
         );
         assert!(install_command(None).contains("apt"));
-        assert_eq!(byte_text(8 << 30), "8GiB");
-        assert_eq!(byte_text(512 << 20), "512MiB");
+        assert_eq!(byte_text(8 << 30), "8GB");
+        assert_eq!(byte_text(512 << 20), "512MB");
     }
 }

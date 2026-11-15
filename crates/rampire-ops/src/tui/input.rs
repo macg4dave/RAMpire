@@ -251,16 +251,25 @@ impl Input {
         let width = width.max(2);
         let skip = (self.cursor + 1).saturating_sub(width);
         let before: String = chars.iter().skip(skip).take(self.cursor - skip).collect();
-        let under = chars.get(self.cursor).copied().unwrap_or(' ');
-        let after: String = chars.iter().skip(self.cursor + 1).collect();
         let cursor = theme.value().add_modifier(Modifier::REVERSED);
+        // At the end, the suggestion continues from under the cursor.
+        let suggested: Vec<char> = self
+            .suggestion(history)
+            .map(|suggestion| suggestion.chars().skip(chars.len()).collect())
+            .unwrap_or_default();
+        let (under, under_style) = match (chars.get(self.cursor), suggested.first()) {
+            (Some(character), _) => (*character, cursor),
+            (None, Some(next)) => (*next, theme.dim().add_modifier(Modifier::REVERSED)),
+            (None, None) => (' ', cursor),
+        };
+        let after: String = chars.iter().skip(self.cursor + 1).collect();
         let mut spans = vec![
             Span::styled(before, theme.value()),
-            Span::styled(under.to_string(), cursor),
+            Span::styled(under.to_string(), under_style),
             Span::styled(after, theme.value()),
         ];
-        if let Some(suggestion) = self.suggestion(history) {
-            let rest: String = suggestion.chars().skip(chars.len() + 1).collect();
+        let rest: String = suggested.iter().skip(1).collect();
+        if !rest.is_empty() {
             spans.push(Span::styled(rest, theme.dim()));
         }
         Line::from(spans)
@@ -330,6 +339,13 @@ mod tests {
             .offering(vec!["recovered".to_owned()]);
         typed(&mut input, "re");
         assert_eq!(input.suggestion(&history), Some("rebooted"));
+        // Drawn, the suggestion carries on from under the cursor.
+        let theme = crate::tui::theme::Theme::new(
+            crate::tui::theme::Palette::Midnight,
+            crate::tui::theme::Depth::None,
+            crate::tui::theme::Icons { unicode: true },
+        );
+        assert_eq!(input.line(&theme, &history, 20).to_string(), "rebooted");
         typed(&mut input, "c");
         assert_eq!(input.suggestion(&history), Some("recovered"));
         assert!(input.handle(&key(KeyCode::Tab), &history));

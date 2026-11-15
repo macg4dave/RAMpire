@@ -411,29 +411,29 @@ pub fn pool_history(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &Pool
             .iter()
             .map(|available| *available as f64 / most as f64)
             .collect();
-        strip(strip_area, buf, theme, "host free", &shares, host_tone);
+        strip(strip_area, buf, theme, "Host free", &shares, host_tone);
     }
     if let Some(figures_area) = figures_area {
         let now = used.last().copied().unwrap_or(0.0);
         let mut parts = vec![
             (
-                "now",
+                "Now",
                 format!("{} GiB {:.0}%", short(now), now / gib(scale) * 100.0),
                 load(count - 1),
             ),
-            ("avg", short(average), Tone::Value),
-            ("peak", short(peak), tone::load(peak / gib(scale))),
+            ("Avg", short(average), Tone::Value),
+            ("Peak", short(peak), tone::load(peak / gib(scale))),
         ];
         if let Some(low) = snapshot.session.low_free {
             parts.push((
-                "least free",
+                "Least free",
                 short(gib(low)),
                 if low == 0 { Tone::Bad } else { Tone::Value },
             ));
         }
         if let Some(low) = host.iter().copied().min() {
             parts.push((
-                "host low",
+                "Host low",
                 format!("{} (floor {})", short(gib(low)), short(gib(floor))),
                 tone::floor(low, floor),
             ));
@@ -441,7 +441,7 @@ pub fn pool_history(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &Pool
         let change = now - used.first().copied().unwrap_or(now);
         let sign = if change < 0.0 { "-" } else { "+" };
         parts.push((
-            "change",
+            "Change",
             format!("{sign}{}", short(change.abs())),
             if change.abs() < 0.05 {
                 Tone::Dim
@@ -565,7 +565,7 @@ pub fn vm_history(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnap
             .iter()
             .map(|memory| memory.map_or(0.0, |(used, total)| used as f64 / total.max(1) as f64))
             .collect();
-        strip(strip_area, buf, theme, "guest use", &shares, guest_load);
+        strip(strip_area, buf, theme, "Guest use", &shares, guest_load);
     }
     if let Some(figures_area) = figures_area {
         let (low, average, high) = spread(&plugged);
@@ -579,21 +579,21 @@ pub fn vm_history(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnap
         }
         let mut parts = vec![
             (
-                "plugged",
+                "Plugged",
                 format!("{} GiB", short(plugged.last().copied().unwrap_or(0.0))),
                 Tone::Info,
             ),
-            ("low", short(low), Tone::Value),
-            ("avg", short(average), Tone::Value),
-            ("high", short(high), Tone::Value),
+            ("Low", short(low), Tone::Value),
+            ("Avg", short(average), Tone::Value),
+            ("High", short(high), Tone::Value),
             ("of", format!("{} GiB", short(gib(size))), Tone::Dim),
             (
-                "grows",
+                "Grows",
                 grows.to_string(),
                 if grows > 0 { Tone::Info } else { Tone::Dim },
             ),
             (
-                "shrinks",
+                "Shrinks",
                 shrinks.to_string(),
                 if shrinks > 0 { Tone::Warn } else { Tone::Dim },
             ),
@@ -608,7 +608,7 @@ pub fn vm_history(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnap
             shares.iter().copied().reduce(f64::max),
         ) {
             parts.push((
-                "guest",
+                "Guest",
                 format!("{:.0}% peak {:.0}%", now * 100.0, peak * 100.0),
                 tone::load(peak),
             ));
@@ -668,7 +668,7 @@ mod tests {
                 assert!(text.contains("HISTORY"), "{text}");
                 if height >= 4 {
                     assert!(
-                        text.contains("now") && text.contains("peak"),
+                        text.contains("Now") && text.contains("Peak"),
                         "{width}x{height}\n{text}"
                     );
                 }
@@ -696,8 +696,8 @@ mod tests {
         let mut buf = Buffer::empty(area);
         vm_history(area, &mut buf, &theme, &snapshot);
         let text = plain_text(&buf);
-        assert!(text.contains("grows 1"), "{text}");
-        assert!(text.contains("guest 50% peak 50%"), "{text}");
-        assert!(text.contains("guest use"), "{text}");
+        assert!(text.contains("Grows 1"), "{text}");
+        assert!(text.contains("Guest 50% peak 50%"), "{text}");
+        assert!(text.contains("Guest use"), "{text}");
     }
 }

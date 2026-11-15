@@ -37,7 +37,7 @@ offers only what fits that VM:
 
 | The VM is | Its menu |
 |---|---|
-| Managed | `v` details, live (as `rampire watch` shows them); `s` settings: `priority`, `min_ram`, `max_ram`, `free_ram`; `o` its doctor; `l` its logs; `a` attest it again; `c` restart it, then attest; `k` remove it, keeping its settings; `f` forget it |
+| Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `a` attest it again; `c` restart it, then attest; `k` remove it, keeping its settings; `f` forget it |
 | Not managed | What `vm add --fix-xml` will change, what would stop it, and the guest service's install command when it isn't installed; `a` add it; `o` its doctor |
 | Parked | `b` bring it back; `o` its doctor; `f` forget it |
 | Half-added | `a` finish adding it; `o` its doctor; `f` forget it |
@@ -114,8 +114,12 @@ The doctor: Enter runs the chosen fix when it is a `rampire` command,
 after a question; `y` copies it; `/` filters the findings; `p` shows only
 the problems. The logs: `/` finds a text and marks its lines, `n` and `N`
 go to the next and the one before; `f` shows one VM's lines; `y` copies
-the chosen line. A settings form: Tab and Shift+Tab go between the
-settings, Enter applies.
+the chosen line. The settings form has a labelled box for each setting,
+checked as you type: a value that won't do is marked in red with the
+reason (a size needs its unit, such as `8GB`; Minimum RAM can't be more
+than Maximum RAM, nor Free RAM as much). Under the boxes, a word about
+the chosen setting and the command Save runs. Tab, Shift+Tab and the
+arrows go between the settings, Enter saves and applies, Esc cancels.
 
 Text fields take the usual keys: Home, End, Ctrl+A, Ctrl+E, Ctrl+U,
 Ctrl+K, Ctrl+W, Alt+B, Alt+F. Up and Down recall what was typed for the

@@ -96,26 +96,24 @@ impl Task {
     }
 
     fn status(&self, now: Instant) -> (String, Tone) {
-        let seconds = self
-            .elapsed(now)
-            .map_or(String::new(), |elapsed| format!(" {}s", elapsed.as_secs()));
+        let seconds = self.elapsed(now).map_or(0, |elapsed| elapsed.as_secs());
         match (&self.state, &self.pending) {
             (State::Running, Some(pending)) => (
-                format!("asks: {} (Enter to answer)", pending.question.text()),
+                format!("Asks: {} (Enter to answer)", pending.question.text()),
                 Tone::Accent,
             ),
             (State::Running, None) if self.cancel => (
-                format!("running{seconds}, stops at its next question"),
+                format!("Running for {seconds}s; it stops at its next question"),
                 Tone::Warn,
             ),
-            (State::Running, None) => (format!("running{seconds}"), Tone::Info),
-            (State::Waiting, _) => ("waiting for the task before it".to_owned(), Tone::Dim),
-            (State::Done(result), _) => (format!("done{seconds}: {result}"), Tone::Good),
+            (State::Running, None) => (format!("Running for {seconds}s"), Tone::Info),
+            (State::Waiting, _) => ("Waiting for the task before it".to_owned(), Tone::Dim),
+            (State::Done(result), _) => (format!("Done in {seconds}s: {result}"), Tone::Good),
             (State::Failed(error), _) => (
-                format!("failed{seconds}: {error} (Enter for its output)"),
+                format!("Failed after {seconds}s: {error} (Enter for its output)"),
                 Tone::Bad,
             ),
-            (State::Cancelled, _) => ("cancelled before it ran".to_owned(), Tone::Dim),
+            (State::Cancelled, _) => ("Cancelled before it ran".to_owned(), Tone::Dim),
         }
     }
 }
@@ -487,7 +485,7 @@ pub fn render_task(
         }
         (None, State::Waiting) => lines.push(widgets::line(
             theme,
-            "waiting for the task before it to finish",
+            "Waiting for the task before it to finish.",
             Tone::Dim,
         )),
         _ => {}
@@ -610,10 +608,10 @@ mod tests {
         render_list(area, &mut buf, &theme, &tasks, now);
         let text = widgets::plain_text(&buf);
         assert!(
-            text.contains("rampire apply") && text.contains("running"),
+            text.contains("rampire apply") && text.contains("Running"),
             "{text}"
         );
-        assert!(text.contains("waiting for the task before it"), "{text}");
+        assert!(text.contains("Waiting for the task before it"), "{text}");
         let mut buf = Buffer::empty(area);
         render_task(
             area,

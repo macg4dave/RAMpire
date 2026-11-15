@@ -101,10 +101,10 @@ pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: 
                 Tone::Good
             };
             sizes.extend([
-                label("pool"),
+                label("Pool"),
                 Span::styled(one_place(pool), theme.value()),
                 gap(),
-                label("used"),
+                label("Used"),
                 Span::styled(
                     one_place(charged),
                     theme
@@ -112,7 +112,7 @@ pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: 
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
                 gap(),
-                label("free"),
+                label("Free"),
                 Span::styled(
                     one_place(free),
                     theme
@@ -122,17 +122,17 @@ pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: 
             ]);
         }
         _ => sizes.extend([
-            label("used"),
+            label("Used"),
             Span::styled(one_place(charged), theme.value()),
             gap(),
-            Span::styled("no pool: one VM", theme.dim()),
+            Span::styled("no pool: a single VM", theme.dim()),
         ]),
     }
 
     let (moving, growing, shrinking) = snapshot.resizing();
     let host = snapshot.host;
     let floor = snapshot.command.host_floor_bytes;
-    let mut state = vec![label("resizing")];
+    let mut state = vec![label("Resizing")];
     if moving == 0 {
         state.push(widgets::marked(
             theme,
@@ -165,7 +165,7 @@ pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: 
     }
     state.extend([
         gap(),
-        label("host free"),
+        label("Host free"),
         Span::styled(
             one_place(host.available),
             theme

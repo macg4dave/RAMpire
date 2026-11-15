@@ -28,6 +28,7 @@ pub mod actions;
 pub mod app;
 pub mod chart;
 pub mod dialog;
+pub mod form;
 pub mod help;
 pub mod input;
 pub mod jobs;

@@ -30,63 +30,63 @@ pub fn facts(app: &App, entry: &Entry) -> Vec<Fact> {
     let vm = entry.name.as_str();
     let mut facts: Vec<Fact> = Vec::new();
     let mut fact = |label: &str, value: String| facts.push((label.to_owned(), value));
-    fact("name", vm.to_owned());
-    fact("kind", entry.management.label().to_owned());
+    fact("Name", vm.to_owned());
+    fact("RAMpire", entry.management.label().to_owned());
     if let Some(listed) = &entry.listed {
-        fact("libvirt state", listed.state.clone());
-        fact("vm list says", listed.detail.clone());
+        fact("State", listed.state.clone());
+        fact("Status", listed.detail.clone());
         fact(
-            "guest service",
+            "Guest service",
             match listed.guest {
-                Published::Yes { age_seconds } => format!("publishing, {age_seconds}s ago"),
+                Published::Yes { age_seconds } => format!("running, last heard {age_seconds}s ago"),
                 Published::Installed => "installed".to_owned(),
                 Published::No => format!(
-                    "not installed: {}",
+                    "not installed; in the VM: {}",
                     install_command(listed.os_id.as_deref())
                 ),
                 Published::Unknown => "unknown".to_owned(),
             },
         );
         if let Some(os) = &listed.os_id {
-            fact("system", os.clone());
+            fact("System", os.clone());
         }
         for change in &listed.to_fix {
-            fact("vm add will", change.clone());
+            fact("Adding it will", change.clone());
         }
         for problem in &listed.problems {
-            fact("problem", problem.problem.clone());
-            fact("its fix", problem.fix.clone());
+            fact("Problem", problem.problem.clone());
+            fact("To fix it", problem.fix.clone());
         }
     }
     if let (Some(index), Some(Ok(pool))) = (entry.pool_index, &app.pool) {
         if let (Some(settings), Some(sample)) = (pool.command.vms.get(index), pool.vms.get(index)) {
-            fact("priority", settings.priority.to_string());
-            fact("min_ram", super::app::byte_text(settings.min_ram));
-            fact("max_ram", super::app::byte_text(settings.max_ram));
+            fact("Priority", settings.priority.to_string());
+            fact("Minimum RAM", super::app::byte_text(settings.min_ram));
+            fact("Maximum RAM", super::app::byte_text(settings.max_ram));
             match sample.device {
                 Some(device) => {
-                    fact("device size", crate::reports::size(device.size_bytes));
-                    fact("requested", crate::reports::size(device.requested_bytes));
-                    fact("plugged", crate::reports::size(device.current_bytes));
-                    fact("block size", crate::reports::size(device.block_size_bytes));
+                    fact("Device size", crate::reports::size(device.size_bytes));
+                    fact("Requested", crate::reports::size(device.requested_bytes));
+                    fact("Plugged in", crate::reports::size(device.current_bytes));
+                    fact("Block size", crate::reports::size(device.block_size_bytes));
                 }
                 None => fact(
-                    "device",
-                    "can't be read: stopped, or virsh failed".to_owned(),
+                    "Device",
+                    "can't be read: the VM is stopped, or libvirt didn't answer".to_owned(),
                 ),
             }
             if let Some(guest) = &sample.guest {
                 let memory = &guest.memory;
                 fact(
-                    "guest memory",
+                    "Guest memory",
                     crate::reports::size(memory.physical_total_bytes),
                 );
                 fact(
-                    "guest available",
+                    "Guest available",
                     crate::reports::size(memory.physical_available_bytes),
                 );
                 fact(
-                    "guest request",
+                    "Guest request",
                     guest.request.as_ref().map_or("none".to_owned(), |request| {
                         format!(
                             "{:?} {}",
@@ -100,18 +100,18 @@ pub fn facts(app: &App, entry: &Entry) -> Vec<Fact> {
     }
     if let Some(details) = app.details.get(vm) {
         if let Some(settings) = &details.settings {
-            fact("free_ram", super::app::byte_text(settings.free_ram));
+            fact("Free RAM", super::app::byte_text(settings.free_ram));
         }
         if let Some(boot) = details.boot_bytes {
-            fact("boot RAM", crate::reports::size(boot));
+            fact("Boot RAM", crate::reports::size(boot));
         }
     }
     let line = |words: &[&str]| app.context.command_line(words);
     if entry.management == Management::Managed {
-        fact("live", line(&["watch", vm]));
-        fact("logs", line(&["logs", "--vm", vm]));
+        fact("Watch it live", line(&["watch", vm]));
+        fact("Its logs", line(&["logs", "--vm", vm]));
     }
-    fact("doctor", line(&["doctor", vm]));
+    fact("Check it", line(&["doctor", vm]));
     facts
 }
 
@@ -136,7 +136,7 @@ pub fn render_facts(
         .map(|(index, (label, value))| {
             let value_style = if Some(index) == cursor {
                 theme.selected()
-            } else if label == "problem" {
+            } else if label == "Problem" {
                 theme.tone(Tone::Bad)
             } else {
                 theme.value()

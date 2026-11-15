@@ -97,15 +97,19 @@ impl Action {
                 if changed {
                     first_publication(context, ui, vm, Duration::from_secs(180));
                 }
-                Ok(format!("{vm} added"))
+                Ok(format!("{vm} is added"))
             }
             Self::Remove { vm, forget } => {
                 lifecycle::vm_remove(context, ui, vm, *forget)?;
-                Ok("done".to_owned())
+                Ok(if *forget {
+                    format!("{vm} is forgotten")
+                } else {
+                    format!("{vm} is removed; its settings are kept")
+                })
             }
             Self::Attest { vm, restart } => {
                 lifecycle::vm_attest(context, ui, Some(vm), false, *restart, false)?;
-                Ok("done".to_owned())
+                Ok(format!("{vm} is attested"))
             }
             Self::Set { target, changes } => {
                 let changes = changes
@@ -113,11 +117,11 @@ impl Action {
                     .map(|change| crate::set::parse_assignment(change))
                     .collect::<Result<Vec<_>, _>>()?;
                 lifecycle::set(context, ui, target, &changes, false)?;
-                Ok("done".to_owned())
+                Ok("the settings are saved and applied".to_owned())
             }
             Self::Apply => {
                 apply::apply(context, ui)?;
-                Ok("done".to_owned())
+                Ok("the configuration is applied".to_owned())
             }
             Self::Recover(vm) => {
                 let reason = ui.text(&format!(
@@ -131,11 +135,11 @@ impl Action {
                     context.command_line(&["recover", vm, reason.trim()])
                 ));
                 controller::recover(context, ui, vm, reason.trim())?;
-                Ok("done".to_owned())
+                Ok(format!("{vm} resumes resizing"))
             }
             Self::Init => {
                 controller::init(context, ui)?;
-                Ok("done".to_owned())
+                Ok("the host is set up".to_owned())
             }
         }
     }

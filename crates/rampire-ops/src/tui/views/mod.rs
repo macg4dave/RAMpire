@@ -441,9 +441,9 @@ mod tests {
             let text = text(&app, width, height);
             for needle in [
                 "vm0 (managed)",
-                "v  Details, live",
+                "v  Live details",
                 "s  Settings",
-                "o  Doctor",
+                "o  Doctor: check everything about it",
                 "Forget it",
                 "same as: rampire",
             ] {
@@ -458,7 +458,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         let text = text(&app, 120, 40);
         assert!(
-            text.contains("vm add will add a 6144 MiB virtio-mem device"),
+            text.contains("Adding it will add a 6144 MiB virtio-mem device"),
             "{text}"
         );
         assert!(text.contains("apt install rampire-guest"), "{text}");
@@ -501,7 +501,7 @@ mod tests {
         press(&mut app, KeyCode::Tab);
         let facts = text(&app, 80, 24);
         assert!(
-            facts.contains("vm0 facts") && facts.contains("priority"),
+            facts.contains("vm0 facts") && facts.contains("Priority"),
             "{facts}"
         );
         press(&mut app, KeyCode::Esc);
@@ -523,7 +523,7 @@ mod tests {
         for (width, height) in SIZES {
             let text = text(&app, width, height);
             assert!(text.contains("COMMANDS"), "{text}");
-            assert!(text.contains("Details, live"), "{text}");
+            assert!(text.contains("Live details"), "{text}");
             assert!(
                 text.contains("done: rampire set"),
                 "{width}x{height}\n{text}"

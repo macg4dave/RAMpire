@@ -118,29 +118,29 @@ fn settings_panel(
             ));
             if let Some(settings) = &details.settings {
                 first.extend([
-                    Span::styled("  priority ", theme.text()),
+                    Span::styled("  Priority ", theme.text()),
                     Span::styled(settings.priority.to_string(), theme.value()),
-                    Span::styled("  min_ram ", theme.text()),
+                    Span::styled("  Min RAM ", theme.text()),
                     Span::styled(super::app::byte_text(settings.min_ram), theme.value()),
-                    Span::styled("  max_ram ", theme.text()),
+                    Span::styled("  Max RAM ", theme.text()),
                     Span::styled(super::app::byte_text(settings.max_ram), theme.value()),
-                    Span::styled("  free_ram ", theme.text()),
+                    Span::styled("  Free RAM ", theme.text()),
                     Span::styled(super::app::byte_text(settings.free_ram), theme.value()),
                 ]);
             }
             if let Some(boot) = details.boot_bytes {
                 second.extend([
-                    Span::styled("boot RAM ", theme.text()),
+                    Span::styled("Boot RAM ", theme.text()),
                     Span::styled(size(boot), theme.value()),
                     Span::styled("   ", theme.text()),
                 ]);
             }
         }
-        None => first.push(Span::styled("reading its settings...", theme.dim())),
+        None => first.push(Span::styled("Reading its settings...", theme.dim())),
     }
     if let Some(device) = snapshot.device {
         second.extend([
-            Span::styled("device ", theme.text()),
+            Span::styled("Device ", theme.text()),
             Span::styled(size(device.size_bytes), theme.value()),
             Span::styled(
                 format!(" in {} MiB blocks   ", mib(device.block_size_bytes)),
@@ -151,7 +151,7 @@ fn settings_panel(
     let host = snapshot.host;
     let floor = command.host_floor_bytes;
     second.extend([
-        Span::styled("host available ", theme.text()),
+        Span::styled("Host available ", theme.text()),
         Span::styled(
             gib(host.available),
             theme.tone(tone::floor(host.available, floor)),
@@ -186,9 +186,9 @@ fn device_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsh
         Some(device) => {
             let (requested, current) = (device.requested_bytes, device.current_bytes);
             lines.push(Line::from(vec![
-                Span::styled("requested ", theme.text()),
+                Span::styled("Requested ", theme.text()),
                 Span::styled(gib(requested), theme.value()),
-                Span::styled("   plugged ", theme.text()),
+                Span::styled("   Plugged ", theme.text()),
                 Span::styled(gib(current), theme.value()),
                 Span::styled("   ", theme.text()),
                 super::pool::device_state(theme, Some(device)),
@@ -214,7 +214,7 @@ fn device_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsh
     let journal = &snapshot.journal;
     lines.push(match &journal.last_result {
         Some(result) => Line::from(vec![
-            Span::styled("last request ", theme.text()),
+            Span::styled("Last request ", theme.text()),
             widgets::marked(
                 theme,
                 match result.tone {
@@ -227,7 +227,7 @@ fn device_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsh
             Span::styled(format!("  {}", result.detail), theme.dim()),
         ]),
         None => Line::from(vec![
-            Span::styled("last request ", theme.text()),
+            Span::styled("Last request ", theme.text()),
             Span::styled(
                 journal
                     .unreadable
@@ -289,16 +289,16 @@ fn guest_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsho
                     None,
                 ),
                 Line::from(vec![
-                    Span::styled("available ", theme.text()),
+                    Span::styled("Available ", theme.text()),
                     Span::styled(gib(available), theme.value()),
-                    Span::styled("   commit headroom ", theme.text()),
+                    Span::styled("   Commit headroom ", theme.text()),
                     Span::styled(
                         gib(memory
                             .commit_limit_bytes
                             .saturating_sub(memory.commit_total_bytes)),
                         theme.value(),
                     ),
-                    Span::styled("   request ", theme.text()),
+                    Span::styled("   Request ", theme.text()),
                     match &telemetry.request {
                         Some(request) => Span::styled(
                             format!(
@@ -313,7 +313,7 @@ fn guest_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsho
                     },
                 ]),
                 Line::from(vec![
-                    Span::styled("signal ", theme.text()),
+                    Span::styled("Signal ", theme.text()),
                     Span::styled(signal, theme.tone(signal_tone)),
                     Span::styled(format!("  {meaning}"), theme.dim()),
                 ]),
@@ -442,8 +442,8 @@ pub(crate) mod tests {
                 let text = widgets::plain_text(&buf);
                 assert!(text.contains("shrink -2048M"), "{text}");
                 assert!(text.contains("2048 MiB to go"), "{text}");
-                assert!(text.contains("signal OFF"), "{text}");
-                assert!(text.contains("priority"), "{text}");
+                assert!(text.contains("Signal OFF"), "{text}");
+                assert!(text.contains("Priority"), "{text}");
                 assert!(text.contains("running"), "{text}");
             }
         }

@@ -127,7 +127,7 @@ impl App {
             Run::Copy(text) => self.copy(text),
             Run::Theme(palette) => {
                 self.theme.palette = palette;
-                self.notify(format!("theme: {}", palette.name()), Tone::Dim);
+                self.notify(format!("Theme: {}", palette.name()), Tone::Dim);
             }
         }
     }
@@ -159,9 +159,7 @@ impl App {
             Cmd::Quit => self.ask_quit(false),
             Cmd::Palette => self.open_palette(),
             Cmd::Help => self.open_help(),
-            Cmd::Errors if self.errors.is_empty() => {
-                self.notify("no errors this session", Tone::Dim)
-            }
+            Cmd::Errors if self.errors.is_empty() => self.notify("No errors so far.", Tone::Dim),
             Cmd::Errors => self.overlay = Some(Overlay::Errors(Scroll::at(usize::MAX))),
             Cmd::Tasks => {
                 let at = self.tasks.list.len().saturating_sub(1);
@@ -170,7 +168,7 @@ impl App {
             }
             Cmd::NextTheme => {
                 self.theme.next_palette();
-                self.notify(format!("theme: {}", self.theme.palette.name()), Tone::Dim);
+                self.notify(format!("Theme: {}", self.theme.palette.name()), Tone::Dim);
             }
             Cmd::Icons => {
                 self.theme.icons.unicode = !self.theme.icons.unicode;
@@ -179,7 +177,7 @@ impl App {
                 } else {
                     "ASCII"
                 };
-                self.notify(format!("icons: {set}"), Tone::Dim);
+                self.notify(format!("Icons: {set}"), Tone::Dim);
             }
             Cmd::Reload => self.reload(),
             Cmd::Doctor => self.open(View::Doctor(None)),
@@ -221,7 +219,7 @@ impl App {
         self.dialog = Some(Dialog::Confirm(Confirm::new(
             "Quit?",
             vec![
-                "These tasks stop with the TUI. A vm add that stops finishes when it is run again."
+                "These tasks stop when the TUI closes. A VM whose adding stopped part-way is finished when you add it again."
                     .to_owned(),
             ],
             list,
@@ -292,11 +290,14 @@ impl App {
             Cmd::Sort(by, reverse) => {
                 self.list.sort = by;
                 self.list.reverse = reverse;
-                self.notify(format!("sorted by {}", by.label()), Tone::Dim);
+                self.notify(format!("Sorted by {}", by.label()), Tone::Dim);
             }
             Cmd::Linemode(mode) => {
                 self.list.linemode = mode;
-                self.notify(format!("last columns: {}", mode.label()), Tone::Dim);
+                self.notify(
+                    format!("The last columns show: {}", mode.label()),
+                    Tone::Dim,
+                );
             }
             Cmd::Back if self.list.filter.is_some() || !self.list.marks.is_empty() => {
                 self.list.filter = None;
@@ -371,19 +372,19 @@ impl App {
                     let line = action.command_line(&self.context);
                     self.dialog = Some(Dialog::Confirm(Confirm::new(
                         "Run the fix",
-                        vec!["This runs, as a task; its own questions come next:".to_owned()],
+                        vec!["This runs in the background; its own questions come next:".to_owned()],
                         vec![line],
                         OnYes::Run(vec![action]),
                     )));
                 }
                 None => self.notify(
-                    "this fix is done by hand: it is shown beneath the problem",
+                    "This fix is done by hand: it is shown under the problem.",
                     Tone::Dim,
                 ),
             },
             Cmd::Copy => match fix {
                 Some(fix) => self.copy(fix),
-                None => self.notify("this finding has no fix to copy", Tone::Dim),
+                None => self.notify("This finding has no fix to copy.", Tone::Dim),
             },
             Cmd::Filter => {
                 let current = self.doctor.filter.clone();
@@ -450,7 +451,7 @@ impl App {
         let lines = self.log_lines();
         let count = lines.len();
         if count == 0 || self.logs.find.is_none() {
-            return self.notify("nothing to find: / types a text", Tone::Dim);
+            return self.notify("Nothing to find yet: press / and type a text.", Tone::Dim);
         }
         let at = self.logs.scroll.cursor(count);
         let found = (1..=count)
@@ -467,7 +468,7 @@ impl App {
                 let delta = index as isize - at as isize;
                 self.logs.scroll.step(Step::Offset(delta), count);
             }
-            None => self.notify("no line has it", Tone::Dim),
+            None => self.notify("No line has that text.", Tone::Dim),
         }
     }
 
@@ -515,16 +516,16 @@ impl App {
 
     fn cancel_task(&mut self, id: super::jobs::TaskId) {
         let (text, tone) = match self.tasks.cancel(id, Instant::now()) {
-            Cancelled::Dropped => ("cancelled: it won't run", Tone::Good),
+            Cancelled::Dropped => ("Cancelled: it won't run.", Tone::Good),
             Cancelled::Stopped => (
-                "cancelled at its question: nothing more is changed",
+                "Cancelled at its question: nothing more is changed.",
                 Tone::Good,
             ),
             Cancelled::AtNextQuestion => (
-                "it is running; it stops at its next question, changing nothing more",
+                "It is running: it stops at its next question, changing nothing more.",
                 Tone::Warn,
             ),
-            Cancelled::Finished => ("it has finished", Tone::Dim),
+            Cancelled::Finished => ("It has already finished.", Tone::Dim),
         };
         self.notify(text, tone);
     }
@@ -578,7 +579,10 @@ impl App {
             (Cmd::Back, _) => {
                 if let Some(pending) = task.pending.as_mut() {
                     pending.later = true;
-                    self.notify("the question waits: w, then Enter, to answer it", Tone::Dim);
+                    self.notify(
+                        "The question is waiting: press w, then Enter, to answer it.",
+                        Tone::Dim,
+                    );
                 }
                 back(self);
             }
@@ -711,6 +715,13 @@ impl App {
                 }
             }
             Cmd::Back => self.dialog = None,
+            Cmd::Choose if !form.valid() => {
+                // The first setting that is wrong, to fix.
+                if let Some(at) = form.problems().iter().position(Option::is_some) {
+                    form.cursor = at;
+                }
+                self.notify("Fix the settings marked in red first.", Tone::Warn);
+            }
             Cmd::Choose => {
                 let actions = form.actions();
                 for field in &form.fields {
@@ -721,7 +732,7 @@ impl App {
                 }
                 self.dialog = None;
                 if actions.is_empty() {
-                    self.notify("nothing changed", Tone::Dim);
+                    self.notify("Nothing changed.", Tone::Dim);
                 }
                 for action in actions {
                     self.start(action);
@@ -1072,7 +1083,7 @@ mod tests {
         assert!(palette.matches().len() > 10);
         typed(&mut app, "doct");
         let first = app.palette.as_ref().unwrap().matches()[0].clone();
-        assert_eq!(first.label, "Doctor");
+        assert_eq!(first.label, "Doctor: check everything about it");
         assert_eq!(first.group, "vm0");
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Enter);
