@@ -285,7 +285,7 @@ fn other_vms_pass(
 fn ask_kernel(ui: &mut dyn Ui, name: &str) -> Result<String, String> {
     loop {
         let answer = ui.text(&format!(
-            "{name}'s guest agent didn't answer. Its kernel release (uname -r in the guest):"
+            "{name}'s guest agent isn't answering (installing rampire-guest in it brings one). Its kernel release (uname -r in the guest):"
         ))?;
         let answer = answer.trim();
         if answer.is_empty() {
