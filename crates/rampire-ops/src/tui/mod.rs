@@ -60,13 +60,44 @@ pub fn run(context: Context) -> Result<(), String> {
     ))
 }
 
-fn run_app(context: Context) -> Result<(), String> {
+/// A flag set by the first of `signals`; a second one ends the process at
+/// once, so a TUI that can't stop cleanly can still be stopped.
+pub(crate) fn stop_on_signals(signals: &[i32]) -> Result<Arc<AtomicBool>, String> {
     let stop = Arc::new(AtomicBool::new(false));
-    // A dropped SSH connection (SIGHUP) or a kill ends the TUI cleanly.
-    for signal in [signal_hook::consts::SIGHUP, signal_hook::consts::SIGTERM] {
-        signal_hook::flag::register(signal, Arc::clone(&stop))
+    for signal in signals {
+        signal_hook::flag::register_conditional_shutdown(*signal, 1, Arc::clone(&stop))
+            .and_then(|_| signal_hook::flag::register(*signal, Arc::clone(&stop)))
             .map_err(|error| format!("install signal handler: {error}"))?;
     }
+    Ok(stop)
+}
+
+/// Whether the terminal on stdin has hung up or gone.
+pub(crate) fn hung_up() -> bool {
+    #[repr(C)]
+    struct PollFd {
+        fd: i32,
+        events: i16,
+        revents: i16,
+    }
+    unsafe extern "C" {
+        fn poll(fds: *mut PollFd, count: u64, timeout: i32) -> i32;
+    }
+    const POLLERR: i16 = 0x8;
+    const POLLHUP: i16 = 0x10;
+    const POLLNVAL: i16 = 0x20;
+    let mut descriptor = PollFd {
+        fd: 0,
+        events: 0,
+        revents: 0,
+    };
+    // SAFETY: one caller-owned pollfd, and a zero timeout.
+    let ready = unsafe { poll(&mut descriptor, 1, 0) };
+    ready < 0 || descriptor.revents & (POLLERR | POLLHUP | POLLNVAL) != 0
+}
+
+fn run_app(context: Context) -> Result<(), String> {
+    let stop = stop_on_signals(&[signal_hook::consts::SIGHUP, signal_hook::consts::SIGTERM])?;
     let (tx, rx) = jobs::channel();
     let control = jobs::ReaderControl::new();
     jobs::spawn_reader(
@@ -81,6 +112,11 @@ fn run_app(context: Context) -> Result<(), String> {
     let result = (|| -> Result<(), String> {
         let mut dirty = true;
         while !app.quit && !stop.load(Ordering::Acquire) {
+            // A terminal that has gone away (a dropped SSH connection
+            // under sudo's own pty sends no SIGHUP) ends the TUI.
+            if hung_up() {
+                return Ok(());
+            }
             if dirty {
                 terminal
                     .draw(|frame| screens::draw(frame, &app))
@@ -91,10 +127,10 @@ fn run_app(context: Context) -> Result<(), String> {
             if event::poll(Duration::from_millis(100))
                 .map_err(|error| format!("read a key: {error}"))?
             {
-                match event::read().map_err(|error| format!("read a key: {error}"))? {
-                    Event::Key(key) => app.on_key(key),
-                    Event::Resize(_, _) => {}
-                    _ => continue,
+                if let Event::Key(key) =
+                    event::read().map_err(|error| format!("read a key: {error}"))?
+                {
+                    app.on_key(key);
                 }
                 dirty = true;
             }

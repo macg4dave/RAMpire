@@ -6,8 +6,7 @@
 
 use std::io::IsTerminal;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use ratatui::buffer::Buffer;
@@ -163,15 +162,11 @@ fn run<S>(
         );
         return Ok(());
     }
-    let stop = Arc::new(AtomicBool::new(false));
-    for signal in [
+    let stop = super::stop_on_signals(&[
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGHUP,
-    ] {
-        signal_hook::flag::register(signal, Arc::clone(&stop))
-            .map_err(|error| format!("install signal handler: {error}"))?;
-    }
+    ])?;
     let theme = super::theme_from_environment();
     let mut terminal =
         ratatui::try_init().map_err(|error| format!("open the terminal: {error}"))?;
@@ -188,6 +183,9 @@ fn run<S>(
                 .map_err(|error| format!("draw: {error}"))?;
             last = Some(snapshot);
             while started.elapsed() < interval && !stop.load(Ordering::Acquire) {
+                if super::hung_up() {
+                    return Ok(());
+                }
                 let wait = interval
                     .saturating_sub(started.elapsed())
                     .min(Duration::from_millis(100));
