@@ -9,7 +9,7 @@ A change someone using RAMpire would notice gets a line under
 turns that section into the release's entry, and the entry becomes the
 release's notes on GitHub ([releasing](docs/releasing.md)).
 
-## Unreleased: Linux only
+## 0.5.0 (2026-11-15): Linux only
 
 The first release: the controller for a Linux KVM host and the Linux
 guest service, as packages for x86-64. Windows guests are not part of it
