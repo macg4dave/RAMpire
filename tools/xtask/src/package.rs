@@ -88,21 +88,23 @@ pub fn run(action: &Action, repo: &Path) -> Result<(), String> {
             static_tarballs,
         } => (output, *static_tarballs),
     };
-    let mut targets = vec![None];
-    if static_tarballs {
-        targets.push(Some("x86_64-unknown-linux-musl"));
-    }
-    for target in targets {
+    // The static guest binary is always built: the host package carries
+    // it for guests without dnf or apt. The static host binary is for the
+    // tarballs only.
+    let both: &[&str] = &["-p", "rampire", "-p", "rampire-guest-linux"];
+    let guest: &[&str] = &["-p", "rampire-guest-linux"];
+    let targets = [
+        (None, both),
+        (
+            Some("x86_64-unknown-linux-musl"),
+            if static_tarballs { both } else { guest },
+        ),
+    ];
+    for (target, packages) in targets {
         let mut cargo = Command::new("cargo");
-        cargo.args([
-            "build",
-            "--release",
-            "--locked",
-            "-p",
-            "rampire",
-            "-p",
-            "rampire-guest-linux",
-        ]);
+        cargo
+            .args(["build", "--release", "--locked"])
+            .args(packages);
         if let Some(target) = target {
             cargo.args(["--target", target]);
         }

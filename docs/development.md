@@ -129,6 +129,15 @@ is tested and what is verified only on a deployment, is in
 [the TUI audit](tui-functional-audit.md); the workflows a person
 follows, in [TUI workflows](tui-workflows.md).
 
+The screenshot software centres show, `docs/screenshots/tui.png`, is the
+dashboard drawn by the same renderer from a made-up host
+(`tui/screenshot.rs`). After a change to the dashboard, draw it again:
+
+```bash
+cargo test -p rampire-ops -- --ignored tui::screenshot
+rsvg-convert target/screenshots/tui.svg -o docs/screenshots/tui.png
+```
+
 Each screen and layer is drawn in tests into a buffer at 80x24, 120x40
 and 200x60, in every theme, at every colour depth and in both icon sets
 (`tui/views/mod.rs`), as part of the gate; keys are pressed through
@@ -210,8 +219,11 @@ commits to `HEAD`, so a later commit's package always upgrades an earlier
 one, and the release sorts after every development version that led to
 it. `install` checks that the installed `rampire --version` reports the
 build just made.
-`--static` adds the musl tarballs a release ships. The guest packages
-(`rampire-guest`) are in `dist/` too.
+The guest is also built for musl every time: the host package carries
+that static binary for guests without dnf or apt, so a `--local` build
+needs the `x86_64-unknown-linux-musl` target (the build container has
+it). `--static` adds the musl host binary and the tarballs a release
+ships. The guest packages (`rampire-guest`) are in `dist/` too.
 
 ## Releases and change notes
 

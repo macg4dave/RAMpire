@@ -67,8 +67,9 @@ pub struct Task {
     pub lines: Vec<(String, Tone)>,
     pub pending: Option<Pending>,
     pub state: State,
-    /// Cancelled while running: its next question is answered with a stop.
-    pub cancel: bool,
+    /// Cancelled while running: its next question is answered with a stop,
+    /// and its next wait ends. Shared with its flow.
+    pub cancel: crate::ui::Cancel,
     pub started: Option<Instant>,
     pub ended: Option<Instant>,
     pub pager: Pager,
@@ -112,8 +113,8 @@ impl Task {
                 format!("Asks: {} (Enter to answer)", pending.question.text()),
                 Tone::Accent,
             ),
-            (State::Running, None) if self.cancel => (
-                format!("Running for {seconds}s; it stops at its next question"),
+            (State::Running, None) if self.cancel.is_set() => (
+                format!("Running for {seconds}s; it stops at its next question or wait"),
                 Tone::Warn,
             ),
             (State::Running, None) => (format!("Running for {seconds}s"), Tone::Info),
@@ -176,7 +177,7 @@ impl Tasks {
             title,
             pending: None,
             state: State::Waiting,
-            cancel: false,
+            cancel: crate::ui::Cancel::new(),
             started: None,
             ended: None,
             pager: Pager::default(),
@@ -246,6 +247,7 @@ impl Tasks {
             }
             State::Running => match task.pending.take() {
                 Some(pending) => {
+                    task.cancel.set();
                     task.lines.push((
                         format!("{} (cancelled)", pending.question.text()),
                         Tone::Warn,
@@ -255,7 +257,7 @@ impl Tasks {
                     Cancelled::Stopped
                 }
                 None => {
-                    task.cancel = true;
+                    task.cancel.set();
                     Cancelled::AtNextQuestion
                 }
             },
@@ -514,8 +516,8 @@ pub fn render_task(
                 &["|", "/", "-", "\\"]
             };
             let frame = frames[seconds as usize % frames.len()];
-            let stopping = if task.cancel {
-                "; it stops at its next question"
+            let stopping = if task.cancel.is_set() {
+                "; it stops at its next question or wait"
             } else {
                 ""
             };
@@ -611,7 +613,7 @@ mod tests {
         let (first, _) = tasks.start_next(now).unwrap();
         assert_eq!(tasks.cancel(2, now), Cancelled::Dropped);
         assert_eq!(tasks.cancel(first, now), Cancelled::AtNextQuestion);
-        assert!(tasks.get(first).unwrap().cancel);
+        assert!(tasks.get(first).unwrap().cancel.is_set());
         let (reply, answer) = std::sync::mpsc::channel();
         tasks.get_mut(first).unwrap().pending = Some(Pending {
             question: Question::Confirm("Apply this?".to_owned()),

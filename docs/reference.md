@@ -14,7 +14,8 @@ once here. `rampire --help` and
 | `--json` | Write a versioned JSON document ([JSON documents](json.md)) |
 
 Every command but `daemon` runs as root. Exit codes: 0 done, 1 failed or
-a problem found, 2 a wrong command line. The options for scripts, and
+a problem found, 2 a wrong command line, 3 not done: a question was
+answered No, or a part is left, as the command said. The options for scripts, and
 what stays the same between releases, are in
 [the script interface](fleet.md#the-script-interface). `man rampire`,
 `man rampire-COMMAND` (`man rampire-vm-add`) and `man rampire.toml` are
@@ -43,9 +44,9 @@ offers only what fits that VM:
 
 | The VM is | Its menu |
 |---|---|
-| Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `u` Upgrade the guest service, when an update is available; `x` Remove RAMpire |
-| Not managed | What would stop adding it; `x` Remove RAMpire, when its definition still has RAMpire's parts; `a` Install RAMpire: its settings (Priority, Minimum, Maximum and Free RAM, filled in from its definition, and Guest login), with a warning when the VM is running and adding will shut it down; then everything adding will do, asked once. Answering No adds nothing, and the task ends **Not done**; `o` its doctor |
-| Half-added | `a` finish adding it; `o` its doctor; `x` undo the add: `rampire vm remove VM` takes its settings out and puts its old definition back |
+| Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `b` Restart onto its saved definition, when it runs an older one (`rampire vm restart VM`); `c` Recover, when resizing it has stopped (`rampire recover VM REASON`, the reason asked); `u` Upgrade the guest service, when an update is available; `x` Remove RAMpire |
+| Not managed | What would stop adding it, its disk's system among them: the TUI reads each such VM's disk once, in the background, and a system whose root is read only (Home Assistant OS), which can't take the guest service, shows as a problem before you press Add; `x` Remove RAMpire, when its definition still has RAMpire's parts; `a` Install RAMpire, once nothing stops it: its settings (Priority, Minimum, Maximum and Free RAM, filled in from its definition, and Guest login), with a warning when the VM is running and adding will shut it down; then everything adding will do, asked once. Answering No adds nothing, and the task ends **Not done**; `o` its doctor |
+| Half-added (an add that stopped and couldn't put the VM back by itself) | `a` finish adding it; `o` its doctor; `x` undo the add: `rampire vm remove VM` takes its settings out and puts its old definition back |
 
 A managed VM whose guest service runs another build than the host's
 shows **update available (u)** in the list's NOTE column: the host
@@ -74,8 +75,13 @@ asking.
 `w` lists the tasks. Enter shows one's output and its question; `x`
 cancels one: a waiting one at once, a running one at its next question,
 which is answered with a stop, so nothing more is changed; `D` clears the
-finished ones. `q` asks first while tasks run: they stop with the TUI,
-and a `vm add` that stopped finishes when it is run again.
+finished ones. A running task also stops while it waits for a VM to
+boot, a login to work or a guest to report in; a step that must finish
+once begun, such as shutting a VM down and starting it again, or
+installing a package, runs to its end. A cancelled login never leads to
+the VM being shut down for the other way in. `q` asks first while tasks
+run; Yes stops them that way, and the TUI closes once none runs (Ctrl+C
+again quits at once).
 
 What a task did slides in briefly at the bottom right; an error stays
 longer, and in the errors list (`e`). A task ends **Done** only when it
@@ -113,6 +119,8 @@ Anywhere:
 | `I` | Set up this host, when it isn't set up yet (`rampire init`) |
 | `S` | The global settings: every setting in `global.toml` (pool, host reserve, observe only, the poll interval, the libvirt limits and URI, the copies kept), filled in with its value now and checked as you type; Enter runs `rampire set global KEY=VALUE...` for what changed, and applies |
 | `A` | Apply the draft (`rampire apply`): what a settings change saved but didn't apply, such as after No to its apply question. The difference is shown first and asked |
+| `D` | The difference between the draft and what runs (`rampire diff`), in a task's window |
+| `B` | Roll back to the applied copy before (`rampire rollback`): the difference is shown first and asked |
 | `?`, F1 | The keys |
 | `q`, Ctrl+C | Quit; while tasks run it asks first, and Ctrl+C twice quits at once |
 | Ctrl+Z | Back to the shell; `fg` brings the TUI back |
@@ -124,7 +132,7 @@ The VMs:
 | Enter | The chosen VM's menu |
 | Tab | Its facts: what `vm list`, the pool and its settings say, and the commands that show more; Left and Right go through the VMs, `y` copies the chosen fact |
 | `/` | Show only the VMs whose name has what is typed, as it is typed; Tab completes a name, Enter keeps the filter, Esc puts back what was there |
-| Space, Ctrl+A | Mark the chosen VM, or every VM shown (again: none). A menu's letter then does its item for each marked VM, after one question that lists the commands; `s` opens one settings form for them all, whose empty fields leave each VM its own, and `a` one form to install RAMpire on them all; `x` removes RAMpire from each, and `u` upgrades each guest service that has an update |
+| Space, Ctrl+A | Mark the chosen VM, or every VM shown (again: none). A menu's letter then does its item for each marked VM, after one question that lists the commands; `s` opens one settings form for them all, whose empty fields leave each VM its own, and `a` one form to install RAMpire on them all; `x` removes RAMpire from each, and `u`, `b`, `c` upgrade, restart or recover each that offers it |
 | `,` then `o`, `n`, `r`, `p`, `u` | Sort as the pool lists them, by name, by RAM plugged, by priority, by the guest's memory in use; a capital letter reverses. VMs without the figure go last |
 | `m` then `g`, `l`, `d`, `t` | The last columns: the guest's memory and request, the RAM limits, the device, what `vm list` says |
 | `y` | Copy the chosen VM's name |
@@ -200,11 +208,11 @@ logged as `event=operator_change action=tui_failed`.
 
 | Command | What it does |
 |---|---|
-| `rampire vm add VM [--guest-login USER@HOST] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE] [--review PROFILE] [--kernel RELEASE] [--no-guest-install]` | Starts managing a VM. It shows everything it will do and asks once; then it fixes the definition, keeping the old one (a NUMA cell, `maxMemory`, the device, the control channel and the guest agent channel, and the memory balloon turned off), starts the VM, installs or upgrades `rampire-guest` in it (through its guest agent, or over SSH as `--guest-login`, default root at the address libvirt has for it; when neither gets in, or the VM is off, with libvirt's disk tools while it is shut down, the package installing as it starts), restarts it if that is needed, writes its review and settings, applies, and waits for the guest to report in. The sizes default to ones suggested from the definition. It stops first if another managed VM would fail `apply`'s checks |
+| `rampire vm add VM [--guest-login USER@HOST] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE] [--review PROFILE] [--kernel RELEASE] [--no-guest-install]` | Starts managing a VM. It shows everything it will do and asks once; then it fixes the definition, keeping the old one (a NUMA cell, `maxMemory`, the device, the control channel and the guest agent channel, and the memory balloon turned off), starts the VM, installs or upgrades `rampire-guest` in it (through its guest agent, or over SSH as `--guest-login`, default root at the address libvirt has for it; when neither gets in, or the VM is off, with libvirt's disk tools while it is shut down, the package installing as it starts), restarts it if that is needed, writes its review and settings, applies, and waits for the guest to report in. The sizes default to ones suggested from the definition. It stops first if another managed VM would fail `apply`'s checks. When a step fails before the VM is applied, it puts the VM back as it was: the old definition (from the VM's next start) and none of the files it wrote; `rampire-guest` stays installed in the guest. Once the VM is added, it offers the pool `init` would suggest now, when that differs from `pool`, with the same reasoning; Yes sets it and applies it, as `rampire set global pool=SIZE` does |
 | `rampire vm restart VM` | Shuts a VM down and starts it again, so its saved definition takes effect, then applies |
-| `rampire vm upgrade VM [--guest-login USER@HOST]` | Upgrades `rampire-guest` in a managed VM to the build the host runs, from the guest packages the host package carries. It logs in as `vm add` does (the guest agent, else root over SSH with RAMpire's key, or `--guest-login`); when it can't, and you agree, it puts the package on the VM's disk with the VM shut down for a moment, and it installs as the VM starts. A VM that is off gets it on its disk. Then it waits for the guest to report in from the new build. Nothing to do when the guest runs the host's build already |
+| `rampire vm upgrade VM [--guest-login USER@HOST]` | Upgrades `rampire-guest` in a managed VM to the build the host runs, from the guest packages the host package carries. It logs in as `vm add` does (the guest agent, else root over SSH with RAMpire's key, or `--guest-login`); when it can't get in by itself, it asks for an SSH login, `USER@HOST` (empty: none); when that doesn't get in either, and you agree, it puts the package on the VM's disk with the VM shut down for a moment, and it installs as the VM starts. A VM that is off gets it on its disk. Then it waits for the guest to report in from the new build. Nothing to do when the guest runs the host's build already |
 | `rampire vm list` | Every VM on the libvirt connection: managed, unfinished (a `vm add` that didn't apply) or not managed. For one that isn't managed, what `vm add` would change, what would still stop it, and whether its guest service is installed |
-| `rampire vm remove VM` | Removes RAMpire from a VM: stops managing it at once, puts its definition back to plain RAM (its boot RAM, without the virtio-mem device, control channel, `maxMemory` or a single NUMA cell, and with the memory balloon it had before `vm add`), so Cockpit or `virsh` can change its memory again, and removes its settings, recorded setup, request state, definition backups and the review profile `vm add` wrote for it. For a VM no longer managed whose definition still has RAMpire's parts, it puts the definition back the same way. The definition takes effect at the VM's next start |
+| `rampire vm remove VM` | Removes RAMpire from a VM: stops managing it at once, puts its definition back to plain RAM (its boot RAM, without the virtio-mem device, control channel, `maxMemory` or a single NUMA cell, and with the memory balloon it had before `vm add`), so Cockpit or `virsh` can change its memory again, and removes its settings, recorded setup, request state, definition backups and the review profile `vm add` wrote for it. For a VM no longer managed whose definition still has RAMpire's parts, it puts the definition back the same way. The definition takes effect at the VM's next start. Once it is removed, it offers the new pool as `vm add` does |
 
 ### Watching
 
@@ -234,7 +242,7 @@ logged as `event=operator_change action=tui_failed`.
 | `/var/lib/rampire/evidence/` | What each apply and rollback did |
 | `/var/lib/rampire/state/` | Each VM's durable request state |
 | `/var/lib/rampire/domain-backups/` | Definitions `vm add` replaced |
-| `/usr/share/rampire/guest/` | The guest packages of the host's build, which `vm add` installs |
+| `/usr/share/rampire/guest/` | The guest packages of the host's build, which `vm add` installs, and the static guest binary with its unit for a guest without dnf or apt ([Linux guests](administration.md#linux-guests)) |
 | `/var/lib/rampire/ssh/id_ed25519` | RAMpire's SSH key for logging in to guests, made the first time `vm add` needs it |
 | `/var/lib/rampire/ssh/known_hosts` | The host keys of the guests RAMpire has logged in to, kept on first login |
 | `/run/rampire/metrics.prom` | Metrics, every round |
@@ -272,8 +280,9 @@ Every setting is optional.
 ## `vms.d/VM.toml`
 
 One file per VM, named for the libvirt domain with `.toml` added:
-lower-case ASCII letters, digits, `-`, `_` and `.`, starting with a letter
-or digit, at most 64 characters. The
+ASCII letters, digits, `-`, `_` and `.`, starting with a letter or digit,
+at most 64 characters. Each capital letter is written `^` and the letter in
+lower case, so `Web01` is `^web01.toml` and no two names share a file. The
 name isn't repeated inside. Only `vms.d/*.toml` files are read, so editor
 backups and `.rpmnew` files there are ignored.
 

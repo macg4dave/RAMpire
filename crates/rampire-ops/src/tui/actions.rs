@@ -30,6 +30,10 @@ pub enum Action {
         changes: Vec<String>,
     },
     Apply,
+    /// `diff`: the draft against what runs, in the task's output.
+    Diff,
+    /// `rollback`: back to the applied copy before, shown and asked.
+    Rollback,
     /// `recover VM REASON`; the reason is asked.
     Recover(String),
     /// `init`, with `--host-reserve SIZE` when it was chosen in the setup
@@ -83,6 +87,8 @@ impl Action {
                 words
             }
             Self::Apply => owned(&["apply"]),
+            Self::Diff => owned(&["diff"]),
+            Self::Rollback => owned(&["rollback"]),
             Self::Recover(vm) => owned(&["recover", vm, "REASON"]),
             Self::Init {
                 host_reserve: Some(reserve),
@@ -113,11 +119,18 @@ impl Action {
 
     /// Run it on its own thread as task `id`. The reader reloads the
     /// configuration when it ends, whatever it changed.
-    pub fn spawn(&self, context: &Context, control: &ReaderControl, tx: Sender<Msg>, id: TaskId) {
+    pub fn spawn(
+        &self,
+        context: &Context,
+        control: &ReaderControl,
+        tx: Sender<Msg>,
+        id: TaskId,
+        cancel: crate::ui::Cancel,
+    ) {
         let action = self.clone();
         let context = context.clone();
         let reload = control.reload.clone();
-        jobs::spawn_flow(tx, id, move |ui| {
+        jobs::spawn_flow(tx, id, cancel, move |ui| {
             let result = action.run(&context, ui);
             reload.store(true, Ordering::Release);
             result
@@ -140,6 +153,11 @@ impl Action {
                 lifecycle::set(context, ui, target, &changes, false)?
             }
             Self::Apply => apply::apply(context, ui)?,
+            Self::Diff => {
+                apply::diff(context, ui)?;
+                Outcome::Done
+            }
+            Self::Rollback => apply::rollback(context, ui)?,
             Self::Recover(vm) => {
                 let reason = ui.text(&format!(
                     "Why is it safe to resume resizing {vm}? (recorded in its state)"
@@ -183,6 +201,8 @@ impl Action {
             }
             Self::Set { target, .. } => format!("{target}'s settings are not applied"),
             Self::Apply => "the draft is not applied".to_owned(),
+            Self::Diff => "the difference is not shown".to_owned(),
+            Self::Rollback => "nothing is rolled back".to_owned(),
             Self::Recover(vm) => format!("{vm} is not recovered"),
             Self::Init { .. } => "the host is not set up".to_owned(),
         }
@@ -200,6 +220,8 @@ impl Action {
             }
             Self::Set { target, .. } => format!("{target}'s settings are saved and applied"),
             Self::Apply => "the draft is applied".to_owned(),
+            Self::Diff => "the difference is in this task's output".to_owned(),
+            Self::Rollback => "the controller runs the applied copy before".to_owned(),
             Self::Recover(vm) => format!("{vm} resumes resizing"),
             Self::Init { .. } => "the host is set up and the controller runs".to_owned(),
         }
@@ -231,27 +253,11 @@ fn add_options(vm: &str, changes: &[String]) -> Result<lifecycle::AddOptions, St
     Ok(options)
 }
 
-/// The action a doctor's fix names, when it is a whole `rampire` command
-/// the TUI can run: no placeholder to fill in, other than a recovery's
-/// reason, which is asked.
-pub fn from_fix(fix: &str) -> Option<Action> {
-    // Two commands in turn are for a person to run.
-    if fix.matches("rampire ").count() > 1 && fix.contains("then") {
-        return None;
-    }
-    let start = fix.find("rampire ")?;
-    let command = fix[start + "rampire ".len()..]
-        .split([';', ',', '('])
-        .next()?
-        .trim()
-        .trim_end_matches('.');
-    let words: Vec<&str> = command.split_whitespace().collect();
-    let placeholder = |word: &str| {
-        word.len() > 1
-            && word
-                .chars()
-                .all(|character| character.is_ascii_uppercase() || "_=".contains(character))
-    };
+/// The action a doctor's finding runs, from its command's words after
+/// `rampire` ([`crate::doctor::Finding::run`]): a recovery's reason is
+/// asked; a command the TUI has no action for is none.
+pub fn from_words(words: &[String]) -> Option<Action> {
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["apply"] => Some(Action::Apply),
         ["init", ..] => Some(Action::Init { host_reserve: None }),
@@ -259,20 +265,11 @@ pub fn from_fix(fix: &str) -> Option<Action> {
         ["vm", "restart", vm] => Some(Action::Restart((*vm).to_owned())),
         ["vm", "upgrade", vm] => Some(Action::Upgrade((*vm).to_owned())),
         ["vm", "remove", vm] => Some(Action::Remove((*vm).to_owned())),
-        ["recover", vm, ..] => Some(Action::Recover((*vm).to_owned())),
-        ["set", target, changes @ ..]
-            if !changes.is_empty()
-                && changes.iter().all(|change| {
-                    change
-                        .split_once('=')
-                        .is_some_and(|(_, value)| !placeholder(value) && !value.is_empty())
-                }) =>
-        {
-            Some(Action::Set {
-                target: (*target).to_owned(),
-                changes: changes.iter().map(|change| (*change).to_owned()).collect(),
-            })
-        }
+        ["recover", vm] => Some(Action::Recover((*vm).to_owned())),
+        ["set", target, changes @ ..] if !changes.is_empty() => Some(Action::Set {
+            target: (*target).to_owned(),
+            changes: changes.iter().map(|change| (*change).to_owned()).collect(),
+        }),
         _ => None,
     }
 }
@@ -336,35 +333,26 @@ mod tests {
     }
 
     #[test]
-    fn a_fix_that_is_a_whole_command_can_be_run() {
-        assert_eq!(from_fix("rampire apply"), Some(Action::Apply));
+    fn a_findings_command_becomes_its_action() {
+        let words =
+            |text: &str| -> Vec<String> { text.split_whitespace().map(str::to_owned).collect() };
+        assert_eq!(from_words(&words("apply")), Some(Action::Apply));
         assert_eq!(
-            from_fix("rampire vm restart web"),
+            from_words(&words("vm restart web")),
             Some(Action::Restart("web".to_owned()))
         );
         assert_eq!(
-            from_fix("rampire vm upgrade web"),
-            Some(Action::Upgrade("web".to_owned()))
-        );
-        assert_eq!(
-            from_fix("rampire init on a new host, or rampire apply"),
-            Some(Action::Init { host_reserve: None })
-        );
-        assert_eq!(
-            from_fix("once the guest is checked, rampire recover web \"WHY IT IS SAFE TO RESUME\""),
+            from_words(&words("recover web")),
             Some(Action::Recover("web".to_owned()))
         );
-        assert_eq!(from_fix("rampire vm add web"), Some(Action::add("web")));
-        // A placeholder to fill in, or no rampire command at all, is not run.
         assert_eq!(
-            from_fix("raise max_ram: rampire set web max_ram=SIZE"),
-            None
+            from_words(&words("set web alias=ua-virtiomem0")),
+            Some(Action::Set {
+                target: "web".to_owned(),
+                changes: vec!["alias=ua-virtiomem0".to_owned()]
+            })
         );
-        assert_eq!(from_fix("boot the guest with psi=1"), None);
-        assert_eq!(from_fix("rampire doctor web"), None);
-        assert_eq!(
-            from_fix("rampire vm remove web, then rampire vm add web"),
-            None
-        );
+        assert_eq!(from_words(&words("doctor web")), None);
+        assert_eq!(from_words(&words("set web")), None);
     }
 }

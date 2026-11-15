@@ -15,7 +15,7 @@ listed under **For scripts** in `rampire --help`, each command's
 |---|---|---|
 | `--yes` | every command | Answers yes to every question a script may answer. Never a review question about a VM's programs: give `vm add` a reviewed profile with `--review` instead |
 | `--json` | `status`, `check`, `doctor`, `vm list` | A versioned JSON document instead of text |
-| `--detailed-exitcode` | `apply` | 0 unchanged, 2 changed, 1 failed |
+| `--detailed-exitcode` | `apply` | 0 unchanged, 2 changed, 1 failed, 3 not applied (No was answered) |
 | `--no-apply` | `set` | Change the draft only, to apply later |
 | `--review`, `--kernel`, `--priority`, `--min-ram`, `--max-ram`, `--free-ram` | `vm add` | Every answer and setting given, so nothing is asked |
 | `--once`, `--interval-seconds`, `--events`, `--guest-interval-seconds`, `--no-guest` | `top`, `watch` | One plain snapshot, and how much is read |
@@ -34,8 +34,10 @@ From the first release, these don't change without the
 - the JSON documents, each naming its `schema` and `version`; a document
   only gains fields within a version ([JSON documents](json.md));
 - exit codes: 0 done, 1 failed or a problem found, 2 a wrong command
-  line; `rampire apply --detailed-exitcode` exits 2 when something
-  changed;
+  line, 3 not done: a question was answered No, or a part is left (a
+  VM added or a guest upgraded that hasn't reported in yet, a change
+  saved that wasn't applied), as the command's output says;
+  `rampire apply --detailed-exitcode` exits 2 when something changed;
 - the journal's event names and keys, the controller's and
   `event=operator_change` for people's changes ([journal](journal.md));
 - the settings and their files ([reference](reference.md), `man

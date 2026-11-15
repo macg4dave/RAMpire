@@ -65,6 +65,10 @@
 
   <screenshots>
     <screenshot type="default">
+      <caption>The pool, its history and every VM, live in the terminal</caption>
+      <image>https://raw.githubusercontent.com/macg4dave/RAMpire/main/docs/screenshots/tui.png</image>
+    </screenshot>
+    <screenshot>
       <caption>How RAMpire moves memory between VMs</caption>
       <image>https://raw.githubusercontent.com/macg4dave/RAMpire/main/docs/Mascot/info_diag.png</image>
     </screenshot>

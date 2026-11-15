@@ -36,12 +36,23 @@ systemctl enable --now rampire
 
 ## A Linux guest
 
-From the `rampire-guest-VERSION-x86_64-linux` folder, with systemd 253 or
-later:
+`rampire vm add` does this by itself in a guest without dnf or apt. By
+hand, from the `rampire-guest-VERSION-x86_64-linux` folder, with systemd
+253 or later. `/usr/local` is writable on image-based systems too (Fedora
+CoreOS, Silverblue):
 
 ```bash
-install -m 0755 rampire-guest /usr/libexec/rampire-guest
+install -D -m 0755 rampire-guest /usr/local/libexec/rampire-guest
 install -m 0644 rampire-guest.service /etc/systemd/system/
+restorecon -F /usr/local/libexec/rampire-guest /etc/systemd/system/rampire-guest.service 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable --now rampire-guest
+```
+
+To remove it:
+
+```bash
+systemctl disable --now rampire-guest
+rm /etc/systemd/system/rampire-guest.service /usr/local/libexec/rampire-guest
+systemctl daemon-reload
 ```

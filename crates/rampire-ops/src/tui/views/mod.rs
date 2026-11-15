@@ -348,7 +348,8 @@ mod tests {
                         "recorded setup",
                         "its definition changed since RAMpire last checked this VM",
                         "rampire apply",
-                    ),
+                    )
+                    .runs(&["apply"]),
                     crate::doctor::Finding::ok("latch", "none"),
                 ],
             },

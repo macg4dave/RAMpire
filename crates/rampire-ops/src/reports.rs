@@ -185,6 +185,15 @@ pub struct ListedVm {
     /// virtio-mem device or control channel, which `vm remove` takes out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rampire_parts: bool,
+    /// For a VM that isn't managed: adding it while it runs shuts it down
+    /// and starts it again, since its changes take effect at its next
+    /// start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub add_restarts: bool,
+    /// For a managed VM that runs: it doesn't run its saved definition,
+    /// which `vm restart` brings in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub runs_behind: bool,
 }
 
 /// The sizes `vm add` suggests for a VM, in bytes.
@@ -345,6 +354,7 @@ mod tests {
                     ok: true,
                     detail: "10.1.0".to_owned(),
                     fix: None,
+                    run: None,
                 },
                 Finding {
                     check: "service account".to_owned(),
@@ -354,6 +364,7 @@ mod tests {
                         "useradd --system --no-create-home --shell /sbin/nologin rampire"
                             .to_owned(),
                     ),
+                    run: None,
                 },
             ],
         }
@@ -398,6 +409,8 @@ mod tests {
                     os_id: Some("http://debian.org/debian/13".to_owned()),
                     suggested: None,
                     rampire_parts: false,
+                    add_restarts: false,
+                    runs_behind: false,
                 },
                 ListedVm {
                     vm_name: "web".to_owned(),
@@ -411,6 +424,8 @@ mod tests {
                     os_id: Some("http://redhat.com/rhel/10.0".to_owned()),
                     suggested: None,
                     rampire_parts: false,
+                    add_restarts: false,
+                    runs_behind: false,
                 },
             ],
         }

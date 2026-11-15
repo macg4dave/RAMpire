@@ -45,11 +45,14 @@ pub fn run(context: &Context, vm: &str) -> Result<Vec<Finding>, String> {
             };
             findings.extend(definition(vm, &config.alias, &saved, live.as_deref())?);
         }
-        Err(error) => findings.push(Finding::problem(
-            "definition",
-            format!("libvirt couldn't give {vm}'s definition: {error}"),
-            format!("if {vm} was deleted, stop managing it with: rampire vm remove {vm}"),
-        )),
+        Err(error) => findings.push(
+            Finding::problem(
+                "definition",
+                format!("libvirt couldn't give {vm}'s definition: {error}"),
+                format!("if {vm} was deleted, stop managing it with: rampire vm remove {vm}"),
+            )
+            .runs(&["vm", "remove", vm]),
+        ),
     }
 
     findings.push(attestation(context, vm)?);
@@ -107,6 +110,7 @@ pub fn guest_build(
             format!("an update is available: the guest runs build {guest}, this host {host}"),
             format!("rampire vm upgrade {vm}"),
         )
+        .runs(&["vm", "upgrade", vm])
     })
 }
 
@@ -125,24 +129,29 @@ fn unmanaged(libvirt: &crate::attest::Libvirt, vm: &str, management: Management)
             "managed",
             format!("an earlier vm add {vm} didn't finish"),
             format!("rampire vm add {vm}"),
-        )],
+        )
+        .runs(&["vm", "add", vm])],
         _ => {
             let mut findings = vec![Finding::problem(
                 "managed",
                 format!("RAMpire doesn't manage {vm}"),
                 format!("rampire vm add {vm}"),
-            )];
+            )
+            .runs(&["vm", "add", vm])];
             match libvirt
                 .virsh(&["dumpxml", "--inactive", vm])
                 .and_then(|xml| crate::inventory::add_preview(&xml))
             {
                 Ok((to_fix, problems)) => {
                     for change in to_fix {
-                        findings.push(Finding::problem(
-                            "definition",
-                            format!("vm add would {change}"),
-                            format!("rampire vm add {vm}"),
-                        ));
+                        findings.push(
+                            Finding::problem(
+                                "definition",
+                                format!("vm add would {change}"),
+                                format!("rampire vm add {vm}"),
+                            )
+                            .runs(&["vm", "add", vm]),
+                        );
                     }
                     for problem in problems {
                         findings.push(Finding::problem("definition", problem.problem, problem.fix));
@@ -182,17 +191,24 @@ pub fn definition(
                     device.block_bytes >> 20
                 ),
             )),
-            found => findings.push(Finding::problem(
-                "virtio-mem device",
-                format!(
-                    "the settings name the device {alias}, but the definition's is {}",
-                    found.unwrap_or("unnamed")
-                ),
-                format!(
-                    "rampire set {vm} alias={}",
-                    found.unwrap_or("ua-virtiomem0")
-                ),
-            )),
+            found => findings.push(
+                Finding::problem(
+                    "virtio-mem device",
+                    format!(
+                        "the settings name the device {alias}, but the definition's is {}",
+                        found.unwrap_or("unnamed")
+                    ),
+                    format!(
+                        "rampire set {vm} alias={}",
+                        found.unwrap_or("ua-virtiomem0")
+                    ),
+                )
+                .runs(&[
+                    "set",
+                    vm,
+                    &format!("alias={}", found.unwrap_or("ua-virtiomem0")),
+                ]),
+            ),
         }
     }
     findings.push(if inspection.control_channel {
@@ -244,6 +260,7 @@ pub fn definition(
                 format!("{vm} isn't running its saved definition"),
                 format!("rampire vm restart {vm}"),
             )
+            .runs(&["vm", "restart", vm])
         } else {
             Finding::ok(
                 "running definition",
@@ -267,13 +284,16 @@ fn attestation(context: &Context, vm: &str) -> Result<Finding, String> {
                 ..
             }) => {
                 let fix = crate::check::fix(vm, &problem);
-                Finding::problem("recorded setup", problem, fix)
+                let words = crate::check::fix_words(vm, &problem);
+                let words: Vec<&str> = words.iter().map(String::as_str).collect();
+                Finding::problem("recorded setup", problem, fix).runs(&words)
             }
             None => Finding::problem(
                 "recorded setup",
                 format!("{vm} isn't in the configuration the controller runs"),
                 "rampire apply",
-            ),
+            )
+            .runs(&["apply"]),
         },
     )
 }
@@ -283,23 +303,29 @@ pub fn controller(vm: &str, status: &ControllerStatusSnapshot) -> Vec<Finding> {
     let recover = format!("rampire recover {vm} \"WHY IT IS SAFE TO RESUME\"");
     let mut findings = Vec::new();
     if status.actuation_latched {
-        findings.push(Finding::problem(
-            "latch",
-            format!(
-                "resizing stopped: {}",
-                status
-                    .latch_reason
-                    .as_deref()
-                    .unwrap_or("no reason recorded")
-            ),
-            format!("once the guest is checked, {recover}"),
-        ));
+        findings.push(
+            Finding::problem(
+                "latch",
+                format!(
+                    "resizing stopped: {}",
+                    status
+                        .latch_reason
+                        .as_deref()
+                        .unwrap_or("no reason recorded")
+                ),
+                format!("once the guest is checked, {recover}"),
+            )
+            .runs(&["recover", vm]),
+        );
     } else if status.control_health == ControlHealth::RecoveryRequired {
-        findings.push(Finding::problem(
-            "latch",
-            "the controller needs a person to recover this VM",
-            format!("once the guest is checked, {recover}"),
-        ));
+        findings.push(
+            Finding::problem(
+                "latch",
+                "the controller needs a person to recover this VM",
+                format!("once the guest is checked, {recover}"),
+            )
+            .runs(&["recover", vm]),
+        );
     } else {
         findings.push(Finding::ok("latch", "none"));
     }
@@ -540,7 +566,9 @@ pub fn summaries(context: &Context) -> Vec<Finding> {
 pub fn summary(vm: &str, findings: Result<Vec<Finding>, String>) -> Finding {
     let check = format!("vm {vm}");
     match findings {
-        Err(error) => Finding::problem(&check, error, format!("rampire doctor {vm}")),
+        Err(error) => {
+            Finding::problem(&check, error, format!("rampire doctor {vm}")).runs(&["doctor", vm])
+        }
         Ok(findings) => {
             let problems: Vec<&Finding> = findings.iter().filter(|finding| !finding.ok).collect();
             match problems.as_slice() {
@@ -549,12 +577,14 @@ pub fn summary(vm: &str, findings: Result<Vec<Finding>, String>) -> Finding {
                     &check,
                     format!("{}: {}", only.check, only.detail),
                     format!("rampire doctor {vm}"),
-                ),
+                )
+                .runs(&["doctor", vm]),
                 [first, rest @ ..] => Finding::problem(
                     &check,
                     format!("{}: {}, and {} more", first.check, first.detail, rest.len()),
                     format!("rampire doctor {vm}"),
-                ),
+                )
+                .runs(&["doctor", vm]),
             }
         }
     }

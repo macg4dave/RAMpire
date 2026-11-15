@@ -31,7 +31,10 @@ const ABSENT_AGENT: &str = "guest agent is not configured";
 pub const AWAITING_GUEST: &str = "waiting for the guest's first publication on the control channel";
 
 pub fn publication_copy_path(vm_name: &str) -> PathBuf {
-    Path::new(PUBLICATION_COPY_DIRECTORY).join(format!("{vm_name}.publication.json"))
+    Path::new(PUBLICATION_COPY_DIRECTORY).join(format!(
+        "{}.publication.json",
+        rampire_core::settings::vm_file_stem(vm_name)
+    ))
 }
 
 pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;

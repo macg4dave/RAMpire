@@ -102,7 +102,10 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &App, vm: Option<&str>) {
             selected,
         ));
         if let Some(fix) = &finding.fix {
-            let runnable = crate::tui::actions::from_fix(fix).is_some();
+            let runnable = finding.run.as_deref().is_some_and(|words| {
+                words.first().is_some_and(|word| word == "doctor")
+                    || crate::tui::actions::from_words(words).is_some()
+            });
             lines.push((
                 Line::from(Span::styled(
                     format!(

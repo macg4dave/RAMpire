@@ -37,11 +37,16 @@ pub fn run(directory: &Path) -> Result<CheckReport, String> {
 /// The command that fixes a VM's problem, as `check`, `apply` and the
 /// doctor give it.
 pub fn fix(vm: &str, problem: &str) -> String {
+    format!("rampire {}", fix_words(vm, problem).join(" "))
+}
+
+/// [`fix`]'s command, as its words after `rampire`.
+pub fn fix_words(vm: &str, problem: &str) -> Vec<String> {
     if problem.contains(NO_DOMAIN) {
-        format!("rampire vm remove {vm}")
+        vec!["vm".to_owned(), "remove".to_owned(), vm.to_owned()]
     } else {
         // `apply` checks the VM again and records it, or says why it can't.
-        "rampire apply".to_owned()
+        vec!["apply".to_owned()]
     }
 }
 

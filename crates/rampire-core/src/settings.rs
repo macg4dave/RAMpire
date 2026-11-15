@@ -378,22 +378,43 @@ pub fn valid_alias(alias: &str) -> bool {
 
 /// Lower-case ASCII identities avoid case-folding, reserved-name and path
 /// traversal collisions on both Linux and Windows; no lossy sanitisation.
-/// VM and review profile names follow it, since each names a file.
+/// A review profile's name is a file name too: it is one of these, or a VM
+/// name's [`vm_file_stem`], which `vm add` gives the profile it writes.
 fn validate_name(kind: &str, name: &str) -> Result<(), String> {
-    check_name(kind, name, b"-_", "'-' or '_'")
+    match vm_name_from_stem(name) {
+        Some(unescaped) if unescaped != name => {
+            check_name(kind, &unescaped, b"-_", "'-' or '_'", true)
+        }
+        _ => check_name(kind, name, b"-_", "'-' or '_'", false),
+    }
 }
 
-/// `name` is 1..=64 lower-case ASCII letters, digits and `extra`, starting
-/// with a letter or digit, so it is never `.`, `..` or hidden.
-fn check_name(kind: &str, name: &str, extra: &[u8], said: &str) -> Result<(), String> {
+/// `name` is 1..=64 ASCII letters (lower case unless `capitals`), digits
+/// and `extra`, starting with a letter or digit, so it is never `.`, `..`
+/// or hidden.
+fn check_name(
+    kind: &str,
+    name: &str,
+    extra: &[u8],
+    said: &str,
+    capitals: bool,
+) -> Result<(), String> {
+    let letters = if capitals {
+        "ASCII letters"
+    } else {
+        "lower-case ASCII letters"
+    };
     if name.is_empty()
         || name.len() > 64
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || extra.contains(&b))
+        || !name.bytes().all(|b| {
+            b.is_ascii_lowercase()
+                || (capitals && b.is_ascii_uppercase())
+                || b.is_ascii_digit()
+                || extra.contains(&b)
+        })
         || !name.as_bytes()[0].is_ascii_alphanumeric()
     {
-        return Err(format!("{kind} name {name:?} must be 1..=64 lower-case ASCII letters, digits, {said}, starting with a letter or digit"));
+        return Err(format!("{kind} name {name:?} must be 1..=64 {letters}, digits, {said}, starting with a letter or digit"));
     }
     Ok(())
 }
@@ -402,10 +423,10 @@ fn check_name(kind: &str, name: &str, extra: &[u8], said: &str) -> Result<(), St
 pub const RESERVED_VM_NAME: &str = "global";
 
 /// A VM's name may also have dots, as libvirt names often do
-/// (`rhel10.2-web`): it starts with a letter or digit, so it is never a
-/// path of its own.
+/// (`rhel10.2-web`), and capital letters (`Web01`): it starts with a letter
+/// or digit, so it is never a path of its own.
 fn validate_vm_name(name: &str) -> Result<(), String> {
-    check_name("VM", name, b"-_.", "'-', '_' or '.'")?;
+    check_name("VM", name, b"-_.", "'-', '_' or '.'", true)?;
     if name == RESERVED_VM_NAME {
         return Err(format!(
             "a VM can't be named {RESERVED_VM_NAME:?}: rampire set uses that name for global.toml"
@@ -414,10 +435,46 @@ fn validate_vm_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// What a VM's name is in the names of its files (its settings, review,
+/// recorded setup, request state and definition backups): each capital
+/// letter is `^` and the letter in lower case, so `Web01` is `^web01`. No
+/// two names share one, even on a file system that ignores case, and a
+/// lower-case name is itself.
+pub fn vm_file_stem(name: &str) -> String {
+    let mut stem = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_uppercase() {
+            stem.push('^');
+            stem.push(c.to_ascii_lowercase());
+        } else {
+            stem.push(c);
+        }
+    }
+    stem
+}
+
+/// The VM name whose [`vm_file_stem`] is `stem`; `None` when no name has
+/// it (a capital letter, or `^` not before a lower-case letter).
+pub fn vm_name_from_stem(stem: &str) -> Option<String> {
+    let mut name = String::with_capacity(stem.len());
+    let mut chars = stem.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '^' => match chars.next() {
+                Some(next) if next.is_ascii_lowercase() => name.push(next.to_ascii_uppercase()),
+                _ => return None,
+            },
+            c if c.is_ascii_uppercase() => return None,
+            c => name.push(c),
+        }
+    }
+    Some(name)
+}
+
 /// The settings file of the VM `name`, inside `vms.d`.
 pub fn vm_filename(name: &str) -> Result<String, String> {
     validate_vm_name(name)?;
-    Ok(format!("{name}.toml"))
+    Ok(format!("{}.toml", vm_file_stem(name)))
 }
 
 /// A diagnostic copy goes to an absolute host file outside the controller's
@@ -461,9 +518,15 @@ pub fn load_vm(path: &Path) -> Result<VmSettings, String> {
         .file_name()
         .and_then(|name| name.to_str())
         .and_then(|name| name.strip_suffix(".toml"))
-        .ok_or_else(|| format!("{}: a VM settings file is named NAME.toml", path.display()))?;
+        .and_then(vm_name_from_stem)
+        .ok_or_else(|| {
+            format!(
+                "{}: a VM settings file is named NAME.toml, each capital letter in NAME written ^ and the letter (^web01.toml for Web01)",
+                path.display()
+            )
+        })?;
     let mut vm: VmSettings = read_toml(path)?;
-    vm.vm_name = name.to_owned();
+    vm.vm_name = name;
     vm.validate()
         .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(vm)
@@ -553,11 +616,29 @@ mod tests {
             .collect();
         assert_eq!(names.len(), filenames.len());
         for name in [
-            "", "Guest", "../guest", ".", "..", ".guest", "guest/x", "guest\\x", "-guest",
-            "guest ", "é",
+            "", "../guest", ".", "..", ".guest", "guest/x", "guest\\x", "-guest", "guest ", "é",
+            "^guest",
         ] {
             assert!(vm_filename(name).is_err(), "{name}");
         }
+        // Capital letters, as libvirt allows, are written ^ and the letter:
+        // no name shares a file with another, even where case is ignored.
+        assert_eq!(vm_filename("Web01").unwrap(), "^web01.toml");
+        assert_eq!(vm_filename("web01").unwrap(), "web01.toml");
+        assert_eq!(vm_filename("Global").unwrap(), "^global.toml");
+        for name in ["Web01", "web01", "WEB.01", "a-B_c"] {
+            assert_eq!(
+                vm_name_from_stem(&vm_file_stem(name)).as_deref(),
+                Some(name)
+            );
+        }
+        for stem in ["^", "^1", "^W", "Web", "a^"] {
+            assert_eq!(vm_name_from_stem(stem), None, "{stem}");
+        }
+        // The review vm add writes for Web01 is named for its file.
+        assert!(validate_name("review profile", "^web01").is_ok());
+        assert!(validate_name("review profile", "Web01").is_err());
+        assert!(validate_name("review profile", "^").is_err());
         // libvirt names often have dots; a review profile's may not.
         assert_eq!(
             vm_filename("rhel10.2-2026-11-1").unwrap(),

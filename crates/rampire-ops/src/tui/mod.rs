@@ -40,6 +40,8 @@ pub mod palette;
 pub mod peers;
 pub mod pool;
 pub mod router;
+#[cfg(test)]
+pub mod screenshot;
 pub mod scroll;
 pub mod spot;
 pub mod tasks;

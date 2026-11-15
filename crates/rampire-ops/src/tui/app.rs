@@ -207,6 +207,8 @@ pub struct App {
     /// For the screen's loop to do, in order.
     pub effects: Vec<Effect>,
     pub quit: bool,
+    /// Quitting once the tasks have stopped.
+    pub quitting: bool,
     /// Tasks are queued but never started: for tests, which mustn't run
     /// the commands.
     pub(crate) hold_tasks: bool,
@@ -254,6 +256,7 @@ impl App {
             history: History::default(),
             effects: Vec::new(),
             quit: false,
+            quitting: false,
             hold_tasks: false,
             setup: None,
         }
@@ -489,6 +492,25 @@ impl App {
         });
     }
 
+    /// Read in the background the disks of the VMs that could be added,
+    /// so a system rampire-guest can't be installed in shows before Add.
+    /// Never in tests, which mustn't run the commands.
+    fn read_disks(&self) {
+        if self.hold_tasks {
+            return;
+        }
+        let vms = self
+            .entries()
+            .into_iter()
+            .filter(|entry| entry.management == Management::NotManaged)
+            .map(|entry| entry.name)
+            .collect();
+        let tx = self.tx.clone();
+        crate::inventory::read_disks(vms, move || {
+            let _ = tx.send(Msg::DiskRead);
+        });
+    }
+
     /// What the background work said. Keys go to [`App::on_key`].
     pub fn on_msg(&mut self, msg: Msg) {
         match msg {
@@ -502,7 +524,11 @@ impl App {
             Msg::Inventory(Err(error)) if self.inventory.ok().is_some() => {
                 self.notify(format!("Couldn't read the VMs: {error}"), Tone::Warn);
             }
-            Msg::Inventory(report) => self.inventory = Loaded::Done(report),
+            Msg::Inventory(report) => {
+                self.inventory = Loaded::Done(report);
+                self.read_disks();
+            }
+            Msg::DiskRead => self.load_inventory(),
             Msg::Doctor(sections) => self.doctor.loaded = Loaded::Done(sections),
             Msg::Log(text) => self.logs.loaded = Loaded::Done(text),
             Msg::Task(id, event) => self.on_task(id, event),
@@ -588,7 +614,7 @@ impl App {
         match event {
             FlowEvent::Line(line) => task.say(line),
             FlowEvent::Shown(text) => task.show(&text),
-            FlowEvent::Ask(question, reply) if task.cancel => {
+            FlowEvent::Ask(question, reply) if task.cancel.is_set() => {
                 task.lines
                     .push((format!("{} (cancelled)", question.text()), Tone::Warn));
                 let _ = reply.send(Answer::Cancelled);
@@ -651,6 +677,10 @@ impl App {
                     }
                 }
                 self.tasks.finish(id, result, Instant::now());
+                if self.quitting && self.tasks.active() == 0 {
+                    self.quit = true;
+                    return;
+                }
                 // What the action changed shows on the next reads.
                 crate::inventory::forget_guest_probes();
                 self.load_inventory();
@@ -671,10 +701,10 @@ impl App {
     }
 
     /// Queue `action` as a task.
-    pub fn start(&mut self, action: Action) {
+    pub fn start(&mut self, action: Action) -> TaskId {
         let title = action.command_line(&self.context);
         let waiting = self.tasks.active() > 0;
-        self.tasks.add(action, title.clone());
+        let id = self.tasks.add(action, title.clone());
         if waiting {
             self.notify(
                 format!("Queued, after the task running now: {title}"),
@@ -682,6 +712,7 @@ impl App {
             );
         }
         self.start_tasks();
+        id
     }
 
     /// Start the next task when none is running.
@@ -690,7 +721,12 @@ impl App {
             return;
         }
         if let Some((id, action)) = self.tasks.start_next(Instant::now()) {
-            action.spawn(&self.context, &self.control, self.tx.clone(), id);
+            let cancel = self
+                .tasks
+                .get(id)
+                .map(|task| task.cancel.clone())
+                .unwrap_or_default();
+            action.spawn(&self.context, &self.control, self.tx.clone(), id, cancel);
         }
     }
 
@@ -720,7 +756,9 @@ impl App {
     /// Do what a menu item says.
     pub fn pick(&mut self, pick: Pick) {
         match pick {
-            Pick::Run(action) => self.start(action),
+            Pick::Run(action) => {
+                self.start(action);
+            }
             Pick::Open(view) => self.open(view),
             Pick::Settings(vms) => self.edit_settings(&vms),
             Pick::Add(vms) => self.add_form(&vms),
@@ -773,6 +811,7 @@ impl App {
         match self.view.clone() {
             View::Main | View::Details(_) => {
                 crate::inventory::forget_guest_probes();
+                crate::inventory::forget_disks();
                 self.load_inventory();
                 self.control
                     .reload
@@ -840,6 +879,32 @@ impl App {
                         Pick::Open(View::Logs(Some(vm.to_owned()))),
                     ),
                 ];
+                if listed.is_some_and(|listed| listed.runs_behind) {
+                    text.push(
+                        "Runs an older definition than its saved one: a restart brings it in"
+                            .to_owned(),
+                    );
+                    choices.push(item(
+                        'b',
+                        "Restart onto its saved definition",
+                        line(&["vm", "restart", vm]),
+                        Pick::Run(Action::Restart(vm.to_owned())),
+                    ));
+                }
+                let latched = listed
+                    .and_then(|listed| listed.status.as_ref())
+                    .is_some_and(|status| status.actuation_latched);
+                if latched {
+                    text.push(
+                        "Resizing it has stopped: check the guest, then recover it".to_owned(),
+                    );
+                    choices.push(item(
+                        'c',
+                        "Recover: clear its latch",
+                        line(&["recover", vm, "REASON"]),
+                        Pick::Run(Action::Recover(vm.to_owned())),
+                    ));
+                }
                 if self.update_available(entry) {
                     text.push(
                         "Update available: its guest service runs another build than this host's"
@@ -873,23 +938,29 @@ impl App {
                 ),
             ],
             Management::NotManaged => {
-                if let Some(listed) = listed {
-                    for problem in &listed.problems {
-                        text.push(format!(
-                            "Problem: {}. To fix it: {}",
-                            problem.problem, problem.fix
-                        ));
-                    }
+                let problems = listed.map_or(&[][..], |listed| listed.problems.as_slice());
+                for problem in problems {
+                    text.push(format!(
+                        "Problem: {}. To fix it: {}",
+                        problem.problem, problem.fix
+                    ));
                 }
-                let mut choices = vec![
-                    item(
+                // Adding would only fail: it is offered once nothing stops it.
+                let mut choices = Vec::new();
+                if problems.is_empty() {
+                    choices.push(item(
                         'a',
                         "Install RAMpire",
                         line(&["vm", "add", vm]),
                         Pick::Add(vec![vm.to_owned()]),
-                    ),
-                    doctor,
-                ];
+                    ));
+                } else {
+                    text.push(
+                        "Install RAMpire is offered once nothing stops it; r reads it again."
+                            .to_owned(),
+                    );
+                }
+                choices.push(doctor);
                 // An earlier RAMpire's parts are still in its definition.
                 if listed.is_some_and(|listed| listed.rampire_parts) {
                     choices.push(remove);
@@ -1110,7 +1181,7 @@ impl App {
             .iter()
             .filter_map(|vm| {
                 let listed = listed(vm)?;
-                (listed.state == "running").then(|| (vm.clone(), restarts(&listed.to_fix)))
+                (listed.state == "running").then(|| (vm.clone(), listed.add_restarts))
             })
             .collect();
         let warning = running_warning(&running);
@@ -1266,13 +1337,6 @@ impl App {
     }
 }
 
-/// Whether adding a running VM shuts it down and starts it again: every
-/// change to its definition but saving the requested size takes effect at
-/// its next start, as `vm add` decides.
-fn restarts(to_fix: &[String]) -> bool {
-    to_fix.iter().any(|change| !change.starts_with("save"))
-}
-
 /// What the add form says about the running VMs among those added, each
 /// with whether its definition changes: shut down and started again, or
 /// only when its guest package can't be installed with a login.
@@ -1342,6 +1406,8 @@ pub(crate) mod tests {
             os_id: Some("http://debian.org/debian/13".to_owned()),
             suggested: None,
             rampire_parts: false,
+            add_restarts: false,
+            runs_behind: false,
         }
     }
 
@@ -1416,11 +1482,6 @@ pub(crate) mod tests {
     #[test]
     fn adding_a_running_vm_warns_it_is_shut_down() {
         assert_eq!(running_warning(&[]), None);
-        let changes = ["add the control channel org.rampire.control.0".to_owned()];
-        assert!(restarts(&changes));
-        assert!(!restarts(&[
-            "save the virtio-mem device's requested size as 0".to_owned()
-        ]));
         assert_eq!(
             running_warning(&[("web".to_owned(), true)]).as_deref(),
             Some("web is running. Adding shuts it down and starts it again, so its new memory setup takes effect.")

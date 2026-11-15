@@ -69,7 +69,7 @@ The settings are plain text files in this folder on the host:
 | File | What it controls |
 |---|---|
 | `global.toml` | Settings for the whole host: the pool size and how much memory the host keeps for itself |
-| `vms.d/<vm name>.toml` | One file per VM the program manages: its **priority**, the smallest and largest it may be, and how much spare memory it keeps. For a VM called `webserver`, the file is `vms.d/webserver.toml` |
+| `vms.d/<vm name>.toml` | One file per VM the program manages: its **priority**, the smallest and largest it may be, and how much spare memory it keeps. For a VM called `webserver`, the file is `vms.d/webserver.toml`; a capital letter is written `^` and the letter, so `Web01` is `vms.d/^web01.toml` |
 | `reviews/` | Review profiles: what was checked about a kind of VM before the program may resize it |
 | `attestations/` | A folder the program manages. It holds a record for each VM showing it was checked as safe to resize. **Don't change anything in it** |
 
@@ -121,7 +121,7 @@ observe_only = false
 
 | Setting | What it means | How to choose |
 |---|---|---|
-| `pool` | The total extra memory all the VMs may share, on top of the small amount each one starts with | The host's memory, minus what the host needs for itself, minus each VM's starting memory |
+| `pool` | The total extra memory all the VMs may share, on top of the small amount each one starts with | The host's memory, minus what the host needs for itself, minus each VM's starting memory. `rampire init` works it out, and `vm add` and `vm remove` offer the new one when it changes |
 | `host_reserve` | Memory the host always keeps free for itself. The program never gives VMs memory that would take the host below this | `"4GB"` suits most hosts. Raise it if the host runs other programs |
 | `observe_only` | Trial mode. `true`: the program decides and logs everything but changes no VM's memory | `false` for normal use |
 

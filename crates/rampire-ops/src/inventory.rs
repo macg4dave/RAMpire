@@ -59,6 +59,7 @@ impl Known {
         let draft = context.draft();
         let unfinished = toml_names(&draft.join(rampire_core::settings::VMS_DIRECTORY))
             .into_iter()
+            .filter_map(|stem| rampire_core::settings::vm_name_from_stem(&stem))
             .filter(|name| !managed.contains(name))
             .collect();
         Ok(Self {
@@ -104,19 +105,30 @@ pub fn domains(libvirt: &crate::attest::Libvirt) -> Result<Vec<String>, String> 
 /// What `vm add` would change in a definition, and the problems
 /// that would still stop RAMpire managing it afterwards.
 pub fn add_preview(xml: &str) -> Result<(Vec<String>, Vec<Problem>), String> {
-    let (to_fix, problems, _, _) = preview(xml)?;
-    Ok((to_fix, problems))
+    let preview = preview(xml)?;
+    Ok((preview.to_fix, preview.problems))
 }
 
-/// What `vm add` would change, what would still stop it, and the sizes it
-/// would suggest.
-type Preview = (Vec<String>, Vec<Problem>, Option<SuggestedSizes>, bool);
+/// What `vm add` would do to a definition.
+struct Preview {
+    /// What it would change.
+    to_fix: Vec<String>,
+    /// What would still stop it.
+    problems: Vec<Problem>,
+    /// The sizes it would suggest.
+    suggested: Option<SuggestedSizes>,
+    /// The definition has RAMpire's device or channel already.
+    parts: bool,
+    /// Its changes take effect at the VM's next start.
+    restarts: bool,
+}
 
 /// [`add_preview`], with the sizes `vm add` would suggest.
 fn preview(xml: &str) -> Result<Preview, String> {
     let inspection = crate::vm::inspect(xml)?;
     let to_fix = inspection.fixable();
     let parts = inspection.control_channel || inspection.device().is_some();
+    let restarts = inspection.fixes_take_a_restart();
     let after = match crate::vm::fix_xml(xml, &inspection)? {
         Some(fixed) => crate::vm::inspect(&fixed)?,
         None => inspection,
@@ -131,7 +143,13 @@ fn preview(xml: &str) -> Result<Preview, String> {
         .into_iter()
         .map(|(problem, fix)| Problem { problem, fix })
         .collect();
-    Ok((to_fix, problems, suggested, parts))
+    Ok(Preview {
+        to_fix,
+        problems,
+        suggested,
+        parts,
+        restarts,
+    })
 }
 
 /// Read a guest's publication from its own file through the guest agent:
@@ -161,7 +179,14 @@ pub fn read_guest_publication(
         // A guest publishes only once a host gives it settings, so before
         // RAMpire manages the VM its unit file says it is there.
         Err(error) if is_missing_file(&error) => {
-            match files.read_file(GUEST_UNIT, MAX_TELEMETRY_BYTES) {
+            // The package's unit, else a local install's.
+            let unit = files
+                .read_file(GUEST_UNIT, MAX_TELEMETRY_BYTES)
+                .or_else(|error| match is_missing_file(&error) {
+                    true => files.read_file(crate::guest::LOCAL_UNIT, MAX_TELEMETRY_BYTES),
+                    false => Err(error),
+                });
+            match unit {
                 Ok(_) => (
                     Published::Installed,
                     None,
@@ -234,7 +259,89 @@ pub fn forget_guest_probes() {
     }
 }
 
-/// The guest service's unit, as the guest package installs it.
+/// What each VM's disk says about the system in it, once read: reading a
+/// disk takes about ten seconds, so each is read once, in the
+/// background, and kept until [`forget_disks`].
+enum DiskRead {
+    Reading,
+    Read(Result<crate::guest::DiskSystem, String>),
+}
+
+static DISKS: std::sync::Mutex<Option<std::collections::HashMap<String, DiskRead>>> =
+    std::sync::Mutex::new(None);
+
+/// Read the disks of `vms` not read yet, one after another on a thread of
+/// their own, calling `read` after each. Nothing is read where libguestfs
+/// isn't installed.
+pub fn read_disks(vms: Vec<String>, read: impl Fn() + Send + 'static) {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*AVAILABLE.get_or_init(crate::guest::offline_available) {
+        return;
+    }
+    let todo: Vec<String> = {
+        let mut disks = DISKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let disks = disks.get_or_insert_with(Default::default);
+        let todo: Vec<String> = vms
+            .into_iter()
+            .filter(|vm| !disks.contains_key(vm))
+            .collect();
+        for vm in &todo {
+            disks.insert(vm.clone(), DiskRead::Reading);
+        }
+        todo
+    };
+    if todo.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for vm in todo {
+            let system = crate::guest::inspect_disk(&vm);
+            if let Ok(mut disks) = DISKS.lock() {
+                disks
+                    .get_or_insert_with(Default::default)
+                    .insert(vm, DiskRead::Read(system));
+            }
+            read();
+        }
+    });
+}
+
+/// Forget the disks read, so they are read again.
+pub fn forget_disks() {
+    if let Ok(mut disks) = DISKS.lock() {
+        disks.take();
+    }
+}
+
+/// What the disk read says would stop `vm add` for `vm`: a system without
+/// dnf or apt, as `vm add` refuses.
+fn disk_problem(vm: &str) -> Option<Problem> {
+    let disks = DISKS.lock().ok()?;
+    match disks.as_ref()?.get(vm)? {
+        DiskRead::Read(Ok(system)) => no_packages(system),
+        _ => None,
+    }
+}
+
+/// The problem with a system rampire-guest can't be installed in.
+fn no_packages(system: &crate::guest::DiskSystem) -> Option<Problem> {
+    (!system.takes_guest()).then(|| Problem {
+        problem: format!(
+            "it runs {}, whose system is read only, so rampire-guest can't be installed in it",
+            system
+                .product
+                .as_deref()
+                .unwrap_or("a system RAMpire doesn't recognise")
+        ),
+        fix: "none: the guest service needs a writable /usr/local and /etc, or dnf or apt"
+            .to_owned(),
+    })
+}
+
+/// The guest service's unit, as the guest package installs it; a local
+/// install's is [`crate::guest::LOCAL_UNIT`].
 const GUEST_UNIT: &str = "/usr/lib/systemd/system/rampire-guest.service";
 
 fn is_missing_file(error: &str) -> bool {
@@ -266,6 +373,8 @@ pub fn list(context: &Context) -> Result<VmListReport, String> {
                 os_id: None,
                 suggested: None,
                 rampire_parts: false,
+                add_restarts: false,
+                runs_behind: false,
             });
         }
     }
@@ -299,21 +408,15 @@ fn listed(
             .and_then(|xml| libosinfo_id(&xml)),
         suggested: None,
         rampire_parts: false,
+        add_restarts: false,
+        runs_behind: false,
     };
     match management {
-        Management::Managed => match read_status(context, name) {
-            Ok(status) => {
-                vm.detail = crate::reports::status_line(&status);
-                vm.guest = match status.guest_input.observed_unix_millis {
-                    Some(observed) => Published::Yes {
-                        age_seconds: status.observed_unix_millis.saturating_sub(observed) / 1000,
-                    },
-                    None => Published::No,
-                };
-                vm.status = Some(status);
-            }
-            Err(reason) => vm.detail = format!("{state}, so its status can't be read ({reason})"),
-        },
+        Management::Managed if state == "running" => {
+            vm.runs_behind = runs_behind(libvirt, name);
+            managed_status(context, &mut vm, &state);
+        }
+        Management::Managed => managed_status(context, &mut vm, &state),
         Management::Unfinished => {
             vm.detail =
                 format!("an earlier vm add didn't finish: rampire vm add {name} finishes it");
@@ -323,17 +426,20 @@ fn listed(
                 .virsh(&["dumpxml", "--inactive", name])
                 .and_then(|xml| preview(&xml))
             {
-                Ok((to_fix, problems, suggested, parts)) => {
-                    vm.to_fix = to_fix;
-                    vm.problems = problems;
-                    vm.suggested = suggested;
-                    vm.rampire_parts = parts;
+                Ok(preview) => {
+                    vm.to_fix = preview.to_fix;
+                    vm.problems = preview.problems;
+                    vm.suggested = preview.suggested;
+                    vm.rampire_parts = preview.parts;
+                    vm.add_restarts =
+                        state == "running" && (preview.restarts || runs_behind(libvirt, name));
                 }
                 Err(error) => vm.problems.push(Problem {
                     problem: format!("its definition couldn't be read: {error}"),
                     fix: "check the domain with virsh dumpxml".to_owned(),
                 }),
             }
+            vm.problems.extend(disk_problem(name));
             if state == "running" {
                 let (published, detail) = probe_guest(libvirt, name);
                 vm.guest = published;
@@ -344,6 +450,42 @@ fn listed(
         }
     }
     vm
+}
+
+/// Whether the running VM `name` runs an older definition than its saved
+/// one, as `doctor` and `vm add` judge it. Unknown is no.
+fn runs_behind(libvirt: &crate::attest::Libvirt, name: &str) -> bool {
+    let read = |args: &[&str]| {
+        libvirt
+            .virsh(args)
+            .ok()
+            .and_then(|xml| crate::vm::inspect(&xml).ok())
+    };
+    match (
+        read(&["dumpxml", "--inactive", name]),
+        read(&["dumpxml", name]),
+    ) {
+        (Some(saved), Some(live)) => saved.runs_behind(&live),
+        _ => false,
+    }
+}
+
+/// A managed VM's status and its line, into `vm`.
+fn managed_status(context: &Context, vm: &mut ListedVm, state: &str) {
+    let name = vm.vm_name.clone();
+    match read_status(context, &name) {
+        Ok(status) => {
+            vm.detail = crate::reports::status_line(&status);
+            vm.guest = match status.guest_input.observed_unix_millis {
+                Some(observed) => Published::Yes {
+                    age_seconds: status.observed_unix_millis.saturating_sub(observed) / 1000,
+                },
+                None => Published::No,
+            };
+            vm.status = Some(status);
+        }
+        Err(reason) => vm.detail = format!("{state}, so its status can't be read ({reason})"),
+    }
 }
 
 /// A managed VM's status, as `rampire status VM` reads it.
@@ -436,6 +578,21 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_system_is_a_problem_before_add() {
+        let system = |product: &str, root: &str| crate::guest::DiskSystem {
+            product: Some(product.to_owned()),
+            package_format: None,
+            root_filesystem: Some(root.to_owned()),
+        };
+        let problem =
+            no_packages(&system("Home Assistant OS 18.4", "squashfs")).expect("a problem");
+        assert!(problem.problem.contains("Home Assistant OS"), "{problem:?}");
+        // No dnf or apt on a writable root takes the static binary.
+        assert_eq!(no_packages(&system("Arch Linux", "ext4")), None);
+        assert_eq!(disk_problem("a-vm-whose-disk-was-never-read"), None);
+    }
+
+    #[test]
     fn vms_are_managed_unfinished_or_not_managed() {
         let known = Known {
             managed: ["web".to_owned()].into(),
@@ -463,6 +620,8 @@ mod tests {
                 os_id: None,
                 suggested: None,
                 rampire_parts: false,
+                add_restarts: false,
+                runs_behind: false,
             }],
         };
         assert_eq!(

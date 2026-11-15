@@ -69,7 +69,7 @@ The exit code is 0 when `passed` is true and 1 otherwise.
 |---|---|
 | `vm` | The VM, for `rampire doctor VM`; absent for the host |
 | `passed` | Every check passed |
-| `findings` | Each `check`, whether it is `ok`, the `detail` found, and the `fix` when it isn't. For the host, a `vm NAME` check per managed VM sums up its own |
+| `findings` | Each `check`, whether it is `ok`, the `detail` found, and the `fix` when it isn't; `run`, when the fix is one `rampire` command to run as it is, its words after `rampire` (left out otherwise). For the host, a `vm NAME` check per managed VM sums up its own |
 
 ### `rampire.vm-list`
 
@@ -83,6 +83,8 @@ The exit code is 0 when `passed` is true and 1 otherwise.
 | `to_fix` | For a VM that isn't managed: what `vm add` would change |
 | `suggested` | For a VM that isn't managed: the `min_ram`, `max_ram` and `free_ram` `vm add` would give it, in bytes |
 | `rampire_parts` | For a VM that isn't managed: `true` when its definition still has RAMpire's virtio-mem device or control channel, which `vm remove` takes out; left out otherwise |
+| `add_restarts` | For a VM that isn't managed and runs: `true` when adding it shuts it down and starts it again; left out otherwise |
+| `runs_behind` | For a managed VM that runs: `true` when it runs an older definition than its saved one, which `vm restart` brings in; left out otherwise |
 | `problems` | For a VM that isn't managed: each `problem` that would still stop `vm add`, and its `fix` |
 | `guest` | Its guest service: `state` is `published` with `age_seconds`, `not_published` (for a VM that isn't managed: not installed), `installed` (not managed yet, so not publishing), or `unknown` (not running, or no guest agent) |
 | `os_id` | The system its definition's libosinfo metadata names, or `null` |

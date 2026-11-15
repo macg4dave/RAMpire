@@ -157,6 +157,10 @@ pub enum Cmd {
     Global,
     /// `rampire apply`: the draft, shown first and asked.
     Apply,
+    /// `rampire diff`: the draft against what runs.
+    Diff,
+    /// `rampire rollback`: the applied copy before, shown first and asked.
+    Rollback,
 }
 
 /// A key with its Ctrl and Alt; Shift is in the character.
@@ -318,6 +322,8 @@ pub static BINDINGS: &[Binding] = &[
     bind(Only(L::List), &[ch('x')], C::Letter('x'), "remove RAMpire from it"),
     bind(Only(L::List), &[ch('u')], C::Letter('u'), "upgrade its guest service, when an update is available"),
     bind(Only(L::List), &[ch('a')], C::Letter('a'), "install RAMpire on it, or finish installing"),
+    bind(Only(L::List), &[ch('b')], C::Letter('b'), "restart it onto its saved definition, when it runs an older one"),
+    bind(Only(L::List), &[ch('c')], C::Letter('c'), "recover it: clear its latch, when resizing it has stopped"),
     hinted(Only(L::List), &[ch('d')], C::Doctor, "the doctor, for the host and every VM", "doctor"),
     bind(Only(L::List), &[ch('l')], C::Logs, "the logs"),
     bind(Only(L::List), &[ch(','), ch('o')], C::Sort(SortBy::Pool, false), "sort: as the pool lists them"),
@@ -346,6 +352,8 @@ pub static BINDINGS: &[Binding] = &[
     bind(Only(L::Details), &[ch('l')], C::Letter('l'), "its logs"),
     bind(Only(L::Details), &[ch('u')], C::Letter('u'), "upgrade its guest service, when an update is available"),
     bind(Only(L::Details), &[ch('x')], C::Letter('x'), "remove RAMpire from it"),
+    bind(Only(L::Details), &[ch('b')], C::Letter('b'), "restart it onto its saved definition, when it runs an older one"),
+    bind(Only(L::Details), &[ch('c')], C::Letter('c'), "recover it: clear its latch, when resizing it has stopped"),
     // The doctor.
     hinted(Only(L::Doctor), &[of(K::Enter)], C::RunFix, "run the chosen fix, when RAMpire can run it", "run the fix"),
     hinted(Only(L::Doctor), &[ch('/')], C::Filter, "show only the findings with what is typed", "filter"),
@@ -359,7 +367,7 @@ pub static BINDINGS: &[Binding] = &[
     bind(Only(L::Logs), &[ch('y')], C::Copy, "copy the chosen line"),
     // The tasks.
     hinted(Only(L::Tasks), &[of(K::Enter)], C::Open, "the chosen task's output, and its question", "open"),
-    hinted(Only(L::Tasks), &[ch('x')], C::Cancel, "cancel the chosen task: a waiting one at once, a running one at its next question", "cancel"),
+    hinted(Only(L::Tasks), &[ch('x')], C::Cancel, "cancel the chosen task: a waiting one at once, a running one at its next question or wait", "cancel"),
     hinted(Only(L::Tasks), &[ch('D')], C::ClearDone, "clear the finished tasks", "clear done"),
     bind(Only(L::Tasks), &[ch('y')], C::Copy, "copy the chosen task's command line"),
     hinted(Only(L::Tasks), &[of(K::Esc)], C::Back, "close the tasks", "close"),
@@ -449,6 +457,8 @@ pub static BINDINGS: &[Binding] = &[
     bind(Views, &[ch('I')], C::Setup, "set up this host: its reserve and pool (rampire init)"),
     bind(Views, &[ch('S')], C::Global, "the global settings: pool, host reserve and the rest (global.toml)"),
     bind(Views, &[ch('A')], C::Apply, "apply the draft: what was saved but not applied, shown first (rampire apply)"),
+    bind(Views, &[ch('D')], C::Diff, "show what the draft changes from what runs (rampire diff)"),
+    bind(Views, &[ch('B')], C::Rollback, "roll back to the applied copy before, shown first and asked (rampire rollback)"),
     bind(Views, &[ch('g'), ch('l')], C::Logs, "go to the logs"),
     bind(Views, &[ch('g'), ch('w')], C::Tasks, "go to the tasks"),
     bind(Views, &[ch('g'), ch('e')], C::Errors, "go to the errors"),

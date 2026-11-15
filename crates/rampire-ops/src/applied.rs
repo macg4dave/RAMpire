@@ -33,7 +33,7 @@ pub fn configuration_files(directory: &Path) -> Result<Vec<String>, String> {
         ));
         files.push(format!(
             "{ATTESTATION_DIRECTORY}/{}.attestation.json",
-            vm.vm_name
+            settings::vm_file_stem(&vm.vm_name)
         ));
         if let Some(review) = &vm.review {
             let file = format!("{REVIEW_DIRECTORY}/{review}.toml");

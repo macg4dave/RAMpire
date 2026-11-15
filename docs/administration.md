@@ -29,7 +29,7 @@ Run one controller per host: separate controllers cannot share a pool.
 | Unit | `/usr/lib/systemd/system/rampire.service` (from the tarball: `/etc/systemd/system/`) |
 | libvirt access rule | `/usr/share/polkit-1/rules.d/50-rampire.rules` (from the tarball: `/etc/polkit-1/rules.d/`) |
 | Service account | `rampire`, made by the package (`/usr/lib/sysusers.d/rampire.conf`) |
-| Guest packages of this build | `/usr/share/rampire/guest/`, which `vm add` installs |
+| Guest packages of this build | `/usr/share/rampire/guest/`, which `vm add` installs: the `.deb`, the RPM, and the static binary with its unit |
 | Configuration (the draft) | `/etc/rampire/` (`global.toml`, `vms.d/<vm_name>.toml`, `reviews/`) |
 | Recorded setups | `/etc/rampire/attestations/<vm_name>.attestation.json`, kept by `apply` |
 | Applied copies | `/var/lib/rampire/applied/<id>/`, with `current` naming the one the controller runs |
@@ -130,7 +130,7 @@ controller keeps running, shows the difference and asks. Only then does
 it keep the copy under `/var/lib/rampire/applied/`, point `current` at it
 and restart the controller. A draft that fails changes nothing.
 `--detailed-exitcode` exits 0 when nothing changed, 2 when something
-changed and 1 on failure. `rollback` returns to the copy before the
+changed, 1 on failure and 3 when the answer was No. `rollback` returns to the copy before the
 current one, through the same checks. Each change is recorded under `/var/lib/rampire/evidence/`; the
 `retention` setting decides how many copies and records are kept, never
 removing the current copy or the one before it.
@@ -275,19 +275,36 @@ has no configuration file.
 
 | Item | Location |
 |---|---|
-| Binary | `/usr/libexec/rampire-guest` |
+| Binary | `/usr/libexec/rampire-guest` from the package; `/usr/local/libexec/rampire-guest` installed without one |
+| Unit | `/usr/lib/systemd/system/rampire-guest.service` from the package; `/etc/systemd/system/rampire-guest.service` installed without one |
 | Durable request state | `/var/lib/rampire-guest/control.json.request-state` |
 | Control files, without the channel | `/var/lib/rampire-guest/control.json` and `control.json.host-status` |
 
-`rampire vm add` installs the `rampire-guest` package (`.deb` or RPM) of
-the host's build. To install it by hand, use the same file from the
-host's `/usr/share/rampire/guest/`, or the release's `rampire-guest`
-package; a guest without RPM or apt can use the static tarball.
+`rampire vm add` installs the guest service of the host's build, the
+way the guest's system takes it, from the host's
+`/usr/share/rampire/guest/`:
+
+| The guest's system | How it is installed |
+|---|---|
+| apt (Debian, Ubuntu) | The `.deb`, with apt |
+| dnf (RHEL, Rocky, AlmaLinux, Fedora) | The RPM, with dnf |
+| OSTree (Fedora CoreOS, Silverblue, Kinoite) | The static binary in `/usr/local/libexec` and its unit in `/etc/systemd/system`, since `/usr` is read only. Only through a login (the guest agent, or SSH with `--guest-login`): nothing may be written into an OSTree deployment from outside, so the disk way is refused |
+| Any other system with systemd 253 or later (Arch Linux, openSUSE) | The static binary and its unit, the same way, through a login or on the disk |
+| A read-only root (Home Assistant OS) | Not at all: there is nowhere to put the service. `vm add` and the TUI say so before anything is changed |
+
+How it is installed is chosen again on each install or upgrade, by the
+same rule, so a guest keeps its way. To install by hand, use the same
+files from the host's `/usr/share/rampire/guest/`, or the release's
+`rampire-guest` package or static tarball (its `INSTALL.md` says how,
+and how to remove it). A static install isn't removed with a package
+manager: `systemctl disable --now rampire-guest`, then remove the unit
+and the binary.
 
 The service needs pressure stall information to give memory back. RHEL's
 kernels build it in but boot with it off (`CONFIG_PSI_DEFAULT_DISABLED`),
 so on such a kernel the package adds `psi=1` to every installed kernel with
-`grubby`. It takes effect when the VM next starts, which `rampire vm add`
+`grubby` (a static install leaves the kernel as it is: Fedora's kernels,
+CoreOS's among them, have it on). It takes effect when the VM next starts, which `rampire vm add`
 does when it changes the VM's definition; a VM added before the package
 was installed needs one restart (`rampire vm restart VM`). An
 explicit `psi=0` is left alone.

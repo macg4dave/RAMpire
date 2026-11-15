@@ -115,7 +115,7 @@ pub const GLOBAL: SettingsFile = SettingsFile {
 
 pub const VM: SettingsFile = SettingsFile {
     path: "vms.d/VM.toml",
-    intro: "One file per VM, named for the libvirt domain with `.toml` added:\nlower-case ASCII letters, digits, `-`, `_` and `.`, starting with a letter\nor digit, at most 64 characters. The\nname isn't repeated inside. Only `vms.d/*.toml` files are read, so editor\nbackups and `.rpmnew` files there are ignored.",
+    intro: "One file per VM, named for the libvirt domain with `.toml` added:\nASCII letters, digits, `-`, `_` and `.`, starting with a letter or digit,\nat most 64 characters. Each capital letter is written `^` and the letter in\nlower case, so `Web01` is `^web01.toml` and no two names share a file. The\nname isn't repeated inside. Only `vms.d/*.toml` files are read, so editor\nbackups and `.rpmnew` files there are ignored.",
     settings: &[
         Setting {
             names: "`alias`",

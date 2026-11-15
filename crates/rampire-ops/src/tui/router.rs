@@ -183,7 +183,20 @@ impl App {
             Cmd::Doctor => self.open(View::Doctor(None)),
             Cmd::Setup => self.setup_form(),
             Cmd::Global => self.global_form(),
-            Cmd::Apply => self.start(super::actions::Action::Apply),
+            Cmd::Apply => {
+                self.start(super::actions::Action::Apply);
+            }
+            Cmd::Rollback => {
+                self.start(super::actions::Action::Rollback);
+            }
+            // Shown at once: it asks nothing, so it wouldn't come forward.
+            Cmd::Diff => {
+                let id = self.start(super::actions::Action::Diff);
+                self.overlay = Some(Overlay::Task {
+                    id,
+                    from_list: false,
+                });
+            }
             Cmd::Logs => self.open(View::Logs(None)),
             Cmd::Back if self.view != View::Main => self.open(View::Main),
             _ => {}
@@ -198,8 +211,8 @@ impl App {
         self.help = Some(Help::new(layer));
     }
 
-    /// `q` asks first while tasks are running or waiting; Ctrl+C a second
-    /// time, or Yes, quits.
+    /// `q` asks first while tasks are running or waiting; Yes stops them
+    /// at a safe point, then quits. Ctrl+C a second time quits at once.
     pub(super) fn ask_quit(&mut self, hard: bool) {
         let asked = matches!(
             &self.dialog,
@@ -208,7 +221,7 @@ impl App {
                 ..
             }))
         );
-        if self.tasks.active() == 0 || (hard && asked) {
+        if self.tasks.active() == 0 || (hard && (asked || self.quitting)) {
             self.quit = true;
             return;
         }
@@ -222,12 +235,36 @@ impl App {
         self.dialog = Some(Dialog::Confirm(Confirm::new(
             "Quit?",
             vec![
-                "These tasks stop when the TUI closes. A VM whose adding stopped part-way is finished when you add it again."
+                "These tasks are stopped first: a waiting one at once, a running one at its next question or wait, so no step is cut off half-way. Then the TUI closes. Ctrl+C again quits at once."
                     .to_owned(),
             ],
             list,
             OnYes::Quit,
         )));
+    }
+
+    /// Stop every task, then quit once none runs: a running one stops at
+    /// its next question or wait.
+    pub(super) fn stop_and_quit(&mut self) {
+        let unfinished: Vec<super::jobs::TaskId> = self
+            .tasks
+            .list
+            .iter()
+            .filter(|task| !task.state.finished())
+            .map(|task| task.id)
+            .collect();
+        for id in unfinished {
+            self.tasks.cancel(id, Instant::now());
+        }
+        if self.tasks.active() == 0 {
+            self.quit = true;
+            return;
+        }
+        self.quitting = true;
+        self.notify(
+            "Stopping: the running task stops at its next question or wait, then the TUI closes. Ctrl+C quits at once.",
+            Tone::Warn,
+        );
     }
 
     fn on_list(&mut self, cmd: Cmd) {
@@ -282,7 +319,7 @@ impl App {
                     self.copy(entry.name);
                 }
             }
-            Cmd::Letter(letter) if !self.list.marks.is_empty() && "asxu".contains(letter) => {
+            Cmd::Letter(letter) if !self.list.marks.is_empty() && "asxubc".contains(letter) => {
                 self.for_marked(letter)
             }
             Cmd::Letter(letter) => {
@@ -363,27 +400,34 @@ impl App {
     fn on_doctor(&mut self, cmd: Cmd) {
         let rows = self.doctor_rows();
         let count = rows.len();
-        let fix = rows
-            .get(self.doctor.scroll.cursor(count))
-            .and_then(|(_, finding)| finding.fix.clone());
+        let chosen = rows.get(self.doctor.scroll.cursor(count));
+        let fix = chosen.and_then(|(_, finding)| finding.fix.clone());
+        let run = chosen.and_then(|(_, finding)| finding.run.clone());
         match cmd {
             Cmd::Move(step) => {
                 self.doctor.scroll.step(step, count);
             }
-            Cmd::RunFix => match fix.as_deref().and_then(super::actions::from_fix) {
-                Some(action) => {
-                    let line = action.command_line(&self.context);
-                    self.dialog = Some(Dialog::Confirm(Confirm::new(
-                        "Run the fix",
-                        vec!["This runs in the background; its own questions come next:".to_owned()],
-                        vec![line],
-                        OnYes::Run(vec![action]),
-                    )));
+            Cmd::RunFix => match run.as_deref() {
+                // One VM's doctor, from the doctor for every VM.
+                Some([doctor, vm]) if doctor == "doctor" => {
+                    self.open(View::Doctor(Some(vm.clone())));
                 }
-                None => self.notify(
-                    "This fix is done by hand: it is shown under the problem.",
-                    Tone::Dim,
-                ),
+                _ => match run.as_deref().and_then(super::actions::from_words) {
+                    Some(action) => {
+                        let line = action.command_line(&self.context);
+                        self.dialog = Some(Dialog::Confirm(Confirm::new(
+                            "Run the fix",
+                            vec!["This runs in the background; its own questions come next:"
+                                .to_owned()],
+                            vec![line],
+                            OnYes::Run(vec![action]),
+                        )));
+                    }
+                    None => self.notify(
+                        "This fix is done by hand: it is shown under the problem.",
+                        Tone::Dim,
+                    ),
+                },
             },
             Cmd::Copy => match fix {
                 Some(fix) => self.copy(fix),
@@ -525,7 +569,7 @@ impl App {
                 Tone::Good,
             ),
             Cancelled::AtNextQuestion => (
-                "It is running: it stops at its next question, changing nothing more.",
+                "It is running: it stops at its next question or wait, changing nothing more.",
                 Tone::Warn,
             ),
             Cancelled::Finished => ("It has already finished.", Tone::Dim),
@@ -688,7 +732,7 @@ impl App {
             return;
         }
         match confirm.on_yes {
-            OnYes::Quit => self.quit = true,
+            OnYes::Quit => self.stop_and_quit(),
             OnYes::Run(actions) => {
                 for action in actions {
                     self.start(action);
@@ -1013,6 +1057,106 @@ mod tests {
     }
 
     #[test]
+    fn a_vms_menu_offers_a_restart_a_recovery_or_no_add_as_its_state_needs() {
+        let (mut app, _rx) = app();
+        let Loaded::Done(Ok(report)) = &mut app.inventory else {
+            panic!("the fixture's list");
+        };
+        let fixture = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/json/status-report.json"),
+        )
+        .unwrap();
+        let mut status: rampire_core::ControllerStatusSnapshot = serde_json::from_value(
+            serde_json::from_str::<serde_json::Value>(&fixture).unwrap()["vms"][0].clone(),
+        )
+        .unwrap();
+        status.actuation_latched = true;
+        for vm in &mut report.vms {
+            match vm.vm_name.as_str() {
+                "vm0" => {
+                    vm.runs_behind = true;
+                    vm.status = Some(status.clone());
+                }
+                "newvm" => vm.problems.push(crate::reports::Problem {
+                    problem: "it runs Home Assistant OS, which has no dnf or apt".to_owned(),
+                    fix: "none yet".to_owned(),
+                }),
+                _ => {}
+            }
+        }
+        let keys = |app: &App, vm: &str| -> String {
+            let entry = app.entry(vm).unwrap();
+            app.menu(&entry).1.iter().map(|choice| choice.key).collect()
+        };
+        assert_eq!(keys(&app, "vm0"), "vsolbcx");
+        // Adding would only fail, so it isn't offered; the problem is said.
+        assert_eq!(keys(&app, "newvm"), "o");
+        let newvm = app.entry("newvm").unwrap();
+        assert!(app
+            .menu(&newvm)
+            .0
+            .iter()
+            .any(|line| line.contains("Home Assistant")));
+        press(&mut app, KeyCode::Char('b'));
+        press(&mut app, KeyCode::Char('c'));
+        let queued: Vec<&Action> = app.tasks.list.iter().map(|task| &task.action).collect();
+        assert_eq!(
+            queued,
+            [
+                &Action::Restart("vm0".to_owned()),
+                &Action::Recover("vm0".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn quitting_stops_the_tasks_at_a_safe_point_first() {
+        let (mut app, _rx) = app();
+        let running = app.tasks.add(Action::Apply, "rampire apply".to_owned());
+        app.tasks.start_next(Instant::now());
+        let waiting = app.tasks.add(Action::Diff, "rampire diff".to_owned());
+        press(&mut app, KeyCode::Char('q'));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(!app.quit, "not while a task runs");
+        assert!(app.tasks.get(running).unwrap().cancel.is_set());
+        assert!(app.tasks.get(waiting).unwrap().state.finished());
+        app.on_msg(Msg::Task(
+            running,
+            FlowEvent::Done(Err("cancelled while waiting for vm0 to boot".to_owned())),
+        ));
+        assert!(app.quit, "once it has stopped");
+    }
+
+    #[test]
+    fn the_diff_shows_at_once_and_rollback_is_asked_by_its_flow() {
+        let (mut app, _rx) = app();
+        press(&mut app, KeyCode::Char('D'));
+        assert_eq!(app.layer(), Layer::Task);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('B'));
+        let queued: Vec<&Action> = app.tasks.list.iter().map(|task| &task.action).collect();
+        assert_eq!(queued, [&Action::Diff, &Action::Rollback]);
+    }
+
+    #[test]
+    fn a_doctor_finding_for_one_vm_opens_its_doctor() {
+        let (mut app, _rx) = app();
+        app.open(View::Doctor(None));
+        app.on_msg(Msg::Doctor(Ok(vec![crate::tui::jobs::DoctorSection {
+            vm: None,
+            findings: vec![crate::doctor::Finding::problem(
+                "vm vm0",
+                "latch: resizing stopped",
+                "rampire doctor vm0",
+            )
+            .runs(&["doctor", "vm0"])],
+        }])));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.view, View::Doctor(Some("vm0".to_owned())));
+    }
+
+    #[test]
     fn a_draft_saved_but_not_applied_can_be_applied_from_anywhere() {
         let (mut app, _rx) = app();
         press(&mut app, KeyCode::Char('A'));
@@ -1143,6 +1287,25 @@ mod tests {
             Answer::Cancelled,
             "x cancels at the question"
         );
+        // Cancelled, it stays so: a question it asks after is refused too.
+        let (reply, answer) = std::sync::mpsc::channel();
+        app.on_msg(Msg::Task(
+            id,
+            FlowEvent::Ask(Question::Confirm("Apply this?".to_owned()), reply),
+        ));
+        assert_eq!(
+            answer
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            Answer::Cancelled
+        );
+        app.on_msg(Msg::Task(
+            id,
+            FlowEvent::Done(Ok(crate::tui::jobs::Ended::NotDone("cancelled".to_owned()))),
+        ));
+        app.overlay = None;
+        let id = app.tasks.add(Action::Apply, "rampire apply".to_owned());
+        app.tasks.start_next(Instant::now());
         let (reply, answer) = std::sync::mpsc::channel();
         app.on_msg(Msg::Task(
             id,

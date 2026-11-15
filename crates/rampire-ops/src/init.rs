@@ -150,31 +150,48 @@ pub fn global_toml(suggestion: &Suggestion, domains: &[DomainMemory]) -> String 
     } else {
         "# The pool every managed VM grows from: the host's memory, less the\n# reserve, less what each of these VMs needs whatever happens:\n"
     });
-    for domain in domains {
-        let (bytes, what) = if domain.resizable && domain.boot_bytes > 0 {
-            (domain.boot_bytes, "boot RAM; it can be managed")
-        } else if domain.running {
-            (
-                domain.memory_bytes,
-                "all of it; it has no virtio-mem device",
-            )
-        } else {
-            (
-                0,
-                "shut off, so not counted; while it runs, growth stops at the reserve",
-            )
-        };
-        text.push_str(&format!(
-            "#   {}: {} MiB ({what})\n",
-            domain.name,
-            bytes >> 20
-        ));
+    for line in set_aside_lines(domains) {
+        text.push_str(&format!("#   {line}\n"));
     }
     match suggestion.pool_bytes {
         Some(pool) => text.push_str(&format!("pool = \"{}GB\"\n", gib(pool))),
         None => text.push_str("# Nothing is left for a pool on this host.\n"),
     }
     text
+}
+
+/// What each domain sets aside from the pool, and why, one line each.
+pub fn set_aside_lines(domains: &[DomainMemory]) -> Vec<String> {
+    domains
+        .iter()
+        .map(|domain| {
+            let (bytes, what) = if domain.resizable && domain.boot_bytes > 0 {
+                (domain.boot_bytes, "boot RAM; it can be managed")
+            } else if domain.running {
+                (
+                    domain.memory_bytes,
+                    "all of it; it has no virtio-mem device",
+                )
+            } else {
+                (
+                    0,
+                    "shut off, so not counted; while it runs, growth stops at the reserve",
+                )
+            };
+            format!("{}: {} MiB ({what})", domain.name, bytes >> 20)
+        })
+        .collect()
+}
+
+/// The pool to offer after VMs were added or removed: the one `init` would
+/// suggest now with `reserve` kept, when it differs from `pool`.
+pub fn new_pool(
+    host_bytes: u64,
+    domains: &[DomainMemory],
+    reserve: u64,
+    pool: Option<u64>,
+) -> Option<u64> {
+    pool_after(host_bytes, set_aside(domains), reserve).filter(|new| Some(*new) != pool)
 }
 
 /// Read a domain's memory from its XML definition, as `vm add` reads it;
@@ -226,6 +243,51 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("pool = \"14GB\""), "{text}");
+    }
+
+    #[test]
+    fn a_new_pool_is_offered_only_when_it_differs() {
+        let web = DomainMemory {
+            name: "web".to_owned(),
+            resizable: true,
+            memory_bytes: 8 * GIB,
+            boot_bytes: 2 * GIB,
+            running: true,
+        };
+        // 32 GiB, 4 kept, 2 for web's boot RAM: 26 left.
+        assert_eq!(
+            new_pool(
+                32 * GIB,
+                std::slice::from_ref(&web),
+                4 * GIB,
+                Some(20 * GIB)
+            ),
+            Some(26 * GIB)
+        );
+        assert_eq!(
+            new_pool(
+                32 * GIB,
+                std::slice::from_ref(&web),
+                4 * GIB,
+                Some(26 * GIB)
+            ),
+            None
+        );
+        assert_eq!(
+            new_pool(32 * GIB, std::slice::from_ref(&web), 4 * GIB, None),
+            Some(26 * GIB)
+        );
+        // Removed, it holds all its memory while it runs.
+        let plain = DomainMemory {
+            resizable: false,
+            ..web
+        };
+        assert_eq!(
+            new_pool(32 * GIB, &[plain], 4 * GIB, Some(26 * GIB)),
+            Some(20 * GIB)
+        );
+        // Nothing left: nothing to offer.
+        assert_eq!(new_pool(4 * GIB, &[], 4 * GIB, Some(GIB)), None);
     }
 
     #[test]

@@ -35,6 +35,10 @@ pub struct Finding {
     pub detail: String,
     /// How to fix it, when it isn't ok.
     pub fix: Option<String>,
+    /// When the fix is one `rampire` command a person may run as it is:
+    /// its words after `rampire`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Vec<String>>,
 }
 
 impl Finding {
@@ -44,6 +48,7 @@ impl Finding {
             ok: true,
             detail: detail.into(),
             fix: None,
+            run: None,
         }
     }
 
@@ -53,7 +58,14 @@ impl Finding {
             ok: false,
             detail: detail.into(),
             fix: Some(fix.into()),
+            run: None,
         }
+    }
+
+    /// The problem's fix is `rampire WORDS...`, which can be run as it is.
+    pub fn runs(mut self, words: &[&str]) -> Self {
+        self.run = Some(words.iter().map(|word| (*word).to_owned()).collect());
+        self
     }
 }
 
@@ -132,6 +144,7 @@ pub fn run(connection: &str, account: &str, applied_root: &Path) -> Vec<Finding>
             "nothing has been applied, so the controller has nothing to run",
             "rampire init on a new host, or rampire apply",
         )
+        .runs(&["init"])
     });
     findings
 }

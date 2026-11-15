@@ -40,6 +40,8 @@ pub enum Msg {
     Task(TaskId, FlowEvent),
     /// Changes other people made.
     Peers(Vec<PeerChange>),
+    /// A VM's disk was read: what it says shows on the next list.
+    DiskRead,
     /// Whether the host is set up: if not, its memory and its VMs'.
     Setup(Result<Option<(u64, Vec<crate::init::DomainMemory>)>, String>),
     /// A key, a paste or a resize.
@@ -128,11 +130,12 @@ pub enum Answer {
 pub struct ChannelUi {
     tx: Sender<Msg>,
     id: TaskId,
+    cancel: crate::ui::Cancel,
 }
 
 impl ChannelUi {
-    pub fn new(tx: Sender<Msg>, id: TaskId) -> Self {
-        Self { tx, id }
+    pub fn new(tx: Sender<Msg>, id: TaskId, cancel: crate::ui::Cancel) -> Self {
+        Self { tx, id, cancel }
     }
 
     fn send(&self, event: FlowEvent) {
@@ -154,6 +157,10 @@ impl ChannelUi {
 }
 
 impl Ui for ChannelUi {
+    fn cancel(&self) -> crate::ui::Cancel {
+        self.cancel.clone()
+    }
+
     fn say(&mut self, line: &str) {
         self.send(FlowEvent::Line(line.to_owned()));
     }
@@ -190,10 +197,11 @@ impl Ui for ChannelUi {
 pub fn spawn_flow(
     tx: Sender<Msg>,
     id: TaskId,
+    cancel: crate::ui::Cancel,
     flow: impl FnOnce(&mut ChannelUi) -> Result<Ended, String> + Send + 'static,
 ) {
     std::thread::spawn(move || {
-        let mut ui = ChannelUi::new(tx, id);
+        let mut ui = ChannelUi::new(tx, id, cancel);
         let result = flow(&mut ui);
         ui.send(FlowEvent::Done(result));
     });
@@ -240,11 +248,10 @@ pub fn doctor(context: &Context) -> Result<Vec<DoctorSection>, String> {
     let known = crate::inventory::Known::read(context)?;
     for vm in &known.managed {
         let mut findings = crate::doctor_vm::run(context, vm).unwrap_or_else(|error| {
-            vec![Finding::problem(
-                "doctor",
-                error,
-                format!("rampire doctor {vm}"),
-            )]
+            vec![
+                Finding::problem("doctor", error, format!("rampire doctor {vm}"))
+                    .runs(&["doctor", vm]),
+            ]
         });
         findings.sort_by_key(|finding| finding.ok);
         sections.push(DoctorSection {
@@ -421,7 +428,7 @@ mod tests {
     #[test]
     fn a_flows_questions_come_back_as_dialogs_and_their_answers_go_on() {
         let (tx, rx) = channel();
-        spawn_flow(tx, 1, |ui| {
+        spawn_flow(tx, 1, crate::ui::Cancel::never(), |ui| {
             ui.say("checking");
             if !ui.confirm("Apply this?")? {
                 return Ok("nothing changed".to_owned().into());
@@ -462,7 +469,7 @@ mod tests {
     #[test]
     fn closing_a_question_stops_the_flow_with_nothing_more_changed() {
         let (tx, rx) = channel();
-        spawn_flow(tx, 1, |ui| {
+        spawn_flow(tx, 1, crate::ui::Cancel::never(), |ui| {
             ui.confirm("Apply this?")
                 .map(|_| "applied".to_owned().into())
         });

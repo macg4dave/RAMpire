@@ -58,6 +58,15 @@ contents:
   - src: "./target/packaging/guest/rampire-guest.rpm"
     dst: /usr/share/rampire/guest/rampire-guest.rpm
     file_info: { mode: 0644 }
+  # The static guest binary and its unit, which `rampire vm add` installs
+  # in /usr/local/libexec and /etc/systemd/system in a guest without dnf
+  # or apt, or one whose /usr is read only (Fedora CoreOS, Silverblue).
+  - src: "./target/packaging/guest/rampire-guest"
+    dst: /usr/share/rampire/guest/rampire-guest
+    file_info: { mode: 0755 }
+  - src: "./target/packaging/guest/rampire-guest.service"
+    dst: /usr/share/rampire/guest/rampire-guest.service
+    file_info: { mode: 0644 }
   # What software centres such as GNOME Software show, and the launcher
   # that opens the TUI from the desktop (as root, through pkexec).
   - src: "./packaging/io.github.macg4dave.rampire.metainfo.xml"

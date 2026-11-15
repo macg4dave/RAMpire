@@ -147,7 +147,7 @@ pub fn plain_text(buffer: &Buffer) -> String {
     text
 }
 
-fn unicode_width(symbol: &str) -> usize {
+pub(crate) fn unicode_width(symbol: &str) -> usize {
     use ratatui::text::Span;
     Span::raw(symbol).width()
 }

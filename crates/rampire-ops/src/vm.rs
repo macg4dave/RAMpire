@@ -108,6 +108,17 @@ impl Inspection {
         problems
     }
 
+    /// Whether a change [`Inspection::fixable`] names takes effect only at
+    /// the VM's next start: every one but saving the device's requested
+    /// size, which a running VM doesn't read. A running VM is then shut
+    /// down and started again by `vm add`.
+    pub fn fixes_take_a_restart(&self) -> bool {
+        !self.control_channel
+            || !self.guest_agent_channel
+            || (self.device().is_none() && self.can_add_device())
+            || self.balloon_active()
+    }
+
     /// Changes `vm add` makes to the definition, in words.
     pub fn fixable(&self) -> Vec<String> {
         let mut changes = Vec::new();
@@ -1049,6 +1060,24 @@ mod tests {
             "{managed}"
         );
         assert_eq!(inspect(&managed).unwrap().memory_bytes, 1024 * MIB);
+    }
+
+    #[test]
+    fn a_restart_is_taken_by_every_change_but_saving_the_requested_size() {
+        let ballooned = "<domain>\n  <memory unit='KiB'>4194304</memory>\n  <vcpu>2</vcpu>\n  <devices>\n    <memballoon model='virtio'/>\n  </devices>\n</domain>\n";
+        for xml in [MANAGED, PLAIN, ballooned] {
+            let inspection = inspect(xml).unwrap();
+            let changes = inspection.fixable();
+            assert_eq!(
+                inspection.fixes_take_a_restart(),
+                changes.iter().any(|change| !change.starts_with("save")),
+                "{changes:?}"
+            );
+        }
+        let fixed = fix_xml(MANAGED, &inspect(MANAGED).unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(!inspect(&fixed).unwrap().fixes_take_a_restart());
     }
 
     #[test]

@@ -7,6 +7,10 @@
 //!
 //! The host package carries the guest packages of its own build in
 //! [`GUEST_PACKAGES`]: the guest always gets the build the host runs.
+//! A system without dnf or apt, or an image-based one whose `/usr` is read
+//! only (Fedora CoreOS, Silverblue), gets the static binary of the same
+//! build in `/usr/local/libexec` and its own unit in `/etc/systemd/system`
+//! instead: [`Kind::Local`].
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -66,6 +70,96 @@ pub struct Guest<'a> {
     route: Route,
 }
 
+/// How the guest service is installed in a system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// The `.deb`, with apt.
+    Deb,
+    /// The RPM, with dnf.
+    Rpm,
+    /// The static binary in [`LOCAL_BINARY`] and the unit in
+    /// [`LOCAL_UNIT`], for a systemd system without dnf or apt, or one
+    /// whose `/usr` is read only (OSTree: Fedora CoreOS, Silverblue).
+    Local,
+}
+
+/// Where a local install puts the static binary: `/usr/local` is writable
+/// on image-based systems (on OSTree it is `/var/usrlocal`).
+pub const LOCAL_BINARY: &str = "/usr/local/libexec/rampire-guest";
+
+/// Where a local install puts its unit, which runs [`LOCAL_BINARY`].
+pub const LOCAL_UNIT: &str = "/etc/systemd/system/rampire-guest.service";
+
+/// The oldest systemd the unit runs on: it opens the control channel with
+/// `OpenFile=`, new in 253.
+const OLDEST_SYSTEMD: u32 = 253;
+
+/// Asks a running guest who the login is, how the guest service installs
+/// in it, and its kernel, one answer a line.
+const PROBE: &str = r#"id -u
+if [ -e /run/ostree-booted ]; then echo local
+elif command -v apt-get >/dev/null 2>&1 && command -v dpkg >/dev/null 2>&1; then echo deb
+elif command -v dnf >/dev/null 2>&1; then echo rpm
+elif [ -d /run/systemd/system ]; then echo local
+else [ -r /etc/os-release ] && . /etc/os-release; echo "none ${PRETTY_NAME:-${ID:-an unknown system}}"
+fi
+uname -r
+"#;
+
+/// Installs or upgrades the guest service in a running guest from the
+/// static binary and unit put in `/tmp`, as the packages' scripts do:
+/// enabled on the first install only, so an administrator's `disable`
+/// stays, and restarted onto the new binary.
+const LOCAL_INSTALL: &str = r#"set -e
+version=$(systemctl --version | sed -n '1s/^systemd \([0-9]*\).*/\1/p')
+if [ "${version:-0}" -lt OLDEST ]; then
+    echo "it has systemd ${version:-of an unknown version}; the guest service needs OLDEST or newer" >&2
+    exit 1
+fi
+first=false
+[ -e UNIT ] || first=true
+install -D -m 0755 /tmp/rampire-guest BINARY
+install -D -m 0644 /tmp/rampire-guest.service UNIT
+rm -f /tmp/rampire-guest /tmp/rampire-guest.service /tmp/rampire-guest-install.sh
+if command -v restorecon >/dev/null 2>&1; then
+    restorecon -F BINARY UNIT 2>/dev/null || true
+fi
+systemctl daemon-reload
+if $first; then systemctl enable rampire-guest.service; fi
+if systemctl is-enabled --quiet rampire-guest.service; then
+    systemctl restart rampire-guest.service
+fi
+"#;
+
+/// [`LOCAL_INSTALL`] with its paths filled in.
+fn local_install_script() -> String {
+    LOCAL_INSTALL
+        .replace("OLDEST", &OLDEST_SYSTEMD.to_string())
+        .replace("BINARY", LOCAL_BINARY)
+        .replace("UNIT", LOCAL_UNIT)
+}
+
+/// What the probe's answer says: the login's user id, how to install, the
+/// kernel; or why the guest service can't be installed.
+fn read_probe(vm: &str, probe: &str) -> Result<(String, Kind, String), String> {
+    let lines: Vec<&str> = probe.lines().map(str::trim).collect();
+    let [uid, kind, kernel] = lines[..] else {
+        return Err(format!("{vm} gave an unexpected answer: {probe}"));
+    };
+    let kind = match kind {
+        "deb" => Kind::Deb,
+        "rpm" => Kind::Rpm,
+        "local" => Kind::Local,
+        other => {
+            return Err(format!(
+                "{vm} runs {}, which has no dnf, apt or systemd, so rampire-guest can't be installed in it",
+                other.trim_start_matches("none ")
+            ))
+        }
+    };
+    Ok((uid.to_owned(), kind, kernel.to_owned()))
+}
+
 /// What installing the guest package found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
@@ -81,12 +175,14 @@ pub struct Installed {
 impl<'a> Guest<'a> {
     /// The way into `vm`: `login` (`USER@HOST`) when given; else its guest
     /// agent when it runs commands; else root at the first address libvirt
-    /// knows for it. A VM just started gets up to `wait` to come up.
+    /// knows for it. A VM just started gets up to `wait` to come up, or
+    /// until `cancel` is set.
     pub fn reach(
         libvirt: &'a Libvirt,
         vm: &str,
         login: Option<&str>,
         wait: Duration,
+        cancel: &crate::ui::Cancel,
     ) -> Result<Self, String> {
         let guest = |route| Self {
             libvirt,
@@ -95,17 +191,18 @@ impl<'a> Guest<'a> {
         };
         if let Some(login) = login {
             let guest = guest(Route::Ssh(login.to_owned()));
-            guest.until_up(wait)?;
+            guest.until_up(wait, cancel)?;
             return Ok(guest);
         }
         let deadline = Instant::now() + wait;
         loop {
+            cancel.check(&format!("{vm} to boot"))?;
             if agent_runs_commands(libvirt, vm) {
                 return Ok(guest(Route::Agent));
             }
             if let Some(address) = address(libvirt, vm) {
                 let guest = guest(Route::Ssh(format!("root@{address}")));
-                guest.until_up(deadline.saturating_duration_since(Instant::now()))?;
+                guest.until_up(deadline.saturating_duration_since(Instant::now()), cancel)?;
                 return Ok(guest);
             }
             if Instant::now() >= deadline {
@@ -114,7 +211,7 @@ impl<'a> Guest<'a> {
                      give its SSH login with --guest-login USER@HOST"
                 ));
             }
-            std::thread::sleep(Duration::from_secs(3));
+            cancel.sleep(Duration::from_secs(3));
         }
     }
 
@@ -127,16 +224,17 @@ impl<'a> Guest<'a> {
     }
 
     /// Wait for SSH to let the host in, as a VM that was just started boots.
-    fn until_up(&self, wait: Duration) -> Result<(), String> {
+    fn until_up(&self, wait: Duration, cancel: &crate::ui::Cancel) -> Result<(), String> {
         let deadline = Instant::now() + wait;
         loop {
+            cancel.check(&format!("{} to let RAMpire log in", self.vm))?;
             match self.run("true") {
                 Ok(_) => return Ok(()),
                 // A VM still booting refuses or doesn't answer yet; a guest
                 // that turns the key down won't change its mind, and asking
                 // again only trips its rate limits.
                 Err(error) if Instant::now() < deadline && !error.contains("Permission denied") => {
-                    std::thread::sleep(Duration::from_secs(5))
+                    cancel.sleep(Duration::from_secs(5));
                 }
                 Err(error) => {
                     let Route::Ssh(login) = &self.route else {
@@ -176,50 +274,55 @@ impl<'a> Guest<'a> {
     /// Install or upgrade the guest package of this build, and read what
     /// `vm add` needs from the guest.
     pub fn install(&self) -> Result<Installed, String> {
-        // Who it runs as, which package it takes, and its kernel.
-        let probe = self.run(
-            "id -u; . /etc/os-release; case \" $ID $ID_LIKE \" in \
-             *' debian '*) echo deb;; *' rhel '*|*' fedora '*|*' centos '*) echo rpm;; \
-             *) echo \"none $ID\";; esac; uname -r",
-        )?;
-        let lines: Vec<&str> = probe.lines().map(str::trim).collect();
-        let [uid, kind, kernel] = lines[..] else {
-            return Err(format!("{} gave an unexpected answer: {probe}", self.vm));
-        };
-        if kind != "deb" && kind != "rpm" {
-            return Err(format!(
-                "{} runs {}, which rampire-guest has no package for (Debian or RHEL family)",
-                self.vm,
-                kind.trim_start_matches("none ")
-            ));
-        }
-        let package = package_path(kind);
-        if !package.exists() {
-            return Err(format!(
-                "{} is missing: this host's RAMpire was installed without the guest packages",
-                package.display()
-            ));
-        }
-        let remote = format!("/tmp/rampire-guest.{kind}");
-        self.put(&package, &remote)?;
+        // Who it runs as, how the guest service installs, and its kernel.
+        let (uid, kind, kernel) = read_probe(&self.vm, &self.run(PROBE)?)?;
         let sudo = if uid == "0" { "" } else { "sudo -n " };
-        let install = match kind {
-            "deb" => format!(
-                "{sudo}env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --allow-downgrades {remote}"
-            ),
-            _ => format!("{sudo}dnf install -y -q {remote}"),
+        let binary = match kind {
+            Kind::Deb | Kind::Rpm => {
+                let extension = if kind == Kind::Deb { "deb" } else { "rpm" };
+                let package = present(package_path(extension))?;
+                let remote = format!("/tmp/rampire-guest.{extension}");
+                self.put(&package, &remote)?;
+                let install = match kind {
+                    Kind::Deb => format!(
+                        "{sudo}env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --allow-downgrades {remote}"
+                    ),
+                    _ => format!("{sudo}dnf install -y -q {remote}"),
+                };
+                self.run(&format!("set -e; {install} >/dev/null; rm -f {remote}"))
+                    .map_err(|error| format!("install rampire-guest in {}: {error}", self.vm))?;
+                "/usr/libexec/rampire-guest"
+            }
+            Kind::Local => {
+                self.put(&present(static_binary_path())?, "/tmp/rampire-guest")?;
+                self.put(&present(local_unit_path())?, "/tmp/rampire-guest.service")?;
+                let script = crate::context::TempDir::new(&self.vm)?;
+                let path = script.path().join("install.sh");
+                std::fs::write(&path, local_install_script()).map_err(|error| error.to_string())?;
+                self.put(&path, "/tmp/rampire-guest-install.sh")?;
+                self.run(&format!(
+                    "{sudo}sh /tmp/rampire-guest-install.sh >/dev/null"
+                ))
+                .map_err(|error| {
+                    format!(
+                        "install rampire-guest in {} as {LOCAL_BINARY}: {error}",
+                        self.vm
+                    )
+                })?;
+                LOCAL_BINARY
+            }
         };
-        self.run(&format!("set -e; {install} >/dev/null; rm -f {remote}"))
-            .map_err(|error| format!("install rampire-guest in {}: {error}", self.vm))?;
-        let after = self.run(
-            "/usr/libexec/rampire-guest version; \
-             [ -e /proc/pressure/memory ] && echo psi || echo restart",
-        )?;
+        let after = self.run(&format!(
+            "{binary} version; [ -e /proc/pressure/memory ] && echo psi || echo restart"
+        ))?;
         let mut after = after.lines().map(str::trim);
+        let build = after.next().unwrap_or_default().to_owned();
         Ok(Installed {
-            kernel: kernel.to_owned(),
-            build: after.next().unwrap_or_default().to_owned(),
-            restart_needed: after.next() == Some("restart"),
+            kernel,
+            build,
+            // The packages turn pressure stall information on with grubby,
+            // for the next start; a local install leaves the kernel as it is.
+            restart_needed: kind != Kind::Local && after.next() == Some("restart"),
         })
     }
 
@@ -331,8 +434,10 @@ const OFFLINE_FOLDER: &str = "/var/lib/rampire-guest-install";
 /// virt-customize keeps them, numbered, under the script's own name.
 const OFFLINE_SCRIPTS: &str = "/usr/lib/virt-sysprep/scripts/*rampire-guest-install*";
 
-/// Run at the guest's next boot: install the package its system takes,
-/// then boot again when the package turned on what needs a fresh start.
+/// Run at the guest's next boot: install the guest service the way a
+/// login would ([`PROBE`]): the package its system takes, else the static
+/// binary and its own unit ([`Kind::Local`]); then boot again when the
+/// package turned on what needs a fresh start.
 ///
 /// rpm runs without its plugins: from the first-boot service, its SELinux
 /// plugin can't move the package's scripts into their own domain, so every
@@ -344,21 +449,61 @@ const FIRST_BOOT: &str = r#"#!/bin/sh
 # Written by rampire: installs the guest service, then goes.
 set -e
 dir=/var/lib/rampire-guest-install
-if command -v dpkg >/dev/null 2>&1; then
+standalone=false
+if command -v apt-get >/dev/null 2>&1 && command -v dpkg >/dev/null 2>&1; then
     dpkg -i "$dir/rampire-guest.deb"
-else
+elif command -v dnf >/dev/null 2>&1; then
     rpm -U --replacepkgs --noplugins "$dir/rampire-guest.rpm"
     if command -v restorecon >/dev/null 2>&1; then
         rpm -ql rampire-guest | xargs -r restorecon -F 2>/dev/null || true
     fi
+else
+    standalone=true
+    first=false
+    [ -e UNIT ] || first=true
+    install -D -m 0755 "$dir/rampire-guest" BINARY
+    install -D -m 0644 "$dir/rampire-guest.service" UNIT
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -F BINARY UNIT 2>/dev/null || true
+    fi
+    systemctl daemon-reload
+    if $first; then systemctl enable rampire-guest.service; fi
 fi
 rm -rf "$dir"
 systemctl daemon-reload
 if systemctl is-enabled --quiet rampire-guest.service; then
     systemctl restart rampire-guest.service
 fi
-[ -e /proc/pressure/memory ] || systemctl reboot
+$standalone || [ -e /proc/pressure/memory ] || systemctl reboot
 "#;
+
+/// [`FIRST_BOOT`] with its paths filled in.
+fn first_boot_script() -> String {
+    FIRST_BOOT
+        .replace("BINARY", LOCAL_BINARY)
+        .replace("UNIT", LOCAL_UNIT)
+}
+
+/// Whether `vm`'s disk holds an OSTree system (Fedora CoreOS, Silverblue),
+/// read as [`inspect_disk`] reads it. Its `/usr` is a deployment's, made of
+/// files the OSTree repository shares, so nothing may be written there
+/// from outside: the first-boot install can't be put on its disk.
+fn is_ostree(vm: &str) -> Result<bool, String> {
+    let output = Command::new("virt-ls")
+        .env("LIBGUESTFS_BACKEND", "direct")
+        .args(["-d", vm, "/"])
+        .output()
+        .map_err(|error| format!("run virt-ls: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "virt-ls: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|entry| entry.trim() == "ostree"))
+}
 
 /// Install the guest package of this build in a VM without logging in:
 /// with it shut down (it is, when `running` is false; else it is shut down
@@ -366,30 +511,56 @@ fi
 /// next boot. The VM is left shut off for the caller to start. Returns
 /// its newest installed kernel.
 /// What a VM's disk says about the system on it, read with
-/// virt-inspector: its name, and the package format its package manager
-/// installs, `rpm` or `deb`, when it has one.
+/// virt-inspector: its name, the package format its package manager
+/// installs (`rpm`, `deb`) when it has one, and the type of its root file
+/// system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskSystem {
     pub product: Option<String>,
     pub package_format: Option<String>,
+    pub root_filesystem: Option<String>,
 }
 
+/// Systems whose root can't be written at all, so the guest service has
+/// nowhere to go, known by name when the file system doesn't say.
+const READ_ONLY_SYSTEMS: &[&str] = &["Home Assistant OS"];
+
 impl DiskSystem {
-    /// rampire-guest installs as an RPM or a .deb, however it gets there.
-    pub fn takes_packages(&self) -> bool {
-        matches!(self.package_format.as_deref(), Some("rpm" | "deb"))
+    /// Whether the guest service can be installed in it: as a package, or
+    /// as the static binary with its own unit ([`Kind::Local`]). A root
+    /// file system that is read only by its kind (squashfs, erofs), as Home
+    /// Assistant OS has, takes neither.
+    pub fn takes_guest(&self) -> bool {
+        let read_only_root = matches!(
+            self.root_filesystem.as_deref(),
+            Some("squashfs" | "erofs" | "iso9660")
+        );
+        let read_only_system = self.product.as_deref().is_some_and(|product| {
+            READ_ONLY_SYSTEMS
+                .iter()
+                .any(|known| product.starts_with(known))
+        });
+        !read_only_root && !read_only_system
     }
 
     fn from_inspector(xml: &str) -> Self {
-        let first = |tag: &str| {
+        let first = |within: &str, tag: &str| {
             let open = format!("<{tag}>");
-            let start = xml.find(&open)? + open.len();
-            let end = xml[start..].find(&format!("</{tag}>"))? + start;
-            Some(xml[start..end].trim().to_owned()).filter(|text| !text.is_empty())
+            let start = within.find(&open)? + open.len();
+            let end = within[start..].find(&format!("</{tag}>"))? + start;
+            Some(within[start..end].trim().to_owned()).filter(|text| !text.is_empty())
         };
+        // The root's entry among the file systems: <filesystem dev="ROOT">.
+        let root_filesystem = first(xml, "root").and_then(|root| {
+            let entry = format!("<filesystem dev=\"{root}\">");
+            let start = xml.find(&entry)? + entry.len();
+            let end = xml[start..].find("</filesystem>")? + start;
+            first(&xml[start..end], "type")
+        });
         Self {
-            product: first("product_name"),
-            package_format: first("package_format").filter(|format| format != "unknown"),
+            product: first(xml, "product_name"),
+            package_format: first(xml, "package_format").filter(|format| format != "unknown"),
+            root_filesystem,
         }
     }
 }
@@ -422,13 +593,19 @@ pub fn install_offline(libvirt: &Libvirt, vm: &str, running: bool) -> Result<Str
                 .to_owned(),
         );
     }
-    for kind in ["deb", "rpm"] {
-        if !package_path(kind).exists() {
-            return Err(format!(
-                "{} is missing: this host's RAMpire was installed without the guest packages",
-                package_path(kind).display()
-            ));
-        }
+    for path in [
+        package_path("deb"),
+        package_path("rpm"),
+        static_binary_path(),
+        local_unit_path(),
+    ] {
+        present(path)?;
+    }
+    // Read before it is shut down, so an OSTree VM is left running.
+    if is_ostree(vm)? {
+        return Err(format!(
+            "{vm} runs an OSTree system (Fedora CoreOS, Silverblue): rampire-guest can't be put on its disk from outside, only installed through a login. Start {vm} with its guest agent running, or give an SSH login with --guest-login USER@HOST"
+        ));
     }
     if running {
         crate::attest::shut_down(vm, libvirt, Duration::from_secs(300))?;
@@ -459,12 +636,13 @@ fn put_on_disk(vm: &str) -> Result<String, String> {
     .ok_or_else(|| format!("{vm} has no kernel in /lib/modules"))?;
     let temporary = crate::context::TempDir::new(vm)?;
     let script = temporary.path().join("rampire-guest-install.sh");
-    std::fs::write(&script, FIRST_BOOT).map_err(|error| error.to_string())?;
-    let upload = |kind: &str| {
-        format!(
-            "{}:{OFFLINE_FOLDER}/rampire-guest.{kind}",
-            package_path(kind).display()
-        )
+    std::fs::write(&script, first_boot_script()).map_err(|error| error.to_string())?;
+    let upload = |path: PathBuf| {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("{}:{OFFLINE_FOLDER}/{name}", path.display())
     };
     let script = script
         .to_str()
@@ -486,9 +664,13 @@ fn put_on_disk(vm: &str) -> Result<String, String> {
             "--mkdir",
             OFFLINE_FOLDER,
             "--upload",
-            &upload("deb"),
+            &upload(package_path("deb")),
             "--upload",
-            &upload("rpm"),
+            &upload(package_path("rpm")),
+            "--upload",
+            &upload(static_binary_path()),
+            "--upload",
+            &upload(local_unit_path()),
             "--firstboot",
             &script,
             "--selinux-relabel",
@@ -531,6 +713,28 @@ fn newest<'a>(releases: impl Iterator<Item = &'a str>) -> Option<String> {
 /// The guest package of this build for a `deb` or `rpm` guest.
 pub fn package_path(kind: &str) -> PathBuf {
     Path::new(GUEST_PACKAGES).join(format!("rampire-guest.{kind}"))
+}
+
+/// The static guest binary of this build, for [`Kind::Local`].
+pub fn static_binary_path() -> PathBuf {
+    Path::new(GUEST_PACKAGES).join("rampire-guest")
+}
+
+/// The unit a local install puts in [`LOCAL_UNIT`]; it runs [`LOCAL_BINARY`].
+pub fn local_unit_path() -> PathBuf {
+    Path::new(GUEST_PACKAGES).join("rampire-guest.service")
+}
+
+/// `path`, when the host package put it there.
+fn present(path: PathBuf) -> Result<PathBuf, String> {
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "{} is missing: this host's RAMpire was installed without the guest packages",
+            path.display()
+        ))
+    }
 }
 
 /// Whether the VM's guest agent answers and runs commands and files.
@@ -701,18 +905,64 @@ mod tests {
     }
 
     #[test]
-    fn a_disk_without_rpm_or_deb_takes_no_packages() {
+    fn a_read_only_root_takes_no_guest_service() {
         let haos = "<operatingsystems><operatingsystem><root>/dev/sda8</root>\
             <name>linux</name><product_name>Home Assistant OS 18.4</product_name>\
-            <package_format>unknown</package_format></operatingsystem></operatingsystems>";
+            <package_format>unknown</package_format>\
+            <filesystems><filesystem dev=\"/dev/sda1\"><type>vfat</type></filesystem>\
+            <filesystem dev=\"/dev/sda8\"><type>squashfs</type></filesystem></filesystems>\
+            </operatingsystem></operatingsystems>";
         let system = DiskSystem::from_inspector(haos);
         assert_eq!(system.product.as_deref(), Some("Home Assistant OS 18.4"));
         assert_eq!(system.package_format, None);
-        assert!(!system.takes_packages());
-        let debian = "<operatingsystem><distro>debian</distro>\
+        assert_eq!(system.root_filesystem.as_deref(), Some("squashfs"));
+        assert!(!system.takes_guest());
+        // Known by name when the file systems aren't listed.
+        let named = DiskSystem {
+            root_filesystem: None,
+            ..system.clone()
+        };
+        assert!(!named.takes_guest());
+        // Without dnf or apt, on a writable root: the static binary.
+        let arch = DiskSystem {
+            product: Some("Arch Linux".to_owned()),
+            package_format: Some("pacman".to_owned()),
+            root_filesystem: Some("ext4".to_owned()),
+        };
+        assert!(arch.takes_guest());
+        let debian = "<operatingsystem><root>/dev/vda1</root><distro>debian</distro>\
             <product_name>Debian GNU/Linux 13</product_name>\
-            <package_format>deb</package_format><package_management>apt</package_management>";
-        assert!(DiskSystem::from_inspector(debian).takes_packages());
+            <package_format>deb</package_format><package_management>apt</package_management>\
+            <filesystems><filesystem dev=\"/dev/vda1\"><type>ext4</type></filesystem></filesystems>";
+        let debian = DiskSystem::from_inspector(debian);
+        assert_eq!(debian.root_filesystem.as_deref(), Some("ext4"));
+        assert!(debian.takes_guest());
         assert_eq!(DiskSystem::from_inspector("").product, None);
+    }
+
+    #[test]
+    fn the_probe_picks_how_the_guest_service_installs() {
+        assert_eq!(
+            read_probe("web", "0\nlocal\n6.12.0\n").unwrap(),
+            ("0".to_owned(), Kind::Local, "6.12.0".to_owned())
+        );
+        assert_eq!(read_probe("web", "1000\ndeb\n6.1\n").unwrap().1, Kind::Deb);
+        assert_eq!(read_probe("web", "0\nrpm\n6.12\n").unwrap().1, Kind::Rpm);
+        let error = read_probe("web", "0\nnone Alpine Linux v3.22\n6.12\n").unwrap_err();
+        assert!(error.contains("runs Alpine Linux v3.22"), "{error}");
+        assert!(read_probe("web", "0\n").is_err());
+    }
+
+    #[test]
+    fn the_install_scripts_name_the_local_paths() {
+        for script in [local_install_script(), first_boot_script()] {
+            assert!(script.contains(LOCAL_BINARY), "{script}");
+            assert!(script.contains(LOCAL_UNIT), "{script}");
+            assert!(
+                !script.contains("BINARY") && !script.contains(" UNIT"),
+                "{script}"
+            );
+        }
+        assert!(local_install_script().contains("-lt 253"));
     }
 }

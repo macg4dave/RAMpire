@@ -24,7 +24,7 @@
 # dist/) in a clean container of each supported family: Debian 13
 # (.deb), Rocky Linux 10 and Fedora 45 (RPM). It checks that each installs
 # with its dependencies, reports its build, and leaves the service account
-# and both units. RAMPIRE_INSTALL_IMAGES replaces the list of images.
+# and both units, and that the static guest the host package carries runs. RAMPIRE_INSTALL_IMAGES replaces the list of images.
 #
 # Where it runs:
 #   --container  in the build container, tools/container/Containerfile, with
@@ -105,6 +105,11 @@ if [[ ${1:-} == install-check ]]; then
       fi
       echo "host:  $(rampire --version)"
       echo "guest: $(/usr/libexec/rampire-guest version)"
+      # The static guest the host package carries for guests without dnf
+      # or apt, with the unit that runs it from /usr/local.
+      echo "static guest: $(/usr/share/rampire/guest/rampire-guest version)"
+      grep -q "^ExecStart=/usr/local/libexec/rampire-guest " /usr/share/rampire/guest/rampire-guest.service \
+        || { echo "no unit for the static guest" >&2; exit 1; }
       getent passwd rampire >/dev/null || { echo "no rampire account" >&2; exit 1; }
       for unit in rampire.service rampire-guest.service; do
         test -f "/usr/lib/systemd/system/$unit" || { echo "no $unit" >&2; exit 1; }

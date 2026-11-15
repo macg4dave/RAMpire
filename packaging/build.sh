@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build RAMpire's release artefacts from binaries already built:
 #   target/release/{rampire,rampire-guest}                      for packages
-#   target/x86_64-unknown-linux-musl/release/{rampire,rampire-guest}
-#                                                               for tarballs
+#   target/x86_64-unknown-linux-musl/release/rampire-guest      for the host
+#                                                               package
+#   target/x86_64-unknown-linux-musl/release/rampire            for tarballs
 #
 #   packaging/build.sh VERSION OUTPUT_DIRECTORY
 #
@@ -28,7 +29,6 @@ mkdir -p target/packaging
 sed 's#/usr/local/libexec/rampire-guest#/usr/libexec/rampire-guest#' \
   guest-linux/systemd/rampire-guest.service > target/packaging/rampire-guest.service
 grep -q '^ExecStart=/usr/libexec/rampire-guest ' target/packaging/rampire-guest.service
-cp target/packaging/rampire-guest.service "$stage/rampire-guest.service"
 # What software centres show and the desktop launcher, checked before they
 # are packaged: a broken file shows nothing in GNOME Software.
 desktop=packaging/io.github.macg4dave.rampire
@@ -53,13 +53,19 @@ for packager in rpm deb; do
   cp "$built" "target/packaging/guest/rampire-guest.$packager"
   rm "$built"
 done
+# And the static guest binary with a unit that runs it from /usr/local,
+# which `vm add` installs in a guest without dnf or apt.
+musl=$repo/target/x86_64-unknown-linux-musl/release
+[[ -x $musl/rampire-guest ]] || { echo "$musl/rampire-guest is missing: cargo xtask package builds it" >&2; exit 1; }
+install -m 0755 "$musl/rampire-guest" target/packaging/guest/rampire-guest
+grep -q '^ExecStart=/usr/local/libexec/rampire-guest ' guest-linux/systemd/rampire-guest.service
+install -m 0644 guest-linux/systemd/rampire-guest.service target/packaging/guest/rampire-guest.service
 for packager in rpm deb; do
   nfpm package --config packaging/rampire.nfpm.yaml \
     --packager "$packager" --target "$output/"
 done
 
-musl=$repo/target/x86_64-unknown-linux-musl/release
-if [[ -x $musl/rampire && -x $musl/rampire-guest ]]; then
+if [[ -x $musl/rampire ]]; then
   host=$stage/rampire-$version-x86_64-linux
   mkdir -p "$host/systemd" "$host/examples/vms.d" "$host/examples/reviews"
   install -m 0755 "$musl/rampire" "$host/rampire"
@@ -74,7 +80,8 @@ if [[ -x $musl/rampire && -x $musl/rampire-guest ]]; then
   guest=$stage/rampire-guest-$version-x86_64-linux
   mkdir -p "$guest"
   install -m 0755 "$musl/rampire-guest" "$guest/rampire-guest"
-  install -m 0644 "$stage/rampire-guest.service" "$repo/packaging/INSTALL.md" "$repo/LICENSE" "$guest/"
+  # The unit that runs it from /usr/local, as vm add installs it.
+  install -m 0644 target/packaging/guest/rampire-guest.service "$repo/packaging/INSTALL.md" "$repo/LICENSE" "$guest/"
   tar -C "$stage" -czf "$output/rampire-guest-$version-x86_64-linux.tar.gz" "${guest##*/}"
 fi
 

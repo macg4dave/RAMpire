@@ -93,9 +93,10 @@ pub const ATTESTATION_DIRECTORY: &str = "attestations";
 /// A VM's compatibility attestation, in the configuration directory's
 /// attestation folder.
 pub fn attestation_path(config_directory: &Path, vm_name: &str) -> PathBuf {
-    config_directory
-        .join(ATTESTATION_DIRECTORY)
-        .join(format!("{vm_name}.attestation.json"))
+    config_directory.join(ATTESTATION_DIRECTORY).join(format!(
+        "{}.attestation.json",
+        settings::vm_file_stem(vm_name)
+    ))
 }
 
 impl HostSettings {
@@ -210,7 +211,7 @@ impl HostConfig {
             priority: vm.priority,
             policy_state_path: paths
                 .state
-                .join(format!("{name}-requests.json"))
+                .join(format!("{}-requests.json", settings::vm_file_stem(name)))
                 .display()
                 .to_string(),
             compatibility_attestation_path: attestation_path(&paths.config, name)

@@ -138,18 +138,19 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     // `apply` checks every VM: one that fails would stop it at the end.
     other_vms_pass(context, &libvirt, ui, name)?;
 
-    // rampire-guest installs with dpkg or rpm, through a login or on the
-    // disk: a system without them (Home Assistant OS, an appliance with a
-    // read-only root) is told so before anything is changed.
+    // rampire-guest installs as a package, or as the static binary with its
+    // own unit, through a login or on the disk: a system whose root is read
+    // only (Home Assistant OS) takes neither, and is told so before
+    // anything is changed.
     if !options.no_guest_install && crate::guest::offline_available() {
         ui.say(&format!("reading {name}'s disk to see what system it runs"));
         match crate::guest::inspect_disk(name) {
-            Ok(system) if !system.takes_packages() => {
+            Ok(system) if !system.takes_guest() => {
                 let product = system
                     .product
                     .unwrap_or_else(|| "a system RAMpire doesn't recognise".to_owned());
                 return Err(format!(
-                    "{name} runs {product}, which has no dnf or apt, so rampire-guest can't be installed in it; nothing was changed. RAMpire manages Linux VMs that install packages with dnf or apt"
+                    "{name} runs {product}, whose system is read only, so rampire-guest can't be installed in it; nothing was changed"
                 ));
             }
             Ok(_) => {}
@@ -162,7 +163,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     let changes = inspection.fixable();
     // Every change but saving the requested size takes effect when the VM
     // next starts; a VM fixed by an earlier run may still run the old one.
-    let mut restart = running && changes.iter().any(|change| !change.starts_with("save"));
+    let mut restart = running && inspection.fixes_take_a_restart();
     if running && !restart {
         restart = after.runs_behind(&vm::inspect(&libvirt.virsh(&["dumpxml", name])?)?);
     }
@@ -234,6 +235,24 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         Vec::new()
     };
 
+    // What this run writes, so a failure can take it out again: files that
+    // were there before it are never removed.
+    let review_path = directory
+        .join(crate::applied::REVIEW_DIRECTORY)
+        .join(format!(
+            "{}.toml",
+            rampire_core::settings::vm_file_stem(name)
+        ));
+    let recorded_path = rampire_host::config::attestation_path(&directory, name);
+    let mut undo = Undo {
+        name,
+        xml: &xml,
+        backup: None,
+        settings: (!resuming).then(|| settings_path.clone()),
+        review: (new_review && !review_path.exists()).then_some(review_path),
+        recorded: (!resuming && !recorded_path.exists()).then_some(recorded_path),
+    };
+
     // Then it is done.
     if let Some(fixed) = &fixed {
         let backup = redefine(&libvirt, name, &xml, fixed)?;
@@ -247,6 +266,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
             Some(name),
             &[("backup", &backup.display().to_string())],
         );
+        undo.backup = Some(backup);
     }
     // What follows can fail with the definition changed: the error then
     // says how to go on or go back.
@@ -285,6 +305,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
                 name,
                 options.guest_login.as_deref(),
                 Duration::from_secs(180),
+                &ui.cancel(),
             )
             .and_then(|guest| {
                 ui.say(&format!(
@@ -301,6 +322,9 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
                     ));
                     done
                 }
+                // A person who stopped the wait doesn't want the VM shut
+                // down for the other way in.
+                Err(why) if ui.cancel().is_set() => return Err(why),
                 Err(why) => {
                     ui.say(&why);
                     // Shut down and started again: its new definition is in.
@@ -350,10 +374,96 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         )
     })();
     match finished {
-        Err(error) if fixed.is_some() => Err(format!(
-            "{error}\n{name}'s definition was changed before this: rampire vm add {name} tries again, and rampire vm remove {name} puts the old one back"
-        )),
+        Err(error) if undo.has_work() => Err(undo.run(context, &libvirt, ui, error)),
+        Ok(outcome) => {
+            // Its RAM above the boot RAM is the pool's now.
+            super::controller::offer_pool(context, ui);
+            Ok(outcome)
+        }
         finished => finished,
+    }
+}
+
+/// What a failed `vm add` takes out again, so the VM is as it was before:
+/// the definition it changed, and the files it wrote. The guest package
+/// stays installed in the guest.
+struct Undo<'a> {
+    name: &'a str,
+    /// The definition before this run changed it.
+    xml: &'a str,
+    /// The copy of `xml` this run kept, once it changed the definition.
+    backup: Option<PathBuf>,
+    /// Files this run may have written; none of them was there before it.
+    settings: Option<PathBuf>,
+    review: Option<PathBuf>,
+    recorded: Option<PathBuf>,
+}
+
+impl Undo<'_> {
+    /// Whether this run changed anything that is still there.
+    fn has_work(&self) -> bool {
+        self.backup.is_some()
+            || [&self.settings, &self.review]
+                .into_iter()
+                .flatten()
+                .any(|path| path.exists())
+    }
+
+    /// Remove the files this run wrote, and its copy of the definition.
+    fn remove_written(&self, ui: &mut dyn Ui) -> Result<(), String> {
+        for path in [&self.settings, &self.review, &self.recorded, &self.backup]
+            .into_iter()
+            .flatten()
+        {
+            match std::fs::remove_file(path) {
+                Ok(()) => ui.say(&format!("removed {}", path.display())),
+                Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
+                Err(why) => return Err(format!("remove {}: {why}", path.display())),
+            }
+        }
+        Ok(())
+    }
+
+    /// Put the VM back as it was and say so after `error`; when that can't
+    /// be done, say how to go on or go back by hand.
+    fn run(
+        self,
+        context: &Context,
+        libvirt: &crate::attest::Libvirt,
+        ui: &mut dyn Ui,
+        error: String,
+    ) -> String {
+        let name = self.name;
+        let by_hand = |why: String| {
+            format!(
+                "{error}\n{name} was partly added and couldn't be put back as it was ({why}): rampire vm add {name} tries again, and rampire vm remove {name} puts the old definition back"
+            )
+        };
+        // Applied already: the controller manages it, and only `vm remove`
+        // lets it go.
+        match still_managed_in(name) {
+            Ok(None) => {}
+            Ok(Some(copy)) => return by_hand(format!("the controller runs {}", copy.display())),
+            Err(why) => return by_hand(why),
+        }
+        ui.say(&format!("putting {name} back as it was before vm add"));
+        if self.backup.is_some() {
+            if let Err(why) = define(libvirt, name, self.xml) {
+                return by_hand(why);
+            }
+        }
+        if let Err(why) = self.remove_written(ui) {
+            return by_hand(why);
+        }
+        crate::audit::record(context, "vm_add_undone", Some(name), &[]);
+        let definition = if self.backup.is_some() {
+            " its old definition is back, from its next start;".to_owned()
+        } else {
+            String::new()
+        };
+        format!(
+            "{error}\n{name} is as it was before vm add:{definition} nothing of RAMpire's is kept for it. rampire vm add {name} tries again"
+        )
     }
 }
 
@@ -414,8 +524,9 @@ fn original_definition(name: &str) -> Option<String> {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|file| is_backup_of(file, name))
         .min_by_key(|file| {
-            file.trim_start_matches(name)
-                .trim_matches(|c: char| !c.is_ascii_digit())
+            file.rsplit_once('-')
+                .map_or("", |(_, millis)| millis)
+                .trim_end_matches(".xml")
                 .parse::<u64>()
                 .unwrap_or(u64::MAX)
         })?;
@@ -432,6 +543,7 @@ fn guest_reports_in(
 ) -> bool {
     ui.say(&format!("waiting for {vm}'s guest service to report in"));
     let started = std::time::Instant::now();
+    let cancel = ui.cancel();
     while started.elapsed() < limit {
         if let Ok(status) = crate::inventory::read_status(context, vm) {
             if status.guest_input.observed_unix_millis.is_some() {
@@ -442,7 +554,12 @@ fn guest_reports_in(
                 return true;
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        if cancel.sleep(std::time::Duration::from_secs(2)) {
+            ui.say(&format!(
+                "{vm} is added; stopped waiting for its guest service to report in"
+            ));
+            return false;
+        }
     }
     ui.say(&format!(
         "{vm} is added, but its guest service hasn't reported in after {} s: rampire doctor {vm} says why",
@@ -516,6 +633,7 @@ fn agent_kernel(
     wait: std::time::Duration,
 ) -> Option<String> {
     let deadline = std::time::Instant::now() + wait;
+    let cancel = ui.cancel();
     let mut said = false;
     loop {
         let kernel = libvirt
@@ -527,14 +645,14 @@ fn agent_kernel(
             .ok()
             .as_deref()
             .and_then(crate::vm::kernel_release_from_osinfo);
-        if kernel.is_some() || std::time::Instant::now() >= deadline {
+        if kernel.is_some() || std::time::Instant::now() >= deadline || cancel.is_set() {
             return kernel;
         }
         if !said {
             ui.say(&format!("waiting for {name}'s guest agent"));
             said = true;
         }
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        cancel.sleep(std::time::Duration::from_secs(3));
     }
 }
 
@@ -644,13 +762,15 @@ fn write_vm_settings(
                 inspection.max_memory_slots.unwrap_or(1),
                 (&format!("linux {kernel}"), source),
             );
+            // Named for the VM's files: `^web01` for Web01.
+            let profile = settings::vm_file_stem(name);
             let path = directory
                 .join(crate::applied::REVIEW_DIRECTORY)
-                .join(format!("{name}.toml"));
+                .join(format!("{profile}.toml"));
             write_new(&path, &text)?;
             rampire_host::attestation::read_review(&path)?;
             ui.say(&format!("wrote the review {}", path.display()));
-            name.to_owned()
+            profile
         }
     };
 
@@ -727,6 +847,8 @@ pub fn vm_remove(context: &Context, ui: &mut dyn Ui, name: &str) -> Result<Outco
     }
     forget_vm(ui, &directory, name, vm.review.as_deref()).map_err(unmanaged)?;
     ui.say(&format!("{name} is removed"));
+    // While it runs, all its RAM is its own again.
+    super::controller::offer_pool(context, ui);
     Ok(Outcome::Done)
 }
 
@@ -781,7 +903,12 @@ fn clear_definition(
         format_byte_size(crate::vm::inspect(&plain)?.memory_bytes)
     ));
     crate::audit::record(context, "vm_remove", Some(name), &[]);
-    forget_vm(ui, directory, name, Some(name))?;
+    forget_vm(
+        ui,
+        directory,
+        name,
+        Some(&rampire_core::settings::vm_file_stem(name)),
+    )?;
     Ok(Outcome::Done)
 }
 
@@ -812,10 +939,11 @@ pub fn forgotten_files(
     review: Option<&str>,
 ) -> Result<Vec<PathBuf>, String> {
     use rampire_core::settings::{self, VMS_DIRECTORY};
+    let stem = settings::vm_file_stem(name);
     let mut gone = vec![rampire_host::config::attestation_path(directory, name)];
     let state = Path::new(rampire_host::config::DEFAULT_STATE_DIRECTORY);
     for suffix in ["requests.json", "requests.json.lock"] {
-        gone.push(state.join(format!("{name}-{suffix}")));
+        gone.push(state.join(format!("{stem}-{suffix}")));
     }
     if let Ok(entries) = std::fs::read_dir(DOMAIN_BACKUPS) {
         for entry in entries.flatten() {
@@ -824,19 +952,20 @@ pub fn forgotten_files(
             }
         }
     }
-    if review == Some(name) {
+    if review == Some(stem.as_str()) {
+        let own = std::ffi::OsString::from(format!("{stem}.toml"));
         let named_elsewhere = std::fs::read_dir(directory.join(VMS_DIRECTORY))
             .into_iter()
             .flatten()
             .flatten()
-            .filter(|entry| entry.file_name() != std::ffi::OsString::from(format!("{name}.toml")))
+            .filter(|entry| entry.file_name() != own)
             .filter_map(|entry| settings::load_vm(&entry.path()).ok())
-            .any(|other| other.review.as_deref() == Some(name));
+            .any(|other| other.review.as_deref() == Some(stem.as_str()));
         if !named_elsewhere {
             gone.push(
                 directory
                     .join(crate::applied::REVIEW_DIRECTORY)
-                    .join(format!("{name}.toml")),
+                    .join(format!("{stem}.toml")),
             );
         }
     }
@@ -846,13 +975,16 @@ pub fn forgotten_files(
 /// The file in [`DOMAIN_BACKUPS`] that keeps `name`'s definition as it was
 /// before `vm add` changed it at `unix_millis`.
 fn backup_name(name: &str, unix_millis: u64) -> String {
-    format!("{name}-{unix_millis}.xml")
+    format!(
+        "{}-{unix_millis}.xml",
+        rampire_core::settings::vm_file_stem(name)
+    )
 }
 
 /// Whether `file` is one of `name`'s backups: not another VM's whose name
 /// starts with it (`web-2-...` for `web`).
 fn is_backup_of(file: &str, name: &str) -> bool {
-    file.strip_prefix(name)
+    file.strip_prefix(rampire_core::settings::vm_file_stem(name).as_str())
         .and_then(|rest| rest.strip_prefix('-'))
         .and_then(|rest| rest.strip_suffix(".xml"))
         .is_some_and(|millis| !millis.is_empty() && millis.bytes().all(|b| b.is_ascii_digit()))
@@ -926,7 +1058,11 @@ pub fn vm_upgrade(
         return Ok(Outcome::declined());
     }
     let libvirt = context.libvirt()?;
-    upgrade_guest(ui, &libvirt, vm, login, true)?;
+    if !upgrade_guest(ui, &libvirt, vm, login, true)? {
+        return Ok(Outcome::Declined(format!(
+            "nothing was changed: {vm} keeps the guest build it runs"
+        )));
+    }
     crate::audit::record(context, "vm_upgrade", Some(vm), &[]);
     Ok(
         if wait_for_build(ui, vm, host, std::time::Duration::from_secs(300)) {
@@ -942,32 +1078,52 @@ pub fn vm_upgrade(
 /// Install the guest package of this host's build in `vm`: logged in to it
 /// while it runs; else, when `may_shut_down` and it is agreed to, on its
 /// disk with it shut down for a moment, the package installing as it starts
-/// again. A VM that is off gets it on its disk without asking.
+/// again. A VM that is off gets it on its disk without asking. When it
+/// can't be logged in to by itself, its login is asked first. `false` when
+/// the person answered No to shutting it down: nothing was changed.
 fn upgrade_guest(
     ui: &mut dyn Ui,
     libvirt: &crate::attest::Libvirt,
     vm: &str,
     login: Option<&str>,
     may_shut_down: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     use std::time::Duration;
-    let offline = |running: bool, ui: &mut dyn Ui| -> Result<(), String> {
+    let offline = |running: bool, ui: &mut dyn Ui| -> Result<bool, String> {
         ui.say(&format!(
             "putting rampire-guest on {vm}'s disk; it installs as {vm} starts"
         ));
         crate::guest::install_offline(libvirt, vm, running)?;
         libvirt.virsh(&["start", vm])?;
         ui.say(&format!("{vm} started"));
-        Ok(())
+        Ok(true)
     };
     if libvirt.state(vm)? != "running" {
         return offline(false, ui);
     }
-    let logged_in = crate::guest::Guest::reach(libvirt, vm, login, Duration::from_secs(60))
-        .and_then(|guest| {
-            ui.say(&format!("installing rampire-guest in {vm} {}", guest.way()));
-            guest.install()
-        });
+    let install = |ui: &mut dyn Ui, login: Option<&str>| {
+        crate::guest::Guest::reach(libvirt, vm, login, Duration::from_secs(60), &ui.cancel())
+            .and_then(|guest| {
+                ui.say(&format!("installing rampire-guest in {vm} {}", guest.way()));
+                guest.install()
+            })
+    };
+    let mut logged_in = install(ui, login);
+    // The login `vm add` was given isn't kept: ask for one before
+    // anything that shuts the VM down.
+    if let (Err(why), None) = (&logged_in, login) {
+        if !ui.cancel().is_set() {
+            ui.say(why);
+            let given = ui.edit(
+                &format!("{vm}'s SSH login, USER@HOST, to install with (empty: none)"),
+                "",
+            )?;
+            let given = given.trim();
+            if !given.is_empty() {
+                logged_in = install(ui, Some(given));
+            }
+        }
+    }
     match logged_in {
         Ok(installed) => {
             ui.say(&format!("{vm} has rampire-guest {}", installed.build));
@@ -976,17 +1132,18 @@ fn upgrade_guest(
                     "the package turned on what takes a restart: rampire vm restart {vm}"
                 ));
             }
-            Ok(())
+            Ok(true)
         }
         Err(why) => {
-            if !may_shut_down || !crate::guest::offline_available() {
+            if !may_shut_down || !crate::guest::offline_available() || ui.cancel().is_set() {
                 return Err(format!("rampire-guest in {vm} wasn't upgraded: {why}"));
             }
             ui.say(&why);
             if !ui.confirm(&format!(
                 "Shut {vm} down for a moment to put the package on its disk?"
             ))? {
-                return Err(format!("rampire-guest in {vm} wasn't upgraded"));
+                ui.say("nothing changed");
+                return Ok(false);
             }
             offline(true, ui)
         }
@@ -1007,12 +1164,18 @@ fn wait_for_build(
     };
     ui.say(&format!("waiting for {vm}'s guest service to report in"));
     let started = std::time::Instant::now();
+    let cancel = ui.cancel();
     while started.elapsed() < limit {
         if crate::guest::running_build(vm).as_deref() == Some(build) {
             ui.say(&format!("{vm} runs rampire-guest {build}"));
             return true;
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        if cancel.sleep(std::time::Duration::from_secs(2)) {
+            ui.say(&format!(
+                "stopped waiting for {vm}'s new build to report in"
+            ));
+            return false;
+        }
     }
     ui.say(&format!(
         "{vm}'s guest service hasn't reported in from build {build} after {} s: rampire doctor {vm} says why",
@@ -1040,7 +1203,7 @@ fn upgrade_if_behind(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(),
         crate::guest::publication_build(publication.as_ref()).unwrap_or("of another build")
     ));
     match upgrade_guest(ui, &libvirt, vm, None, false) {
-        Ok(()) => {
+        Ok(_) => {
             crate::audit::record(context, "vm_upgrade", Some(vm), &[]);
             wait_for_build(ui, vm, host, std::time::Duration::from_secs(120));
         }
@@ -1054,7 +1217,8 @@ fn upgrade_if_behind(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(),
 /// `rampire set`: change settings in the draft, then apply unless
 /// `no_apply`. A VM whose guest runs another build than this host's has
 /// its guest upgraded as well. [`Outcome::Partly`] when the change is
-/// saved but not applied.
+/// saved but not applied, other than with `no_apply`, which asks for
+/// that.
 pub fn set(
     context: &Context,
     ui: &mut dyn Ui,
@@ -1093,7 +1257,7 @@ pub fn set(
     );
     if no_apply {
         ui.say("not applied: run rampire apply when ready");
-        return Ok(Outcome::Partly(not_applied));
+        return Ok(Outcome::Done);
     }
     Ok(match apply(context, ui).map_err(saved)? {
         Outcome::Declined(_) => Outcome::Partly(not_applied),
@@ -1187,6 +1351,12 @@ mod tests {
         assert!(!is_backup_of("web-notes.xml", "web"));
         assert!(!is_backup_of("web-.xml", "web"));
         assert!(!is_backup_of(&backup, "we"));
+        // A capital letter is written as in the VM's other files.
+        let capital = backup_name("Web", 1_700_000_000_000);
+        assert_eq!(capital, "^web-1700000000000.xml");
+        assert!(is_backup_of(&capital, "Web"));
+        assert!(!is_backup_of(&capital, "web"));
+        assert!(!is_backup_of(&backup, "Web"));
     }
 
     #[test]
@@ -1234,6 +1404,37 @@ mod tests {
             vm_restart(&context(draft.path()), &mut ui, "web").unwrap(),
             Outcome::declined()
         );
+    }
+
+    #[test]
+    fn a_failed_add_takes_out_only_what_it_wrote() {
+        let draft = TempDir::new("test-undo").unwrap();
+        let written = draft.path().join("web.toml");
+        let review = draft.path().join("review-web.toml");
+        let mut undo = Undo {
+            name: "web",
+            xml: "<domain/>",
+            backup: None,
+            settings: Some(written.clone()),
+            review: Some(review.clone()),
+            recorded: None,
+        };
+        // It stopped before writing anything: nothing to undo.
+        assert!(!undo.has_work());
+        std::fs::write(&written, "priority = 100\n").unwrap();
+        assert!(undo.has_work());
+        // A review that was there before is not this run's.
+        let kept = draft.path().join("kept.toml");
+        std::fs::write(&kept, "kept").unwrap();
+        undo.review = None;
+        let mut ui = Transcript::default();
+        undo.remove_written(&mut ui).unwrap();
+        assert!(!written.exists());
+        assert!(kept.exists());
+        assert!(!review.exists());
+        // Changing the definition is work even with no files written.
+        undo.backup = Some(draft.path().join("web-1.xml"));
+        assert!(undo.has_work());
     }
 
     #[test]

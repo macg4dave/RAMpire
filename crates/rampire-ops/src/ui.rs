@@ -5,8 +5,69 @@
 
 use std::io::{BufRead, Write};
 
+/// A person's request to stop a flow, checked at its safe points: the
+/// waits for a VM to boot, a login to work, or a guest to report in. A
+/// step that must finish once begun, such as shutting a VM down and
+/// starting it again, or installing a package, is never stopped half-way.
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(Option<std::sync::Arc<std::sync::atomic::AtomicBool>>);
+
+impl Cancel {
+    /// One that is never set: for the commands, which Ctrl+C stops.
+    pub fn never() -> Self {
+        Self(None)
+    }
+
+    /// One a person can set from elsewhere, with [`Cancel::set`].
+    pub fn new() -> Self {
+        Self(Some(std::sync::Arc::default()))
+    }
+
+    pub fn set(&self) {
+        if let Some(flag) = &self.0 {
+            flag.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    /// An error when it is set, saying what was being waited for.
+    pub fn check(&self, waiting_for: &str) -> Result<(), String> {
+        if self.is_set() {
+            Err(format!("cancelled while waiting for {waiting_for}"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Sleep for `time`, waking early when it is set; whether it is set.
+    pub fn sleep(&self, time: std::time::Duration) -> bool {
+        let until = std::time::Instant::now() + time;
+        while std::time::Instant::now() < until {
+            if self.is_set() {
+                return true;
+            }
+            std::thread::sleep(
+                until
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(std::time::Duration::from_millis(200)),
+            );
+        }
+        self.is_set()
+    }
+}
+
 /// The person on the other side of a flow.
 pub trait Ui {
+    /// Whether the person has asked the flow to stop, for its waits.
+    fn cancel(&self) -> Cancel {
+        Cancel::never()
+    }
+
     /// One line of progress or result.
     fn say(&mut self, line: &str);
     /// A change to look at before a question, such as a diff, shown as it is.
@@ -271,6 +332,20 @@ mod tests {
             ui.confirm("Apply this?").unwrap_err(),
             "no terminal to ask on: pass --yes to go ahead"
         );
+    }
+
+    #[test]
+    fn a_cancel_set_elsewhere_ends_a_wait_early() {
+        assert!(!Cancel::never().sleep(std::time::Duration::from_millis(1)));
+        let cancel = Cancel::new();
+        let other = cancel.clone();
+        assert!(cancel.check("the guest").is_ok());
+        std::thread::spawn(move || other.set());
+        let started = std::time::Instant::now();
+        assert!(cancel.sleep(std::time::Duration::from_secs(30)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(cancel.check("the guest").unwrap_err().contains("the guest"));
+        Cancel::never().set();
     }
 
     #[test]

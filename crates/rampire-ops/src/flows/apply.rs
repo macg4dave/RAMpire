@@ -84,12 +84,13 @@ fn attestation_changes(from: &Path, to: &Path) -> Result<Vec<(String, &'static s
                 .file_name()
                 .and_then(|name| name.to_str())
                 .and_then(|name| name.strip_suffix(ATTESTATION_SUFFIX))
+                .and_then(rampire_core::settings::vm_name_from_stem)
             else {
                 continue;
             };
             let bytes = std::fs::read(&path)
                 .map_err(|error| format!("read {}: {error}", path.display()))?;
-            found.insert(vm.to_owned(), bytes);
+            found.insert(vm, bytes);
         }
         Ok(found)
     };
@@ -211,7 +212,7 @@ fn stage_and_apply(
 }
 
 /// `rampire rollback`: back to the applied copy before the current one.
-pub fn rollback(context: &Context, ui: &mut dyn Ui) -> Result<(), String> {
+pub fn rollback(context: &Context, ui: &mut dyn Ui) -> Result<Outcome, String> {
     let root = applied_root();
     let current = crate::applied::current(root)?.ok_or("nothing has been applied yet")?;
     let copies = crate::applied::copies(root)?;
@@ -240,7 +241,7 @@ pub fn rollback(context: &Context, ui: &mut dyn Ui) -> Result<(), String> {
         refresh.question(&unit)
     ))? {
         ui.say("nothing changed");
-        return Ok(());
+        return Ok(Outcome::declined());
     }
     crate::applied::make_current(root, &previous)?;
     ui.say(&format!("rolled back to {}", previous.display()));
@@ -265,7 +266,7 @@ pub fn rollback(context: &Context, ui: &mut dyn Ui) -> Result<(), String> {
             refreshed,
         },
     )?;
-    Ok(())
+    Ok(Outcome::Done)
 }
 
 /// One change to the applied configuration, for its record.

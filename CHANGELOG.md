@@ -22,6 +22,29 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   failure after that says the VM is no longer managed and what is left.
 - A half-added VM's menu has **x**, which undoes the add
   (`rampire vm remove VM`, which puts its old definition back).
+- `vm add` puts the VM back as it was by itself when a step fails before
+  the VM is applied (the guest package wouldn't install, the VM didn't
+  come back, the wait was cancelled): its old definition, from its next
+  start, and none of the files it wrote. It says so, and the journal
+  records `vm_add_undone`.
+- `vm add` and `vm remove` offer the new pool when it changes: the one
+  `init` would suggest now, with the same reasoning (what each VM sets
+  aside). Yes sets it as `rampire set global pool=SIZE` does.
+- VM names may have capital letters, as libvirt allows (`Web01`). In
+  file names each capital is written `^` and the letter in lower case
+  (`vms.d/^web01.toml`, the review `^web01`), so no two names share a
+  file.
+- `vm add` and `vm upgrade` install the guest service in a VM without dnf
+  or apt: Fedora CoreOS and Silverblue (OSTree), and any other system
+  with systemd 253 or later. It gets the static binary of the host's
+  build in `/usr/local/libexec` and its own unit in
+  `/etc/systemd/system`; the host package carries both in
+  `/usr/share/rampire/guest/`. An OSTree VM takes it through a login
+  only. Only a system with a read-only root (Home Assistant OS) is still
+  refused before anything changes. The guest tarball installs the same
+  way.
+- GNOME Software and other software centres show a screenshot of the
+  TUI's dashboard first, then the diagram of how RAMpire moves memory.
 - A VM's settings form shows the draft's values, which saving changes,
   not the applied copy's, and both settings forms say when the draft has
   changes that aren't applied yet. It no longer refuses to open until
@@ -31,6 +54,30 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 - **u** upgrades each marked VM's guest service, not the one under the
   cursor alone; removing a VM from its live details goes back to the
   list.
+- Commands exit **3** when they didn't do what they were for: a question
+  was answered No, or a part is left (a VM added or a guest upgraded
+  that hasn't reported in yet, a change saved that wasn't applied).
+  They exited 0 before. `set --no-apply` still exits 0, and
+  `apply --detailed-exitcode` exits 3 when the answer was No.
+- `vm upgrade` asks for an SSH login when it can't get into the guest by
+  itself, before offering to shut the VM down; No to shutting it down
+  ends **Not done**, not failed.
+- A task in the TUI can be cancelled while it waits for a VM to boot, a
+  login or a guest to report in, not only at its next question; a
+  cancelled login never shuts the VM down for the other way in. Quitting
+  with tasks running stops them that way first, then closes.
+- The TUI's list reads each addable VM's disk in the background, and a
+  system rampire-guest can't be installed in (Home Assistant OS) shows
+  as a problem before Add; **a** is offered once nothing stops adding.
+- A managed VM's menu offers **b**, a restart onto its saved definition,
+  when it runs an older one, and **c**, recovery, when its resizing has
+  stopped. **D** shows the draft's difference, **B** rolls back.
+- `rampire doctor --json` gives each runnable fix's command as `run`,
+  which the TUI's doctor runs; **Enter** on a VM's summary in the
+  doctor for every VM opens that VM's doctor. `rampire vm list --json`
+  gains `add_restarts` and `runs_behind`.
+- `init` says when it started a stopped controller, not "set up
+  already".
 
 - The TUI sets up a host that isn't set up yet: it opens **Set up this
   host** first, with the recommended host reserve filled in to keep or

@@ -33,6 +33,9 @@ mod exit {
     pub const USAGE: u8 = 2;
     /// `apply --detailed-exitcode`: the applied configuration changed.
     pub const CHANGED: u8 = 2;
+    /// Not done: a question was answered No, or a part is left, as the
+    /// command said.
+    pub const NOT_DONE: u8 = 3;
 }
 
 /// What the command line names: the configuration, the connection and the
@@ -63,8 +66,9 @@ const STABLE: &str = "For scripts:
   - the JSON documents of --json, each naming its schema and version:
     rampire.status-report, rampire.check, rampire.doctor, rampire.vm-list;
   - exit codes: 0 done, 1 failed or a problem found, 2 a wrong command
-    line, and with apply --detailed-exitcode 2 when the configuration
-    changed;
+    line, 3 not done (a question answered No, or a part left, as the
+    command said), and with apply --detailed-exitcode 2 when the
+    configuration changed;
   - the journal's event names and keys, the controller's and
     event=operator_change for people's changes.
   Text output and the TUI are for people and may change.";
@@ -404,23 +408,24 @@ fn main() -> ExitCode {
     }
 }
 
-/// The result of a flow that may change the applied configuration, as
-/// `--detailed-exitcode` reports it.
-/// The exit code of a flow that didn't fail. Its lines have said how it
-/// ended; a No or a part left to do is not an error for a script, as
-/// before.
-fn ended(_outcome: rampire_ops::flows::Outcome) -> ExitCode {
-    ExitCode::SUCCESS
+/// The exit code of a flow that didn't fail: 0 when it did what it was
+/// for, or that was so already; [`exit::NOT_DONE`] when a question was
+/// answered No or a part is left. Its lines have said which.
+fn ended(outcome: rampire_ops::flows::Outcome) -> ExitCode {
+    ExitCode::from(if outcome.succeeded() {
+        exit::SUCCESS
+    } else {
+        exit::NOT_DONE
+    })
 }
 
+/// The result of a flow that may change the applied configuration, as
+/// `--detailed-exitcode` reports it.
 fn changed_code(outcome: rampire_ops::flows::Outcome, detailed: bool) -> ExitCode {
-    ExitCode::from(
-        if outcome == rampire_ops::flows::Outcome::Done && detailed {
-            exit::CHANGED
-        } else {
-            exit::SUCCESS
-        },
-    )
+    match outcome {
+        rampire_ops::flows::Outcome::Done if detailed => ExitCode::from(exit::CHANGED),
+        outcome => ended(outcome),
+    }
 }
 
 fn run(cli: &Cli) -> Result<ExitCode, String> {
@@ -468,7 +473,7 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
         Command::Apply { detailed_exitcode } => {
             apply::apply(&context, ui).map(|outcome| changed_code(outcome, *detailed_exitcode))
         }
-        Command::Rollback => apply::rollback(&context, ui).map(|()| ExitCode::SUCCESS),
+        Command::Rollback => apply::rollback(&context, ui).map(ended),
         Command::Set {
             target,
             changes,
@@ -690,6 +695,29 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use rampire_ops::reports::{CheckReport, CheckSchema};
+
+    #[test]
+    fn a_no_or_a_part_left_exits_not_done() {
+        use rampire_ops::flows::Outcome;
+        let code = |code: u8| ExitCode::from(code);
+        assert_eq!(ended(Outcome::Done), code(exit::SUCCESS));
+        assert_eq!(
+            ended(Outcome::AlreadySo(String::new())),
+            code(exit::SUCCESS)
+        );
+        assert_eq!(ended(Outcome::declined()), code(exit::NOT_DONE));
+        assert_eq!(ended(Outcome::Partly(String::new())), code(exit::NOT_DONE));
+        assert_eq!(changed_code(Outcome::Done, true), code(exit::CHANGED));
+        assert_eq!(changed_code(Outcome::Done, false), code(exit::SUCCESS));
+        assert_eq!(
+            changed_code(Outcome::AlreadySo(String::new()), true),
+            code(exit::SUCCESS)
+        );
+        assert_eq!(
+            changed_code(Outcome::declined(), true),
+            code(exit::NOT_DONE)
+        );
+    }
 
     #[test]
     fn the_settings_page_names_every_setting_in_roff() {
