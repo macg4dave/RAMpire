@@ -1,7 +1,9 @@
 # Tools
 
-The live views: `rampire watch` and `rampire top` from the host package,
-and `rampire-watch-ram` from the guest package. The host's views read the
+The live views: the TUI (`rampire` with no command), `rampire watch` and
+`rampire top` from the host package, and `rampire-watch-ram` from the
+guest package. `top` and `watch` are the TUI's dashboard and VM details
+alone ([reference](reference.md#the-tui)). The host's views read the
 controller's journal, libvirt and each guest's publication. `CONFIG` below
 is the configuration directory the controller runs (installed as
 `/etc/rampire`); with several VMs, `--vm NAME` picks one. They follow the
@@ -58,9 +60,16 @@ Guest figures come from the controller's publication copies, so the view
 sends no guest-agent traffic. They are empty while the controller is
 stopped. `--interval-seconds N` sets the refresh period (default 1),
 `--events N` the number of events (default 8) and `--once` prints one
-plain snapshot. Ctrl+C leaves the last view on the screen as plain text.
+plain snapshot. `q`, Esc or Ctrl+C leaves the last view on the screen as
+plain text.
 
-From a Windows workstation, open it over SSH:
+From any computer with an SSH client, the whole TUI:
+
+```bash
+ssh -t HOST sudo rampire
+```
+
+From a Windows workstation, the pool alone:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\windows\Watch-Pool.ps1 [-NewWindow]

@@ -266,14 +266,15 @@ Look for **`active (running)`**. Press **q** to get back to the prompt.
 
 ### See the pool live
 
-The pool view shows every VM and how the memory is shared, updating every
-second:
+The TUI shows every VM and how the memory is shared, updating every
+second. On the host, or from any computer over SSH:
 
 ```bash
-sudo rampire top
+sudo rampire                 # on the host
+ssh -t HOST sudo rampire     # from another computer
 ```
 
-How to read it:
+Its first screen is the dashboard. How to read it:
 
 - **Pool**, at the top: one bar for the whole pool. Each VM's share is in
   its own colour, and the rest of the bar is free memory. Below the bar
@@ -287,7 +288,11 @@ How to read it:
 - **Pool events**: the latest decisions, such as memory given, refused or
   returned.
 
-Press **Ctrl+C** to leave.
+Choose a VM with the arrows and press **Enter** to see it in detail;
+**Tab** moves between the screens, **?** lists the keys and **q**
+leaves. The same screens add and remove VMs, change a VM's settings and
+run the doctor ([reference](reference.md#the-tui)). `sudo rampire top`
+shows the dashboard alone.
 
 You can open the same view from a Windows PC. See
 [Watching the pool](tools.md#watching-the-pool).
@@ -318,7 +323,8 @@ starts.
 | What you see | What it means | What to do |
 |---|---|---|
 | `systemctl status` says **failed** | The controller found a problem and stopped itself rather than risk a mistake. It doesn't restart on its own | Look at the log (`sudo rampire logs --since "10 min ago"`). If the cause is clear and fixed, start it again. If not, get help from whoever set it up |
-| A VM never grows | The pool is full, the host is at its reserve, or the VM is at its `max_ram` | Look at the pool view. Raise `pool` or the VM's `max_ram`, or lower other VMs' `max_ram` |
+| A VM never grows | The pool is full, the host is at its reserve, or the VM is at its `max_ram` | `sudo rampire doctor VM` says which, under "last request". Raise `pool` or the VM's `max_ram`, or lower other VMs' `max_ram` |
+| Something about one VM looks wrong | | `sudo rampire doctor VM` checks everything about it and gives the fix for each problem |
 | A VM grows, but slowly gives memory back | Normal. A VM returns memory gradually, and can take several minutes when the memory was busy | Wait |
 | A VM stays large after a restart | A restart from inside the VM keeps its size | Shut the VM down fully, then start it |
 | The log mentions **latched** | The controller stopped resizing after something it couldn't confirm was safe | It needs a person to check it. See [Recovering](administration.md#recovering) |

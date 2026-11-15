@@ -24,6 +24,7 @@ holds the code to it, so the examples are always what the command writes.
 | `rampire status --json` | `rampire.status-report` | 1 | [status-report.json](../fixtures/json/status-report.json) |
 | `rampire check --json` | `rampire.check` | 1 | [check.json](../fixtures/json/check.json) |
 | `rampire doctor --json` | `rampire.doctor` | 1 | [doctor.json](../fixtures/json/doctor.json) |
+| `rampire vm list --json` | `rampire.vm-list` | 1 | [vm-list.json](../fixtures/json/vm-list.json) |
 
 ### `rampire.status-report`
 
@@ -66,8 +67,23 @@ The exit code is 0 when `passed` is true and 1 otherwise.
 
 | Field | Meaning |
 |---|---|
+| `vm` | The VM, for `rampire doctor VM`; absent for the host |
 | `passed` | Every check passed |
-| `findings` | Each `check`, whether it is `ok`, the `detail` found, and the `fix` when it isn't |
+| `findings` | Each `check`, whether it is `ok`, the `detail` found, and the `fix` when it isn't. For the host, a `vm NAME` check per managed VM sums up its own |
+
+### `rampire.vm-list`
+
+| Field | Meaning |
+|---|---|
+| `vms` | Each VM on the connection, by name |
+| `vm_name`, `state` | The VM, and libvirt's state for it (`running`, `shut off`, ...; `missing` for a managed VM libvirt no longer has) |
+| `management` | `managed`, `parked` (by `vm remove`), `unfinished` (a `vm add` that didn't apply) or `not_managed` |
+| `status` | A managed VM's `rampire.status`, when it could be read |
+| `detail` | One line about it for a person |
+| `to_fix` | For a VM that isn't managed: what `vm add --fix-xml` would change |
+| `problems` | For a VM that isn't managed: each `problem` that would still stop `vm add`, and its `fix` |
+| `guest` | Its guest service: `state` is `published` with `age_seconds`, `not_published` (for a VM that isn't managed: not installed), `installed` (not managed yet, so not publishing), or `unknown` (not running, or no guest agent) |
+| `os_id` | The system its definition's libosinfo metadata names, or `null` |
 
 ## Files RAMpire keeps
 

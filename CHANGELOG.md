@@ -10,6 +10,13 @@ The first release under the name RAMpire. Nothing is migrated from the
 earlier virtio-mem pool controller: remove an old install and install
 again (decision D9).
 
+- A TUI: `sudo rampire` on a terminal, or `ssh -t HOST sudo rampire`
+  from any computer. The pool and each VM live; adding, removing and
+  bringing back VMs; changing a VM's settings; the doctor, with fixes it
+  can run; the journal by VM. Every action shows the command that does
+  the same and is logged to the journal (`event=operator_change`).
+  `rampire top` and `rampire watch` draw its screens alone.
+- `rampire vm list` and `rampire doctor VM`.
 - One command, `rampire`: `init`, `status`, `top`, `watch`, `check`,
   `diff`, `apply`, `rollback`, `set`, `logs`, `doctor` and `recover`, and
   `daemon` for the unit. Every command takes `--json` and `--yes`, and

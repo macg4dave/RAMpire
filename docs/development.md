@@ -15,11 +15,11 @@ code").
 | `rampire-core` | `crates/rampire-core` | any | Policy, request protocol, wire and settings formats |
 | `rampire-guest` | `crates/rampire-guest` | any | Guest request store, worker, transports, service loop |
 | `rampire-host` | `host/` | Linux | The controller: settings resolution, runtime, libvirt, attestation, the CLI until O1.2 |
-| `rampire-ops` | `crates/rampire-ops` | Linux | Operator views: controller status, the pool, one VM live |
+| `rampire-ops` | `crates/rampire-ops` | Linux | What the commands do: the guided flows behind one question interface (`ui::Ui`, `flows/`), the reports, the doctor, the readings of the pool and one VM, and the TUI (`tui/`) |
 | `rampire` | `rampire/` | Linux | The `rampire` binary: the daemon and operator commands |
 | `rampire-guest-linux` | `guest-linux/` | Linux | Linux guest service |
 | `rampire-guest-windows` | `guest-windows/` | Windows (native) | Windows service and its workload |
-| `xtask` | `tools/xtask` | Linux | Gate, deploy, observe, qualify (`cargo xtask`) |
+| `xtask` | `tools/xtask` | Linux | The gate and the packages (`cargo xtask`) |
 
 `xtask` depends on the host and operations crates, so it builds only on Linux. The core
 and shared guest crates build anywhere.
@@ -84,6 +84,22 @@ Unit tests read only [fixtures](../fixtures/config) and temporary files.
 None needs a VM, a running service or a site's configuration. The host's
 `documented_examples_load` test also loads
 [deploy/examples](../deploy/examples), so the examples stay valid.
+
+### The TUI and its tests
+
+The TUI is drawn with [Ratatui](https://ratatui.rs) 0.30 on its
+`crossterm` backend, both MIT-licensed crates used as dependencies (no
+code is copied into the repository). `rampire top` and `rampire watch`
+draw the TUI's dashboard and VM details alone, so there is one renderer.
+
+A guided flow (`vm add`, `set`, `apply`, ...) talks to the person only
+through `rampire_ops::ui::Ui`: `ui::Terminal` for the commands, and the
+TUI's dialogs through a channel (`tui/jobs.rs`). Tests answer it with
+`ui::Transcript`.
+
+Each screen is drawn in tests into a buffer at 80x24, 120x40 and 200x60,
+in every theme, at every colour depth and in both icon sets
+(`tui/screens.rs`), as part of the gate.
 
 ## Platform-specific checks
 

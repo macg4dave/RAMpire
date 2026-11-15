@@ -38,6 +38,10 @@ fn every_logged_event_is_documented() {
     for directory in ["host/src", "rampire/src"] {
         events_under(&root.join(directory), &mut logged);
     }
+    // People's changes, logged by the operator commands and the TUI.
+    logged.extend(events_in(
+        &std::fs::read_to_string(root.join("crates/rampire-ops/src/audit.rs")).unwrap(),
+    ));
     let documented = std::fs::read_to_string(root.join("docs/journal.md")).unwrap();
     let missing: Vec<_> = logged
         .iter()

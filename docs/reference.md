@@ -16,6 +16,46 @@ once here. `rampire --help` and
 Every command but `daemon` runs as root. Exit codes: 0 done, 1 failed or
 a problem found, 2 a wrong command line.
 
+## The TUI
+
+`sudo rampire` with no command, on a terminal, opens the TUI: on the
+host's console, or from any computer with `ssh -t HOST sudo rampire`.
+Piped, or with `--help`, it prints the help instead. It needs a terminal
+of at least 80x24.
+
+| Screen | Key | What it shows and does |
+|---|---|---|
+| Dashboard | `1` | The pool and every managed VM, its history and events; Enter opens a VM |
+| VM | `2` | One VM: its settings, boot RAM and device, a resize under way, the guest's figures, the last request and what held it back, its history and events |
+| Add | `3` | The host's VMs RAMpire doesn't manage, what `vm add --fix-xml` would change, and whether the guest service is installed; Enter adds the VM |
+| Remove | `4` | Managed VMs, to park (`k`) or forget (`f`), and parked ones to bring back (`b`) |
+| Doctor | `5` | The host's checks and each VM's, problems first; Enter runs a fix that is a `rampire` command |
+| Logs | `6` | The journal; `f` shows one VM's lines |
+
+| Key | Does |
+|---|---|
+| Tab, Shift+Tab, `1` to `6` | Next, previous or a given screen |
+| arrows, `j` `k`, Home, End, PgUp, PgDn | Move |
+| Enter | Open, or run what is chosen |
+| Esc | Back, or close a dialog |
+| `s`, `a`, `x`, `d`, `l` | On the VM screen: change its settings, attest it again, remove it, its doctor, its logs |
+| `y`, `n` | Answer a question |
+| `r` | Read the screen again |
+| `e` | The errors list |
+| `t` | The next colour theme: navy, light, or the terminal's own 16 colours |
+| `i` | Unicode or ASCII icons |
+| `?` | The keys |
+| `q`, Ctrl+C | Quit |
+
+Every action runs the same steps as its command, asks the same
+questions in a dialog, and shows the command line that does the same.
+Each change is logged to the journal as `event=operator_change` with the
+person and `via=tui` ([journal](journal.md)). Colour follows the terminal:
+256 colours, 16, or none with `NO_COLOR` or `TERM=dumb`; icons are ASCII
+when the locale isn't UTF-8. If the TUI fails, the terminal is given back
+and the error printed, and logged as `event=operator_change
+action=tui_failed`.
+
 ## Commands
 
 ### Setting up and checking
@@ -23,7 +63,7 @@ a problem found, 2 a wrong command line.
 | Command | What it does |
 |---|---|
 | `rampire init` | Checks the host as `doctor` does and stops on a problem; then suggests `global.toml` from the host's memory and its VMs (never over an existing one), creates the configuration folders, applies, and enables and starts the controller |
-| `rampire doctor` | Checks libvirt 10.1+, QEMU 8.2+ with virtio-mem's options, the service account, the socket group, libvirt access and an applied configuration, with the fix for each problem |
+| `rampire doctor [VM]` | Checks libvirt 10.1+, QEMU 8.2+ with virtio-mem's options, the service account, the socket group, libvirt access and an applied configuration, with the fix for each problem, and gives one line per managed VM. With a VM, everything about it: its saved and running definition (device, control channel, balloon, memory slots), its attestation, a latch, the guest's publication and readiness report (driver, onlining, pressure signal, `max_ram` against the movable zone), and the last request and what held it back |
 | `rampire check` | Checks the draft and every VM's attestation against the live VMs; changes nothing |
 
 ### Changing the configuration
@@ -42,6 +82,7 @@ a problem found, 2 a wrong command line.
 | `rampire vm add VM [--fix-xml] [--review PROFILE] [--kernel RELEASE] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE]` | Starts managing a VM: checks its definition (fixing it with `--fix-xml`, keeping the old one: a NUMA cell, `maxMemory`, the device and the control channel, and the memory balloon turned off), fills in its review from the definition and the guest agent and asks the rest, writes its settings, restarts it if its definition changed, and applies. A VM with a file in `parked/` gets that file back instead |
 | `rampire vm attest VM [--restart] [--no-apply]` | Attests a running VM again from its review profile, then applies. `--restart` cold-restarts it first |
 | `rampire vm attest --drifted` | Lists every running VM whose live evidence no longer matches its attestation, asks, and attests them again |
+| `rampire vm list` | Every VM on the libvirt connection: managed, parked, unfinished (a `vm add` that didn't apply) or not managed. For one that isn't managed, what `vm add --fix-xml` would change, what would still stop it, and whether its guest service is installed |
 | `rampire vm remove VM [--forget]` | Stops managing a VM at once. It keeps its memory until its next cold start, which begins on boot RAM alone. Its file is kept in `parked/`, for `vm add` to bring it back; `--forget`, for a VM being deleted, removes its settings, attestation, request state, definition backups and the review profile `vm add` wrote for it |
 
 ### Watching
@@ -49,9 +90,9 @@ a problem found, 2 a wrong command line.
 | Command | What it does |
 |---|---|
 | `rampire status [VM]` | The controller's view of one VM or all of them |
-| `rampire top [--once] [--interval-seconds N] [--events N]` | The pool, live |
-| `rampire watch [VM] [--once] [--interval-seconds N] [--guest-interval-seconds N] [--events N] [--no-guest]` | One VM, live |
-| `rampire logs [-f] [--since TIME]` | The controller's journal |
+| `rampire top [--once] [--interval-seconds N] [--events N]` | The TUI's dashboard alone, live; `q` leaves |
+| `rampire watch [VM] [--once] [--interval-seconds N] [--guest-interval-seconds N] [--events N] [--no-guest]` | One VM's details alone, live |
+| `rampire logs [-f] [--since TIME] [--vm VM]` | The controller's journal and the changes people made; `--vm` only the lines about one VM |
 
 ### Recovering
 

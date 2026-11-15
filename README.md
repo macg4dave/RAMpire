@@ -68,8 +68,8 @@ sudo rampire init
 # add a VM (replace 'webserver' with its libvirt name)
 sudo rampire vm add webserver --fix-xml
 
-# See the pool and your VMs in action
-sudo rampire top
+# See the pool and your VMs in action, add and remove VMs, run the doctor
+sudo rampire
 ```
 
 `vm add` previews necessary VM-definition changes and guides you through the remaining choices. Some VM changes require a restart before memory management can begin.
@@ -94,8 +94,10 @@ RAMpire has been exercised on **RHEL 10**. Other Linux distributions and package
 RAMpire is designed to explain its decisions, not just make them.
 
 ```bash
+sudo rampire                           # The TUI: pool, VMs, add, remove, doctor, logs
 sudo rampire status                    # Current host and VM status
 sudo rampire top                       # Live memory pool view
+sudo rampire doctor VM                 # Everything about one VM, with fixes
 sudo rampire logs --since "1 hour ago" # Recent controller decisions
 sudo rampire diff                      # Preview pending configuration changes
 ```

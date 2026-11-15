@@ -66,3 +66,17 @@ A request is described by `session_id`, `sequence`, `operation` (`Add` or
 | `no_vms` | | The configuration manages no VMs; the controller waits |
 | `config_reloaded` | | `systemctl reload rampire` took the new applied copy |
 | `reload_refused` | `reason` | The new copy changes more than a reload can; the controller keeps what it has |
+
+## Changes people make
+
+Every change made with a command or the TUI is logged under the
+identifier `rampire` beside the controller's own lines, so `rampire logs`
+shows both and `journalctl -t rampire` finds them:
+
+```text
+rampire: vm=web event=operator_change action=set user=alice via=tui changes=max_ram=12GB
+```
+
+| Event | Keys | When |
+|---|---|---|
+| `operator_change` | `action`, `user` (the person who ran sudo), `via` (`command` or `tui`), sometimes `vm`, `to`, `changes`, `backup` and `reason` | `apply`, `rollback`, `set`, `init`, `fix_xml`, `vm_add`, `vm_remove`, `vm_forget`, `vm_attest` and `recover` made a change; `tui_failed` when the TUI stopped on an error, with the error as `reason` |

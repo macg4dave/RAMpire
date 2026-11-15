@@ -58,6 +58,17 @@ VM's kernel release in the next step.
 
 ## 4. Add the VM
 
+Open the TUI on the host, or from your own computer over SSH:
+
+```bash
+sudo rampire                 # on the host
+ssh -t HOST sudo rampire     # from another computer
+```
+
+Press **3** for the Add screen, choose the VM with the arrows and press
+**Enter**. It runs the same steps as the command, which you can also
+type yourself:
+
 ```bash
 rampire vm add webserver --fix-xml
 ```
@@ -79,6 +90,9 @@ rampire vm add webserver --fix-xml
 
 ## 5. Watch it work
 
+The TUI's dashboard (**1**) shows the VM and the pool live; **Enter** on
+the VM shows it in detail, and **5** runs the doctor. Without the TUI:
+
 ```bash
 rampire status
 rampire top
@@ -86,7 +100,8 @@ rampire top
 
 The VM starts small and grows as its programs need memory. When it goes
 quiet it hands memory back for other VMs. `rampire doctor` checks the
-whole setup at any time.
+whole setup at any time, and `rampire doctor webserver` everything about
+the one VM.
 
 ## Next
 
