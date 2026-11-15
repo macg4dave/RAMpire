@@ -8,40 +8,63 @@ use rampire_host::compatibility_source::CompatibilitySource;
 use rampire_host::config::{HostConfig, HostSettings};
 use rampire_host::virsh::{Virsh, VirshCommand, VirshError};
 
-/// What `check` found for one VM.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VmCheck {
-    pub vm_name: String,
-    /// `None` when the VM passed.
-    pub problem: Option<String>,
-}
+use crate::reports::{CheckReport, CheckSchema, CheckedVm};
 
-/// What `check` found for the whole configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Report {
-    pub vms: Vec<VmCheck>,
-}
-
-impl Report {
-    pub fn passed(&self) -> bool {
-        self.vms.iter().all(|vm| vm.problem.is_none())
-    }
-}
+/// How `check` says a VM's domain is gone.
+const NO_DOMAIN: &str = "libvirt has no domain";
 
 /// Load the configuration in `directory` and check every VM. A
 /// configuration that doesn't load is an error; a VM that fails is a
 /// problem in the report, so every VM is checked.
-pub fn run(directory: &Path) -> Result<Report, String> {
+pub fn run(directory: &Path) -> Result<CheckReport, String> {
     let settings = HostSettings::load(directory).map_err(|error| error.to_string())?;
-    let vms = settings
+    let vms: Vec<CheckedVm> = settings
         .vms
         .iter()
-        .map(|config| VmCheck {
+        .map(|config| CheckedVm {
             vm_name: config.vm_name.clone(),
             problem: check_vm(config).err(),
         })
         .collect();
-    Ok(Report { vms })
+    Ok(CheckReport {
+        schema: CheckSchema,
+        version: 1,
+        passed: vms.iter().all(|vm| vm.problem.is_none()),
+        vms,
+    })
+}
+
+/// The command that fixes a VM's problem, as `check`, `apply` and the
+/// doctor give it.
+pub fn fix(vm: &str, problem: &str) -> String {
+    if problem.contains("drifted") {
+        format!("if the change was intended, rampire vm attest {vm}")
+    } else if problem.contains(NO_DOMAIN) {
+        format!("rampire vm remove {vm}")
+    } else {
+        format!("rampire vm attest {vm}")
+    }
+}
+
+/// The report as `check` prints it: a line per VM, each problem with its
+/// fix. With `problems_only`, as `apply` shows a draft that fails.
+pub fn text(report: &CheckReport, problems_only: bool) -> String {
+    let mut text = String::new();
+    if report.vms.is_empty() && !problems_only {
+        text.push_str("ok: the configuration is valid and manages no VMs\n");
+    }
+    for vm in &report.vms {
+        match &vm.problem {
+            None if problems_only => {}
+            None => text.push_str(&format!("ok: {}\n", vm.vm_name)),
+            Some(problem) => text.push_str(&format!(
+                "problem: {}: {problem}\n  fix: {}\n",
+                vm.vm_name,
+                fix(&vm.vm_name, problem)
+            )),
+        }
+    }
+    text
 }
 
 fn check_vm(config: &HostConfig) -> Result<(), String> {
@@ -51,10 +74,7 @@ fn check_vm(config: &HostConfig) -> Result<(), String> {
         &config.libvirt_uri,
     );
     if !domain_exists(&virsh, &config.vm_name)? {
-        return Err(format!(
-            "libvirt has no domain {name}; stop managing it with: rampire vm remove {name}",
-            name = config.vm_name
-        ));
+        return Err(format!("{NO_DOMAIN} {}", config.vm_name));
     }
     // Reads the attestation, then compares it with the live evidence.
     AttestedCompatibilitySource::new(
@@ -107,7 +127,35 @@ error: Domain not found: no domain with matching name 'gone'"
         std::fs::remove_dir_all(&root).unwrap();
         let report = report.expect("loads");
         assert!(report.vms.is_empty());
-        assert!(report.passed());
+        assert!(report.passed);
+        assert!(text(&report, false).starts_with("ok: "));
+        assert_eq!(text(&report, true), "");
+    }
+
+    #[test]
+    fn each_problem_names_its_fix() {
+        let checked = |vm: &str, problem: Option<&str>| CheckedVm {
+            vm_name: vm.to_owned(),
+            problem: problem.map(str::to_owned),
+        };
+        let report = CheckReport {
+            schema: CheckSchema,
+            version: 1,
+            passed: false,
+            vms: vec![
+                checked("web", None),
+                checked("db", Some("live evidence has drifted")),
+                checked("old", Some(&format!("{NO_DOMAIN} old"))),
+            ],
+        };
+        assert_eq!(
+            text(&report, false),
+            "ok: web\n\
+             problem: db: live evidence has drifted\n  \
+             fix: if the change was intended, rampire vm attest db\n\
+             problem: old: libvirt has no domain old\n  fix: rampire vm remove old\n"
+        );
+        assert!(!text(&report, true).contains("ok: web"));
     }
 
     #[test]
@@ -117,7 +165,7 @@ error: Domain not found: no domain with matching name 'gone'"
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/config");
         let report = run(&fixture).expect("fixture loads");
         assert_eq!(report.vms.len(), 1);
-        assert!(!report.passed());
+        assert!(!report.passed);
         assert!(report.vms[0].problem.is_some());
     }
 }

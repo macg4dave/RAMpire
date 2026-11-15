@@ -6,8 +6,7 @@ use std::process::ExitCode;
 use rampire_host::config::HostSettings;
 use rampire_ops::context::{applied_root, SERVICE_ACCOUNT};
 use rampire_ops::reports::{
-    status_line, CheckReport, CheckSchema, CheckedVm, DoctorReport, DoctorSchema, StatusReport,
-    StatusReportSchema,
+    status_line, DoctorReport, DoctorSchema, StatusReport, StatusReportSchema,
 };
 use serde::Serialize;
 
@@ -79,37 +78,16 @@ fn print_json<T: Serialize>(document: &T) -> Result<(), String> {
 
 pub(crate) fn check(cli: &Cli) -> Result<ExitCode, String> {
     let report = rampire_ops::check::run(&context(cli).draft())?;
-    let code = ExitCode::from(if report.passed() {
+    if cli.json {
+        print_json(&report)?;
+    } else {
+        print!("{}", rampire_ops::check::text(&report, false));
+    }
+    Ok(ExitCode::from(if report.passed {
         exit::SUCCESS
     } else {
         exit::FAILURE
-    });
-    if cli.json {
-        print_json(&CheckReport {
-            schema: CheckSchema,
-            version: 1,
-            passed: report.passed(),
-            vms: report
-                .vms
-                .into_iter()
-                .map(|vm| CheckedVm {
-                    vm_name: vm.vm_name,
-                    problem: vm.problem,
-                })
-                .collect(),
-        })?;
-        return Ok(code);
-    }
-    if report.vms.is_empty() {
-        println!("ok: the configuration is valid and manages no VMs");
-    }
-    for vm in &report.vms {
-        match &vm.problem {
-            None => println!("ok: {}", vm.vm_name),
-            Some(problem) => println!("problem: {}: {problem}", vm.vm_name),
-        }
-    }
-    Ok(code)
+    }))
 }
 
 /// `doctor`: the host's checks and a line per managed VM, or with a VM

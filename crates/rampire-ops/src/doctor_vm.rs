@@ -17,7 +17,7 @@ use rampire_host::config::{HostConfig, HostSettings};
 use crate::context::Context;
 use crate::doctor::Finding;
 use crate::inventory::Known;
-use crate::reports::Management;
+use crate::reports::{CheckedVm, Management};
 
 /// A publication older than this is stale: the guest service has stopped
 /// or can't reach the host.
@@ -249,20 +249,14 @@ fn attestation(context: &Context, vm: &str) -> Result<Finding, String> {
     let report = crate::check::run(&context.running())?;
     Ok(
         match report.vms.into_iter().find(|checked| checked.vm_name == vm) {
-            Some(crate::check::VmCheck { problem: None, .. }) => {
+            Some(CheckedVm { problem: None, .. }) => {
                 Finding::ok("attestation", "matches the live VM")
             }
-            Some(crate::check::VmCheck {
+            Some(CheckedVm {
                 problem: Some(problem),
                 ..
             }) => {
-                let fix = if problem.contains("drifted") {
-                    format!("if the change was intended, rampire vm attest {vm}")
-                } else if problem.contains("no domain") {
-                    format!("rampire vm remove {vm}")
-                } else {
-                    format!("rampire vm attest {vm}")
-                };
+                let fix = crate::check::fix(vm, &problem);
                 Finding::problem("attestation", problem, fix)
             }
             None => Finding::problem(

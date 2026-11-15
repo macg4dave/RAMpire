@@ -13,20 +13,6 @@ use crate::context::{applied_root, Context, TempDir, RUNNING_COPY, SERVICE_ACCOU
 use crate::process;
 use crate::ui::Ui;
 
-fn print_check(ui: &mut dyn Ui, report: &crate::check::Report) {
-    for vm in &report.vms {
-        if let Some(problem) = &vm.problem {
-            ui.say(&format!("problem: {}: {problem}", vm.vm_name));
-            if problem.contains("drifted") {
-                ui.say(&format!(
-                    "  fix: if the change was intended, rampire vm attest {}",
-                    vm.vm_name
-                ));
-            }
-        }
-    }
-}
-
 /// Show the difference between two configuration directories, `None` being
 /// no configuration at all. Returns whether there is any.
 fn show_difference(ui: &mut dyn Ui, from: Option<&Path>, to: &Path) -> Result<bool, String> {
@@ -157,8 +143,8 @@ fn stage_and_apply(
     crate::applied::snapshot(&draft, staged)?;
     // Check the copy, so what is checked is exactly what is applied.
     let report = crate::check::run(staged)?;
-    if !report.passed() {
-        print_check(ui, &report);
+    if !report.passed {
+        ui.say(crate::check::text(&report, true).trim_end());
         return Err("the draft did not pass its checks; nothing changed".to_owned());
     }
     let current = crate::applied::current(root)?;
@@ -217,8 +203,8 @@ pub fn rollback(context: &Context, ui: &mut dyn Ui) -> Result<(), String> {
         .map(|index| copies[index].clone())
         .ok_or("there is no earlier applied copy")?;
     let report = crate::check::run(&previous)?;
-    if !report.passed() {
-        print_check(ui, &report);
+    if !report.passed {
+        ui.say(crate::check::text(&report, true).trim_end());
         return Err(format!(
             "{} no longer passes its checks; nothing changed",
             previous.display()
@@ -268,7 +254,7 @@ struct Change<'a> {
     draft: Option<&'a Path>,
     from: Option<&'a Path>,
     to: &'a Path,
-    report: &'a crate::check::Report,
+    report: &'a crate::reports::CheckReport,
     unit: &'a str,
     refreshed: Refreshed,
 }
