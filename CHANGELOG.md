@@ -4,12 +4,26 @@ Every release of RAMpire, newest first. Versions follow semantic
 versioning. Upgrade the controller first, then the guests: a controller
 serves guests from its own minor release and the one before it.
 
-## Unreleased: 0.1.0
+A change someone using RAMpire would notice gets a line under
+"Unreleased" in the commit that makes it. `tools/release.sh prepare`
+turns that section into the release's entry, and the entry becomes the
+release's notes on GitHub ([releasing](docs/releasing.md)).
 
-The first release under the name RAMpire. Nothing is migrated from the
-earlier virtio-mem pool controller: remove an old install and install
-again (decision D9).
+## Unreleased: Linux only
 
+The first release: the controller for a Linux KVM host and the Linux
+guest service, as packages for x86-64. Windows guests are not part of it
+(their work is [parked](docs/roadmap.md#parked)), and packages for Arm
+come later. Nothing is migrated from the earlier virtio-mem pool
+controller: remove an old install and install again.
+
+- `rampire vm add VM` puts a VM under RAMpire in one step: its settings
+  suggested from its definition, the definition fixed (the old one kept),
+  the guest service installed through the VM's QEMU guest agent, over SSH
+  with RAMpire's own key, or, when neither gets in, onto the shut-down
+  VM's disk with libvirt's disk tools. `rampire vm remove VM` takes it
+  out again and puts the definition back to plain RAM, so Cockpit or
+  `virsh` can change its memory again.
 - A TUI: `sudo rampire` on a terminal, or `ssh -t HOST sudo rampire`
   from any computer. The pool and each VM live; adding, removing and
   bringing back VMs; changing a VM's settings; the doctor, with fixes it
@@ -36,9 +50,8 @@ again (decision D9).
   license and notices of every crate built into its binary
   ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 - Man pages, `man rampire`, `man rampire-COMMAND` and `man rampire.toml`,
-  and `rampire-guest(8)` and `rampire-watch-ram(1)` in the guest package,
-  made from the same definitions as `--help`; shell completion for bash,
-  zsh and fish. Options meant for scripts are under "For scripts" in
+  and `rampire-guest(8)` in the guest package, made from the same
+  definitions as `--help`; shell completion for bash, zsh and fish. Options meant for scripts are under "For scripts" in
   `--help` and the man pages, and docs/fleet.md says what stays the same
   between releases.
 - One command, `rampire`: `init`, `status`, `top`, `watch`, `check`,
@@ -56,7 +69,10 @@ again (decision D9).
   enabled and running. `rampire vm add --fix-xml` also adds a missing NUMA
   cell and `maxMemory`, and reads the guest's kernel release from its QEMU
   guest agent. `rampire status` shows the controller unit's state.
-- Host and guest packages as RPM and `.deb`, and static tarballs. The
-  guest package recommends `qemu-guest-agent`.
+- Host and guest packages as RPM and `.deb` for x86-64, and static
+  tarballs for other systemd distributions. The host package carries the
+  guest package of the same build, which `vm add` installs. The guest
+  package recommends `qemu-guest-agent`. Installs are checked on
+  Debian 13, Rocky Linux 10 and Fedora 45.
 - Every document names its schema and starts at version 1. The control
   channel port is `org.rampire.control.0`.

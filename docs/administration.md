@@ -26,8 +26,10 @@ Run one controller per host: separate controllers cannot share a pool.
 | Item | Location |
 |---|---|
 | Controller binary | `/usr/bin/rampire` |
-| Unit | `/etc/systemd/system/rampire.service` |
-| libvirt access rule | `/etc/polkit-1/rules.d/50-rampire.rules` |
+| Unit | `/usr/lib/systemd/system/rampire.service` (from the tarball: `/etc/systemd/system/`) |
+| libvirt access rule | `/usr/share/polkit-1/rules.d/50-rampire.rules` (from the tarball: `/etc/polkit-1/rules.d/`) |
+| Service account | `rampire`, made by the package (`/usr/lib/sysusers.d/rampire.conf`) |
+| Guest packages of this build | `/usr/share/rampire/guest/`, which `vm add` installs |
 | Configuration (the draft) | `/etc/rampire/` (`global.toml`, `vms.d/<vm_name>.toml`, `reviews/`) |
 | Recorded setups | `/etc/rampire/attestations/<vm_name>.attestation.json`, kept by `apply` |
 | Applied copies | `/var/lib/rampire/applied/<id>/`, with `current` naming the one the controller runs |
@@ -49,39 +51,46 @@ account, the unit's socket group, the account's libvirt access (the
 polkit rule) and an applied configuration. It prints the fix for each
 problem.
 
-Requirements: a RHEL-family (or other systemd) KVM host with libvirt and
-QEMU, `virsh` on the path, polkit, and Rust to build the controller.
+Requirements: an x86-64 Linux KVM host with systemd, libvirt and QEMU,
+`virsh` on the path, and polkit. Packages are built for the RHEL family
+(RHEL, AlmaLinux, Rocky Linux), Fedora and Debian; installs are checked on
+Rocky Linux 10, Fedora 45 and Debian 13, and RAMpire runs on RHEL 10.
 
-1. Create the service account once:
+1. Install the host package from the
+   [release](https://github.com/macg4dave/RAMpire/releases)
+   ([quick start](quick-start.md#1-install)): `dnf install
+   ./rampire-VERSION-1.x86_64.rpm` or `apt install
+   ./rampire_VERSION_amd64.deb`. It makes the `rampire` service account,
+   installs the unit and the libvirt access rule, and leaves the
+   controller off until it has a configuration. A host without RPM or apt
+   installs the static tarball by its `INSTALL.md`; a development host
+   installs a build of its checkout
+   ([development](development.md#installing-a-development-build)).
+
+2. Set it up:
 
    ```bash
-   sudo useradd --system --no-create-home --shell /sbin/nologin rampire
+   sudo rampire init
    ```
 
-   The unit adds the `qemu` group, which owns libvirt's channel sockets.
+   `init` checks the host first, and changes nothing if something is
+   missing. Then it writes a suggested `global.toml`: it reads the host's
+   memory and every libvirt domain, sets aside the boot RAM of each VM
+   with a virtio-mem device and all the memory of every other VM, and
+   keeps an eighth of the host (2 to 8 GiB) as `host_reserve`. It never
+   overwrites an existing `global.toml`. It applies it and leaves the
+   controller enabled and running.
 
-2. Write the site configuration in a directory of your own, starting from
-   [deploy/examples](../deploy/examples). See [Configuration](#configuration).
-   On a host with the controller installed, `sudo rampire init` writes a
-   suggested `global.toml` instead: it reads the host's memory and every
-   libvirt domain, sets aside the boot RAM of each VM with a virtio-mem
-   device and all the memory of every other VM, and keeps an eighth of the
-   host (2 to 8 GiB) as `host_reserve`. It never overwrites an existing
-   `global.toml`.
-
-3. Prepare each VM ([Adding a VM](#adding-a-vm)).
-
-4. Install the controller from its package (`dnf install` or
-   `apt install`, see the [quick start](quick-start.md)), or, on a
-   development host, from a checkout
-   ([development](development.md#installing-a-development-build)). Then:
+   To start from your own settings instead, write them in `/etc/rampire`
+   from the examples in `/usr/share/doc/rampire/examples/` (see
+   [Configuration](#configuration)), then:
 
    ```bash
    sudo rampire apply                    # check the draft and switch to it
    sudo systemctl enable --now rampire
    ```
 
-   On a new host `sudo rampire init` does both, after checking the host.
+3. Add each VM ([Adding a VM](#adding-a-vm)).
 
 ### Changing the configuration
 
@@ -260,12 +269,14 @@ has no configuration file.
 
 | Item | Location |
 |---|---|
-| Binary | `/usr/local/libexec/rampire-guest` |
+| Binary | `/usr/libexec/rampire-guest` |
 | Durable request state | `/var/lib/rampire-guest/control.json.request-state` |
 | Control files, without the channel | `/var/lib/rampire-guest/control.json` and `control.json.host-status` |
 
-Install with the `rampire-guest` package (`.deb` or RPM). The package
-puts the binary in `/usr/libexec/rampire-guest`.
+`rampire vm add` installs the `rampire-guest` package (`.deb` or RPM) of
+the host's build. To install it by hand, use the same file from the
+host's `/usr/share/rampire/guest/`, or the release's `rampire-guest`
+package; a guest without RPM or apt can use the static tarball.
 
 The service needs pressure stall information to give memory back. RHEL's
 kernels build it in but boot with it off (`CONFIG_PSI_DEFAULT_DISABLED`),
@@ -389,7 +400,7 @@ The same command serves a person and a script:
 - `--json` writes a versioned document instead of text. It names its
   schema: `rampire.status-report` for `status` and `rampire.check` for
   `check`.
-- `rampire --version` names the build: `0.1.0 (build 6b0e2db1a2c3)`.
+- `rampire --version` names the build: `0.5.0 (build 6b0e2db1a2c3)`.
 
 | Exit code | Meaning |
 |---|---|
@@ -455,17 +466,22 @@ Do not clear request state to reduce RAM.
 
 ## Upgrading
 
-Order: **controller first, then guest services.** Every document the
-controller and the guests exchange or keep names its schema and version,
-and every one is at version 1. A reader refuses a schema or version it
-doesn't know, so it never guesses. Until the first release, install the
-controller and the guests from the same build; from release 0.1.0 a
-controller serves guests from its own minor release and the one before it
-(see "Versions and releases" in the previous roadmap,
-`git show 71f1de7~1:docs/roadmap.md`).
+Order: **controller first, then guest services.** A controller serves
+guests from its own minor release and the one before it, so a 0.6
+controller works with 0.5 guests while they are upgraded. Every document
+the controller and the guests exchange or keep names its schema and
+version; a reader refuses one it doesn't know, so it never guesses. The
+[changelog](../CHANGELOG.md) says what each release changes.
 
-1. Install the new controller, then `sudo rampire apply` and
-   `sudo systemctl restart rampire`. Applying records each VM's setup
-   again where it changed.
-2. Check with `sudo rampire status`.
-3. Upgrade each guest service with its package.
+1. Install the new host package over the old one, as in
+   [Installing the controller](#installing-the-controller): `dnf install
+   ./rampire-VERSION-1.x86_64.rpm` or `apt install
+   ./rampire_VERSION_amd64.deb`. The package restarts a running
+   controller onto the new binary; the configuration and the state under
+   `/var/lib/rampire` stay.
+2. `sudo rampire apply`, which records each VM's setup again where it
+   changed, then check with `sudo rampire status`.
+3. Upgrade each guest service: in the VM, install the guest package from
+   the host's `/usr/share/rampire/guest/` (the new build's) or from the
+   release. `sudo rampire doctor VM` shows the build each guest's
+   publications come from.

@@ -10,6 +10,8 @@
 # crate (cargo xtask gate checks). Anything else is passed to cargo xtask,
 # for example `tools/build.sh package --static`, and a package's output
 # directory (dist/ unless --output says otherwise) is copied back here.
+# `tools/build.sh fixtures` writes this release's protocol fixtures
+# (fixtures/protocol/MAJOR.MINOR) and copies them back the same way.
 #
 # install builds the packages, then installs the host package on this
 # machine with its package manager (dnf or apt), upgrading what is
@@ -136,6 +138,10 @@ if [[ $1 == package ]]; then
   fi
 fi
 
+if [[ $1 == fixtures ]]; then
+  output=fixtures/protocol
+fi
+
 if (( gate )); then
   # Snapshot the working tree as a Git tree object without touching the
   # user's index: a temporary index takes every non-ignored file.
@@ -233,7 +239,7 @@ case $builder in
 esac
 
 if [[ -n $output ]]; then
-  echo >&2 "==> packages in $output/"
+  echo >&2 "==> output in $output/"
 fi
 if (( install )); then
   [[ -n $output ]] || { echo 'install builds packages; --print-version builds none' >&2; exit 1; }

@@ -7,29 +7,38 @@ unless it says "in the VM".
 
 ## 1. Install
 
+RAMpire 0.5 is for Linux on x86-64. Download the host package for your
+distribution from the
+[releases page](https://github.com/macg4dave/RAMpire/releases), with
+`SHA256SUMS`, check it, and install it. For example, for 0.5.0:
+
+```bash
+version=0.5.0
+base=https://github.com/macg4dave/RAMpire/releases/download/v$version
+```
+
 RHEL, AlmaLinux, Rocky Linux and Fedora:
 
 ```bash
-dnf copr enable macg4dave/rampire
-dnf install rampire
+curl -fL -O "$base/rampire-$version-1.x86_64.rpm" -O "$base/SHA256SUMS"
+sha256sum -c --ignore-missing SHA256SUMS
+dnf install "./rampire-$version-1.x86_64.rpm"
 ```
 
 Debian:
 
 ```bash
-curl -fsSL https://macg4dave.github.io/RAMpire/apt/rampire.asc \
-  | install -D -m 0644 /dev/stdin /etc/apt/keyrings/rampire.asc
-curl -fsSL -o /etc/apt/sources.list.d/rampire.sources \
-  https://macg4dave.github.io/RAMpire/apt/rampire.sources
-apt update && apt install rampire
+curl -fL -O "$base/rampire_${version}_amd64.deb" -O "$base/SHA256SUMS"
+sha256sum -c --ignore-missing SHA256SUMS
+apt install "./rampire_${version}_amd64.deb"
 ```
 
-On RHEL, AlmaLinux and Rocky Linux, `dnf copr` comes from
-`dnf-plugins-core`. The packages are also on the
-[releases page](https://github.com/macg4dave/rampire/releases)
-(`dnf install ./rampire-VERSION.x86_64.rpm`,
-`apt install ./rampire_VERSION_amd64.deb`). For a host without a package,
-the static tarball has its own `INSTALL.md`.
+The package manager brings in what the host package needs, and libvirt's
+disk tools as a recommendation (`guestfs-tools`; on Debian
+`libguestfs-tools`). You need only the host package: it carries the
+guest package of the same build, and step 3 installs that in the VM. For a host without RPM or apt, the
+release's static tarball, `rampire-VERSION-x86_64-linux.tar.gz`, has its
+own `INSTALL.md`.
 
 ## 2. Set up
 
@@ -75,9 +84,9 @@ guest agent when that runs commands, else over SSH as root at the address
 libvirt has for it, with RAMpire's own key
 (`/var/lib/rampire/ssh/id_ed25519.pub`), or as `--guest-login USER@HOST`
 (Guest login in the form). When it can't log in, or the VM is off, it
-uses libvirt's disk tools instead (`guestfs-tools`, which the host package
-recommends): with the VM shut down, it puts the package on its disk, and
-the package installs as the VM starts. The guest service needs systemd
+uses libvirt's disk tools instead, which the host package recommends:
+with the VM shut down, it puts the package on its disk, and the package
+installs as the VM starts. The guest service needs systemd
 253 or later: Debian 13, RHEL 10, current Fedora.
 
 ## 4. Watch it work

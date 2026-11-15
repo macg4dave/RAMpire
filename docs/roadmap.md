@@ -233,8 +233,8 @@ guest); it is left for the owner to decide.
 
 Someone who isn't the owner installs RAMpire on their own KVM host and
 puts one of their own Linux VMs under it. They type every command; we
-guide and take notes. The packages are the files from `dist/`, since no
-repository is published yet ([Parked](#parked)).
+guide and take notes. The packages are the files of a GitHub release,
+since no repository is published yet ([Parked](#parked)).
 
 RAMpire runs entirely on the host and talks to the guest over a virtio
 channel. It needs no SSH keys and no network setup between host and
@@ -246,19 +246,19 @@ to use the TUI.
 - [ ] **U1.1** Their systems meet the requirements: a host with
   libvirt 10.1 and QEMU 8.2 or later, a guest with systemd 253 or later
   (Debian 12 and RHEL 9 guests don't qualify).
-- [ ] **U1.2** The [quick start](quick-start.md) gets a route from
+- [x] **U1.2** The [quick start](quick-start.md) gets a route from
   package files: where the files come from, `dnf install
-  ./rampire-VERSION.x86_64.rpm` or `apt install ./rampire_VERSION_amd64.deb`,
-  and how the guest package gets into the VM. Today step 1 sends them to
-  `dnf copr` and apt lines with nothing behind them, a dead end on the
-  first command.
+  ./rampire-VERSION-1.x86_64.rpm` or `apt install ./rampire_VERSION_amd64.deb`,
+  and how the guest package gets into the VM. Done 2026-11-15: the files
+  of the GitHub release, checked against its `SHA256SUMS`; the host
+  package carries the guest package.
 - [ ] **U1.3** `vm remove` takes out of the definition what `vm add`
   put in: the virtio-mem device, the control channel, and the
   `maxMemory` and NUMA cell if it added them, leaving the VM on its boot
   RAM with libvirt's defaults. It takes effect at the VM's next cold
   start. Anything else in the definition is the user's to manage.
-- [ ] **U1.4** One build for the session: both packages and their
-  checksums from `tools/build.sh package` at one commit. The user keeps
+- [ ] **U1.4** One build for the session: a release's packages and
+  their checksums (0.5.0 or later). The user keeps
   it for the whole session and upgrades with the same route if a fix
   comes in.
 
@@ -330,10 +330,13 @@ Not scheduled. Each needs an owner decision or an outside fix first.
 - **W: Windows guests.** Moving to Hyper-V Dynamic Memory. Work on
   virtio-mem for Windows is paused until the `viomem` driver's removal
   defect is fixed ([administration](administration.md#windows-guests)).
-- **The first release.** Signing the RPMs and `SHA256SUMS`, the GitHub
-  release, the apt repository and COPR; undecided since CI was removed
-  ([releasing](releasing.md)). Until it exists, the quick start's
-  repository lines have nothing behind them (U1.2).
+- **Package repositories and signing.** 0.5.0 is published as files on
+  GitHub Releases, with `SHA256SUMS`, by `tools/release.sh`
+  ([releasing](releasing.md)). Signing the RPMs and `SHA256SUMS`, the apt
+  repository and COPR are not decided.
+- **Arm packages.** Releases are x86-64 only; `aarch64` RPMs and `arm64`
+  `.deb`s need the build container to cross-compile and the install check
+  to run on Arm.
 - **Administrator deployments.** Rocky Linux 10, AlmaLinux 10 and
   Fedora 45, as a system administrator would deploy them, kept in place.
   Not started.

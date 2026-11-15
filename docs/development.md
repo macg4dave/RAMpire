@@ -135,8 +135,8 @@ code does: [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 `packaging/docs.sh`, run by the package build, makes them from the
 binaries just built: `rampire generate man|completions` (hidden) writes
 `rampire(8)`, a page per subcommand and `rampire.toml(5)` from clap's
-definitions and `rampire_core::settings_reference`, and the guest's two
-pages wrap their own `--help`. A test holds docs/reference.md's settings
+definitions and `rampire_core::settings_reference`, and the guest's page
+wraps its own help. A test holds docs/reference.md's settings
 tables to `settings_reference`, and that to the settings the configuration
 reads.
 
@@ -146,7 +146,7 @@ reads.
 |---|---|---|
 | Host, xtask, Linux guest | The build container (`tools/build.sh`) or Linux | `cargo xtask gate checks` |
 | Windows guest unit tests and Clippy | Windows workstation | part of `tools/build.sh` there |
-| Resizing, onlining, pressure, cache behaviour | A deployment: the packages on a real host and guest | `rampire watch`, `rampire top`, `rampire-watch-ram` |
+| Resizing, onlining, pressure, cache behaviour | A deployment: the packages on a real host and guest | `rampire watch`, `rampire top`, `rampire doctor VM` |
 
 The Windows guest is parked. Its build and deployment come back with it,
 as a package, not as development scripts.
@@ -200,6 +200,13 @@ it. `install` checks that the installed `rampire --version` reports the
 build just made.
 `--static` adds the musl tarballs a release ships. The guest packages
 (`rampire-guest`) are in `dist/` too.
+
+## Releases and change notes
+
+A change someone using RAMpire would notice gets a line under
+`## Unreleased` in [CHANGELOG.md](../CHANGELOG.md), in the same commit.
+`tools/release.sh` makes the release from it:
+[releasing](releasing.md).
 
 Upgrading a running host is the package manager's upgrade: the package
 restarts a running controller onto the new binary.

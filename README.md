@@ -74,20 +74,20 @@ sudo rampire
 
 `vm add` shows everything it will do and asks once.
 
-**Looking for packages?** Check [GitHub Releases](https://github.com/macg4dave/RAMpire/releases) for published builds. The [quick start](docs/quick-start.md) covers installing on RPM and Debian hosts. If there is no published release yet, build the packages yourself with `tools/build.sh package` ([development builds](docs/development.md#installing-a-development-build)).
+**Packages:** RPM and `.deb` packages for x86-64 Linux are on [GitHub Releases](https://github.com/macg4dave/RAMpire/releases), with checksums and static tarballs. The [quick start](docs/quick-start.md#1-install) covers installing them on RHEL-family, Fedora and Debian hosts. What each release changes is in the [changelog](CHANGELOG.md).
 
 ### Requirements
 
 | Component | Requirement |
 |---|---|
-| **Host** | Linux with KVM, QEMU and libvirt; systemd-based installation |
+| **Host** | x86-64 Linux with KVM, QEMU and libvirt; systemd |
 | **libvirt** | **10.1+** |
 | **QEMU** | **8.2+** and the required virtio-mem support |
-| **Guest** | Linux VM with a compatible virtio-mem configuration and the RAMpire guest service |
+| **Guest** | x86-64 Linux VM; `rampire vm add` sets up its virtio-mem device and installs the guest service |
 | **Guest service** | systemd **253+** for the packaged Linux guest service |
 | **Access** | Administrator access to the host and to each VM you want to enrol |
 
-RAMpire has been exercised on **RHEL 10**. Other Linux distributions and packaged installation paths are being qualified; see [current validation work](docs/roadmap.md) before deploying on a new distribution.
+RAMpire runs on **RHEL 10**, and its packages are install-checked on **Rocky Linux 10, Fedora 45 and Debian 13**. Other distributions are being qualified; see [current validation work](docs/roadmap.md) before deploying on a new one.
 
 ## See what's happening
 
@@ -152,8 +152,9 @@ Or edit the TOML, preview the change with `sudo rampire diff` and apply it with 
 | **Linux guest memory management** | Working with virtio-mem |
 | **Windows guest via virtio-mem** | Development paused due to an upstream `viomem` driver issue; not supported for deployment |
 | **Windows via Hyper-V Dynamic Memory** | Planned; not implemented |
+| **Arm (aarch64) packages** | Planned; releases are x86-64 only for now |
 
-**Before running on an important host:** RAMpire is still progressing through its first-release validation. Read [administration and recovery](docs/administration.md) and the [remaining validation checklist](docs/roadmap.md). Test with non-critical VMs first.
+**Before running on an important host:** 0.5 is RAMpire's first release, published as a pre-release for Linux only. Read [administration and recovery](docs/administration.md) and the [remaining validation checklist](docs/roadmap.md). Test with non-critical VMs first.
 
 ## Documentation
 
@@ -166,7 +167,9 @@ Or edit the TOML, preview the change with `sudo rampire diff` and apply it with 
 | Monitor or record memory behaviour | [Tools and metrics](docs/tools.md) |
 | Use automation or manage more than one host | [Fleet guide](docs/fleet.md) |
 | Build, test or contribute code | [Development](docs/development.md) |
+| See what changed in each release | [Changelog](CHANGELOG.md) |
 | Understand what is coming next | [Roadmap](docs/roadmap.md) |
+| Make a release | [Releasing](docs/releasing.md) |
 | Integrate structured outputs | [JSON schemas](docs/json.md) · [Journal events](docs/journal.md) |
 
 ## Contributing and getting help
