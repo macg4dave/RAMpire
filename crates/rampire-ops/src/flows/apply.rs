@@ -122,9 +122,19 @@ pub fn diff(context: &Context, ui: &mut dyn Ui) -> Result<(), String> {
 
 /// `rampire apply`. Returns whether the applied configuration changed.
 pub fn apply(context: &Context, ui: &mut dyn Ui) -> Result<bool, String> {
+    apply_asking(context, ui, true)
+}
+
+/// `apply` for a change the person already agreed to, such as `vm add`'s:
+/// the difference isn't shown and nothing is asked again.
+pub fn apply_agreed(context: &Context, ui: &mut dyn Ui) -> Result<bool, String> {
+    apply_asking(context, ui, false)
+}
+
+fn apply_asking(context: &Context, ui: &mut dyn Ui, ask: bool) -> Result<bool, String> {
     let root = applied_root();
     let staged = crate::applied::staging(root)?;
-    let result = stage_and_apply(context, ui, root, &staged);
+    let result = stage_and_apply(context, ui, root, &staged, ask);
     if staged.exists() {
         let _ = std::fs::remove_dir_all(&staged);
     }
@@ -137,6 +147,7 @@ fn stage_and_apply(
     ui: &mut dyn Ui,
     root: &Path,
     staged: &Path,
+    ask: bool,
 ) -> Result<bool, String> {
     let draft = context.draft();
     // Each running VM's recorded setup is brought up to date first, so
@@ -158,12 +169,14 @@ fn stage_and_apply(
             return Ok(false);
         }
     }
-    show_difference(ui, current.as_deref(), staged)?;
     let unit = controller_unit();
     let refresh = Refresh::plan(&unit, current.as_deref(), staged);
-    if !ui.confirm(&format!("Apply this{}?", refresh.question(&unit)))? {
-        ui.say("nothing changed");
-        return Ok(false);
+    if ask {
+        show_difference(ui, current.as_deref(), staged)?;
+        if !ui.confirm(&format!("Apply this{}?", refresh.question(&unit)))? {
+            ui.say("nothing changed");
+            return Ok(false);
+        }
     }
     secure(staged)?;
     let millis = process::unix_millis()?;

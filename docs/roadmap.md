@@ -45,8 +45,8 @@ their own way of reading, and aren't part of T.
 |---|---|---|
 | Dashboard | Every managed VM and the pool: each VM's charge, the free pool, host memory against the floor, resizes under way, pool history, events | `rampire top` |
 | VM details | One VM: boot RAM, device size, requested and plugged memory, a resize under way and its progress, the guest's own figures, the last grant and what held it back, its events. Change its settings, restart it onto its saved definition, open its doctor | `rampire watch`, `rampire set`, `rampire vm restart` |
-| Add a VM | The host's VMs that RAMpire doesn't manage; for one, the guided add | `rampire vm add --fix-xml` |
-| Remove a VM | Stop managing a VM, keeping its settings or forgetting them; bring back a parked VM | `rampire vm remove` |
+| Add a VM | The host's VMs that RAMpire doesn't manage; for one, its settings, then one question | `rampire vm add` |
+| Remove a VM | Stop managing a VM and delete what RAMpire kept for it | `rampire vm remove` |
 | Doctor | The host's checks and each VM's, problems first, each with its fix | `rampire doctor` |
 | Logs | The controller's journal, filtered by VM | `rampire logs` |
 
@@ -80,8 +80,8 @@ Done first, so the commands and the TUI share one owner for each job.
   TUI answers it in a dialog. Done when the commands' questions and output
   are unchanged (tests show it) and nothing in the flows reads stdin.
 - [x] **T1.2** `rampire vm list`: every VM on the libvirt connection,
-  marked managed, parked or not managed. For one that isn't managed, what
-  `vm add --fix-xml` would change and whether its guest service has
+  marked managed or not managed. For one that isn't managed, what
+  `vm add` would change and whether its guest service has
   published. For a managed one, its state as `status` gives it. With
   `--json` ([json](json.md)).
 - [x] **T1.3** `rampire doctor VM`: everything that can be checked about
@@ -119,15 +119,14 @@ Done first, so the commands and the TUI share one owner for each job.
   write, the restart, the apply, then the guest's first publication as it
   arrives. A VM whose guest service hasn't published says so, with the
   install command for the VM's system
-  ([quick start](quick-start.md#3-install-the-guest-service-in-the-vm)).
-- [x] **T2.5** Remove a VM: keep its settings (parked) or forget them,
-  saying what each one leaves behind. Parked VMs are listed, to bring
-  back.
+  ([quick start](quick-start.md#3-add-the-vm)).
+- [x] **T2.5** Remove a VM: stop managing it and delete what RAMpire
+  kept for it, saying what it removed.
 - [x] **T2.6** Doctor (T1.3), host and VMs. Where a fix is a `rampire`
   command, offer to run it.
 - [x] **T2.7** Logs, scrolling, filtered by VM.
 - [x] **T2.8** Every action shows the command line it ran, for example
-  `rampire vm add webserver --fix-xml`, so a person learns the commands
+  `rampire vm add webserver`, so a person learns the commands
   and can script what they did.
 
 ### T3: Over SSH, at any size
@@ -214,7 +213,7 @@ back, forget and add again (its review question answered for the
 throwaway VM), the doctor and the logs, all from the TUI. Findings, each
 fixed in the product:
 
-- `vm add --fix-xml` and `vm list` failed on a domain with `<cputune>`
+- `vm add` and `vm list` failed on a domain with `<cputune>`
   before `<cpu>`: the text edit took one for the other.
 - A guest publishes only once a host sends its settings, so before `vm
   add` none has; `vm list` now says whether the guest service is
@@ -253,8 +252,8 @@ to use the TUI.
   and how the guest package gets into the VM. Today step 1 sends them to
   `dnf copr` and apt lines with nothing behind them, a dead end on the
   first command.
-- [ ] **U1.3** `vm remove` takes out of the definition what `vm add
-  --fix-xml` put in: the virtio-mem device, the control channel, and the
+- [ ] **U1.3** `vm remove` takes out of the definition what `vm add`
+  put in: the virtio-mem device, the control channel, and the
   `maxMemory` and NUMA cell if it added them, leaving the VM on its boot
   RAM with libvirt's defaults. It takes effect at the VM's next cold
   start. Anything else in the definition is the user's to manage.

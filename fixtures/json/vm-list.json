@@ -20,19 +20,6 @@
       "os_id": "http://debian.org/debian/13"
     },
     {
-      "vm_name": "old",
-      "state": "shut off",
-      "management": "parked",
-      "status": null,
-      "detail": "parked: rampire vm add old brings it back as it was",
-      "to_fix": [],
-      "problems": [],
-      "guest": {
-        "state": "unknown"
-      },
-      "os_id": null
-    },
-    {
       "vm_name": "web",
       "state": "running",
       "management": "managed",

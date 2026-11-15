@@ -115,8 +115,6 @@ pub struct VmListReport {
 pub enum Management {
     /// The controller runs it.
     Managed,
-    /// `vm remove` kept its settings, for `vm add` to bring it back.
-    Parked,
     /// `vm add` wrote its settings but didn't apply them.
     Unfinished,
     NotManaged,
@@ -126,7 +124,6 @@ impl Management {
     pub fn label(self) -> &'static str {
         match self {
             Self::Managed => "managed",
-            Self::Parked => "parked",
             Self::Unfinished => "unfinished",
             Self::NotManaged => "not managed",
         }
@@ -172,7 +169,7 @@ pub struct ListedVm {
     pub status: Option<ControllerStatusSnapshot>,
     /// One line about it for a person.
     pub detail: String,
-    /// For a VM that isn't managed: what `vm add --fix-xml` would change.
+    /// For a VM that isn't managed: what `vm add` would change.
     pub to_fix: Vec<String>,
     /// For a VM that isn't managed: what would still stop `vm add`.
     pub problems: Vec<Problem>,
@@ -181,6 +178,18 @@ pub struct ListedVm {
     /// The system in the VM as its definition's libosinfo metadata names
     /// it, such as `http://debian.org/debian/13`, when it does.
     pub os_id: Option<String>,
+    /// For a VM that isn't managed: the sizes `vm add` would give it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested: Option<SuggestedSizes>,
+}
+
+/// The sizes `vm add` suggests for a VM, in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SuggestedSizes {
+    pub min_ram: u64,
+    pub max_ram: u64,
+    pub free_ram: u64,
 }
 
 /// One VM's status in a line a person can read, as `rampire status`
@@ -383,17 +392,7 @@ mod tests {
                     problems: vec![],
                     guest: Published::Yes { age_seconds: 4 },
                     os_id: Some("http://debian.org/debian/13".to_owned()),
-                },
-                ListedVm {
-                    vm_name: "old".to_owned(),
-                    state: "shut off".to_owned(),
-                    management: Management::Parked,
-                    status: None,
-                    detail: "parked: rampire vm add old brings it back as it was".to_owned(),
-                    to_fix: vec![],
-                    problems: vec![],
-                    guest: Published::Unknown,
-                    os_id: None,
+                    suggested: None,
                 },
                 ListedVm {
                     vm_name: "web".to_owned(),
@@ -405,6 +404,7 @@ mod tests {
                     problems: vec![],
                     guest: Published::Yes { age_seconds: 0 },
                     os_id: Some("http://redhat.com/rhel/10.0".to_owned()),
+                    suggested: None,
                 },
             ],
         }

@@ -62,7 +62,7 @@ pub(crate) fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
         );
     }
     if vms.is_empty() && unavailable.is_empty() {
-        println!("RAMpire manages no VMs yet. Add one with: rampire vm add VM --fix-xml");
+        println!("RAMpire manages no VMs yet. Add one with: rampire vm add VM");
     }
     for status in &vms {
         println!("{}", status_line(status));

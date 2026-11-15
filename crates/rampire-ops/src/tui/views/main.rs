@@ -325,7 +325,6 @@ fn vm_list(
                 None => {
                     let (icon, tone, next) = match entry.management {
                         Management::Managed => (Icon::Vm, Tone::Value, "details"),
-                        Management::Parked => (Icon::Parked, Tone::Dim, "bring back"),
                         Management::Unfinished => (Icon::Problem, Tone::Warn, "finish"),
                         Management::NotManaged => (Icon::Stopped, Tone::Dim, "add"),
                     };

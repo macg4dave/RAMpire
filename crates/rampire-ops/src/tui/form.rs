@@ -1,4 +1,5 @@
-//! The settings form, for one VM or several: a labelled text box for each
+//! The settings form, for one VM or several, changing a managed VM's
+//! settings or giving a VM being added its own: a labelled text box for each
 //! setting, checked as it is typed, with a word about the chosen one, the
 //! command Save runs, and Cancel and Save. A short window gets one-row
 //! boxes.
@@ -22,6 +23,17 @@ enum Kind {
     Number,
     /// A size with its unit.
     Size,
+    /// A login, `USER@HOST`.
+    Login,
+}
+
+/// What the form is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// Changing managed VMs' settings: Save runs `set`.
+    Set,
+    /// Adding VMs: Save runs `vm add`, which shows what it will do and asks.
+    Add,
 }
 
 /// A setting's name in its file, its label, and what it means.
@@ -47,6 +59,11 @@ fn about(key: &str) -> (&'static str, &'static str, Kind) {
             "Spare memory the VM keeps ready: it asks for more when it has less than this, and gives back what is over.",
             Kind::Size,
         ),
+        "guest_login" => (
+            "Guest login",
+            "How RAMpire logs in to the VM to install rampire-guest, as USER@HOST. Left empty: its guest agent, or root at the address libvirt has for it, with the host root's SSH key.",
+            Kind::Login,
+        ),
         _ => ("Setting", "", Kind::Size),
     }
 }
@@ -70,6 +87,7 @@ impl Field {
                 .iter()
                 .map(|size| (*size).to_owned())
                 .collect(),
+            Kind::Login => Vec::new(),
         };
         let input = Input::new(original.as_deref().unwrap_or(""))
             .remembering(format!("setting {key}"))
@@ -122,6 +140,8 @@ impl Field {
             Kind::Size => rampire_core::units::parse_byte_size(value)
                 .err()
                 .map(|_| "a size, such as 8GB, 512MB or 1.5GB".to_owned()),
+            Kind::Login => (!value.contains('@') || value.contains(char::is_whitespace))
+                .then(|| "USER@HOST, such as root@192.168.122.5".to_owned()),
         }
     }
 }
@@ -129,6 +149,7 @@ impl Field {
 /// The settings form, for the VMs it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Form {
+    pub purpose: Purpose,
     pub vms: Vec<String>,
     pub fields: Vec<Field>,
     pub cursor: usize,
@@ -179,16 +200,25 @@ impl Form {
     /// The commands Save runs.
     pub fn actions(&self) -> Vec<Action> {
         let changes = self.changes();
-        if changes.is_empty() {
-            return Vec::new();
+        match self.purpose {
+            Purpose::Set if changes.is_empty() => Vec::new(),
+            Purpose::Set => self
+                .vms
+                .iter()
+                .map(|vm| Action::Set {
+                    target: vm.clone(),
+                    changes: changes.clone(),
+                })
+                .collect(),
+            Purpose::Add => self
+                .vms
+                .iter()
+                .map(|vm| Action::Add {
+                    vm: vm.clone(),
+                    changes: changes.clone(),
+                })
+                .collect(),
         }
-        self.vms
-            .iter()
-            .map(|vm| Action::Set {
-                target: vm.clone(),
-                changes: changes.clone(),
-            })
-            .collect()
     }
 
     pub fn render(
@@ -211,17 +241,20 @@ impl Form {
         let height = (fixed + rows * if roomy { 3 } else { 2 }).min(area.height.saturating_sub(2));
         let rect = widgets::centred(area, width, height);
         Clear.render(rect, buf);
-        let title = match self.vms.as_slice() {
-            [vm] => format!("Settings for {vm}"),
-            vms => format!("Settings for {} VMs", vms.len()),
+        let (title, subtitle) = match (self.purpose, self.vms.as_slice()) {
+            (Purpose::Set, [vm]) => (format!("Settings for {vm}"), "saved and applied with Enter"),
+            (Purpose::Set, vms) => (
+                format!("Settings for {} VMs", vms.len()),
+                "saved and applied with Enter",
+            ),
+            (Purpose::Add, [vm]) => (format!("Add {vm}"), "Enter shows what it will do"),
+            (Purpose::Add, vms) => (
+                format!("Add {} VMs", vms.len()),
+                "Enter shows what it will do",
+            ),
         };
-        let block = raised_panel(
-            theme,
-            Icon::Settings,
-            &title,
-            "saved and applied with Enter",
-        )
-        .padding(Padding::new(2, 2, 1, 0));
+        let block =
+            raised_panel(theme, Icon::Settings, &title, subtitle).padding(Padding::new(2, 2, 1, 0));
         let inner = block.inner(rect);
         block.render(rect, buf);
         let problems = self.problems();
@@ -290,7 +323,12 @@ impl Form {
             let value = if chosen {
                 field.input.line(theme, history, text_area.width as usize)
             } else if field.value().is_empty() && field.original.is_none() {
-                Line::styled("each keeps its own", theme.dim())
+                let blank = match (self.purpose, field.key) {
+                    (Purpose::Add, "guest_login") => "automatic",
+                    (Purpose::Add, _) => "suggested",
+                    (Purpose::Set, _) => "each keeps its own",
+                };
+                Line::styled(blank, theme.dim())
             } else {
                 Line::styled(field.value().to_owned(), theme.value())
             };
@@ -425,6 +463,7 @@ mod tests {
 
     fn form() -> Form {
         Form {
+            purpose: Purpose::Set,
             vms: vec!["web".to_owned()],
             fields: vec![
                 Field::new("priority", Some("100".to_owned())),

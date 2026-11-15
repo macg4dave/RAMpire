@@ -64,15 +64,15 @@ Once the host package is installed, the main flow is:
 # Check the host, write a suggested configuration and start the controller
 sudo rampire init
 
-# After installing the Linux guest service inside the VM,
-# add a VM (replace 'webserver' with its libvirt name)
-sudo rampire vm add webserver --fix-xml
+# Add a VM (replace 'webserver' with its libvirt name): its settings,
+# its definition, the guest service inside it, all in one step
+sudo rampire vm add webserver
 
 # See the pool and your VMs in action, add and remove VMs, run the doctor
 sudo rampire
 ```
 
-`vm add` previews necessary VM-definition changes and guides you through the remaining choices. Some VM changes require a restart before memory management can begin.
+`vm add` shows everything it will do and asks once.
 
 **Looking for packages?** Check [GitHub Releases](https://github.com/macg4dave/RAMpire/releases) for published builds. The [quick start](docs/quick-start.md) covers installing on RPM and Debian hosts. If there is no published release yet, build the packages yourself with `tools/build.sh package` ([development builds](docs/development.md#installing-a-development-build)).
 

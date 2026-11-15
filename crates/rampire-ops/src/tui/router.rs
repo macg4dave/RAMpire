@@ -886,7 +886,7 @@ mod tests {
             .iter()
             .map(|cand| cand.keys[0].label())
             .collect();
-        assert_eq!(keys, "vsolckf");
+        assert_eq!(keys, "vsolck");
         press(&mut app, KeyCode::Char('v'));
         assert_eq!(app.view, View::Details("vm0".to_owned()));
         press(&mut app, KeyCode::Esc);
@@ -897,19 +897,15 @@ mod tests {
         let which = app.which.as_ref().expect("a menu");
         assert_eq!(
             which.cands[0].run,
-            Run::Pick(Pick::Run(Action::Add("newvm".to_owned())))
+            Run::Pick(Pick::Add(vec!["newvm".to_owned()]))
         );
-        assert!(which
-            .text
-            .iter()
-            .any(|line| line.contains("apt install rampire-guest")));
         // Shift and the letter copies its command instead.
         press(&mut app, KeyCode::Char('A'));
         assert!(app.which.is_none());
         assert_eq!(
             app.effects,
             [Effect::Copy(
-                "rampire --connect test:///default vm add newvm --fix-xml".to_owned()
+                "rampire --connect test:///default vm add newvm".to_owned()
             )]
         );
     }

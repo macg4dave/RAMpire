@@ -69,7 +69,7 @@ review read from its definition still holds.
 A fleet adds a VM by writing `vms.d/NAME.toml`, naming a review profile
 shared by VMs of that kind, and running `apply`. The VM's definition must
 already have its virtio-mem device and control channel; build them into
-your VM templates, or run `rampire vm add NAME --fix-xml` once.
+your VM templates, or run `rampire vm add NAME` once.
 
 [deploy/cloud-init/rampire-guest.yaml](../deploy/cloud-init/rampire-guest.yaml)
 installs the guest service when a VM is created.

@@ -258,22 +258,26 @@ enum Generated {
 
 #[derive(Debug, Subcommand)]
 enum VmCommand {
-    /// List every VM on the libvirt connection: managed, parked or not
+    /// List every VM on the libvirt connection: managed or not
     /// managed, with what `vm add` would change for one that isn't.
     List,
-    /// Start managing a VM: check its definition, review it, write its
-    /// settings and apply.
+    /// Start managing a VM: shows what it will do and asks once.
     ///
-    /// Reports a missing or wrongly set virtio-mem device or control
-    /// channel; --fix-xml shows the exact change and makes it once
-    /// confirmed, keeping the old definition. Review answers the definition
-    /// shows are filled in; only the rest are asked.
+    /// Then it fixes the VM's definition (keeping the old one), starts it,
+    /// installs or upgrades rampire-guest in it, restarts it when that is
+    /// needed, writes its settings, applies, and waits for the guest to
+    /// report in. The sizes default to ones suggested from the definition.
     Add {
         /// The libvirt domain.
         vm: String,
-        /// Fix the domain's definition where it can be fixed.
-        #[arg(long)]
-        fix_xml: bool,
+        /// How to log in to the guest to install its package, USER@HOST.
+        /// Default: its guest agent when it runs commands, else root at the
+        /// address libvirt knows for it, with root's SSH key.
+        #[arg(long, value_name = "USER@HOST")]
+        guest_login: Option<String>,
+        /// Don't install rampire-guest: it is installed some other way.
+        #[arg(long, help_heading = SCRIPTS)]
+        no_guest_install: bool,
         /// Use this reviewed profile in reviews/ instead of asking.
         #[arg(long, value_name = "PROFILE", help_heading = SCRIPTS)]
         review: Option<String>,
@@ -294,17 +298,13 @@ enum VmCommand {
         #[arg(long, value_name = "SIZE", help_heading = SCRIPTS)]
         free_ram: Option<String>,
     },
-    /// Stop managing a VM at once. It keeps the memory it has until its next
-    /// cold start, which begins on boot RAM alone. Its settings are kept in
-    /// parked/, so `vm add` brings it back as it was.
+    /// Stop managing a VM at once, and remove everything RAMpire kept for
+    /// it: its settings, recorded setup, request state, definition backups
+    /// and the review `vm add` wrote for it. It keeps the memory it has
+    /// until its next cold start, which begins on boot RAM alone.
     Remove {
         /// The VM.
         vm: String,
-        /// Forget the VM instead of parking it: for a VM that is being
-        /// deleted. Its settings, recorded setup, request state and definition
-        /// backups go, and the review profile `vm add` wrote for it.
-        #[arg(long)]
-        forget: bool,
     },
     /// Shut a VM down and start it again, so its saved definition takes
     /// effect, then apply.
@@ -458,7 +458,8 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
             }
             VmCommand::Add {
                 vm,
-                fix_xml,
+                guest_login,
+                no_guest_install,
                 review,
                 kernel,
                 priority,
@@ -470,7 +471,8 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                 ui,
                 &lifecycle::AddOptions {
                     vm: vm.clone(),
-                    fix_xml: *fix_xml,
+                    guest_login: guest_login.clone(),
+                    no_guest_install: *no_guest_install,
                     review: review.clone(),
                     kernel: kernel.clone(),
                     priority: *priority,
@@ -480,8 +482,8 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                 },
             )
             .map(|_| ExitCode::SUCCESS),
-            VmCommand::Remove { vm, forget } => {
-                lifecycle::vm_remove(&context, ui, vm, *forget).map(|()| ExitCode::SUCCESS)
+            VmCommand::Remove { vm } => {
+                lifecycle::vm_remove(&context, ui, vm).map(|()| ExitCode::SUCCESS)
             }
         },
         Command::ClearLatch { vm, reason, apply } => {
@@ -815,7 +817,8 @@ mod tests {
             "vm",
             "add",
             "web",
-            "--fix-xml",
+            "--guest-login",
+            "admin@192.168.122.5",
             "--max-ram",
             "12GB",
             "--priority",
@@ -826,7 +829,7 @@ mod tests {
             cli.command,
             Some(Command::Vm {
                 command: VmCommand::Add {
-                    fix_xml: true,
+                    guest_login: Some(_),
                     priority: 50,
                     ..
                 }

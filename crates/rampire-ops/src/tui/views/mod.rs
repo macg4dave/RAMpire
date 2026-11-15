@@ -410,8 +410,8 @@ mod tests {
                 "vm0",
                 "grow +1024M",
                 "oldvm",
-                "parked",
-                "bring",
+                "unfinished",
+                "finish",
                 "newvm",
                 "not managed",
                 "no guest service",
@@ -444,7 +444,7 @@ mod tests {
                 "v  Live details",
                 "s  Settings",
                 "o  Doctor: check everything about it",
-                "Forget it",
+                "Remove it",
                 "same as: rampire",
             ] {
                 assert!(
@@ -457,21 +457,15 @@ mod tests {
         press(&mut app, KeyCode::End);
         press(&mut app, KeyCode::Enter);
         let text = text(&app, 120, 40);
-        assert!(
-            text.contains("Adding it will add a 6144 MiB virtio-mem device"),
-            "{text}"
-        );
-        assert!(text.contains("apt install rampire-guest"), "{text}");
         assert!(text.contains("Add it"), "{text}");
     }
 
     #[test]
     fn every_layer_draws_over_the_screen_at_every_size() {
         let mut app = app();
-        let id = app.tasks.add(
-            Action::Add("newvm".to_owned()),
-            "rampire vm add newvm --fix-xml".to_owned(),
-        );
+        let id = app
+            .tasks
+            .add(Action::add("newvm"), "rampire vm add newvm".to_owned());
         app.tasks.start_next(Instant::now());
         app.on_msg(Msg::Task(
             id,
@@ -487,7 +481,7 @@ mod tests {
         ));
         for (width, height) in SIZES {
             let text = text(&app, width, height);
-            assert!(text.contains("rampire vm add newvm --fix-xml"), "{text}");
+            assert!(text.contains("rampire vm add newvm"), "{text}");
             assert!(text.contains("like this? [y/N]"), "{text}");
             assert!(
                 text.contains("y  Yes") && text.contains("1 asks (w)"),

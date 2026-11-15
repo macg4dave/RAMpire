@@ -1,7 +1,7 @@
 //! `rampire vm list`: every VM on the libvirt connection, and what RAMpire
-//! does with it: managed, parked by `vm remove`, left half-added by a `vm
-//! add` that didn't finish, or not managed. For a VM that isn't managed it
-//! says what `vm add --fix-xml` would change, what would still stop it, and
+//! does with it: managed, left half-added by a `vm add` that didn't
+//! finish, or not managed. For a VM that isn't managed it says what
+//! `vm add` would change, what would still stop it, and
 //! whether its guest service has published.
 
 use std::collections::BTreeSet;
@@ -12,9 +12,11 @@ use rampire_core::RawTelemetryEnvelope;
 use rampire_host::config::HostSettings;
 use rampire_host::qga::{GuestFileReader, VirshGuestFiles};
 
-use crate::context::{Context, PARKED_DIRECTORY};
+use crate::context::Context;
 use crate::host_readings::MAX_TELEMETRY_BYTES;
-use crate::reports::{ListedVm, Management, Problem, Published, VmListReport, VmListSchema};
+use crate::reports::{
+    ListedVm, Management, Problem, Published, SuggestedSizes, VmListReport, VmListSchema,
+};
 
 /// The names of the TOML files in `directory`, without `.toml`.
 pub fn toml_names(directory: &Path) -> BTreeSet<String> {
@@ -32,12 +34,11 @@ pub fn toml_names(directory: &Path) -> BTreeSet<String> {
         .collect()
 }
 
-/// What the configuration says about VMs: those the controller runs, those
-/// parked in the draft, and those with settings only in the draft.
+/// What the configuration says about VMs: those the controller runs, and
+/// those with settings only in the draft.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Known {
     pub managed: BTreeSet<String>,
-    pub parked: BTreeSet<String>,
     pub unfinished: BTreeSet<String>,
 }
 
@@ -61,7 +62,6 @@ impl Known {
             .filter(|name| !managed.contains(name))
             .collect();
         Ok(Self {
-            parked: toml_names(&draft.join(PARKED_DIRECTORY)),
             managed,
             unfinished,
         })
@@ -72,8 +72,6 @@ impl Known {
             Management::Managed
         } else if self.unfinished.contains(name) {
             Management::Unfinished
-        } else if self.parked.contains(name) {
-            Management::Parked
         } else {
             Management::NotManaged
         }
@@ -103,21 +101,36 @@ pub fn domains(libvirt: &crate::attest::Libvirt) -> Result<Vec<String>, String> 
     Ok(names)
 }
 
-/// What `vm add --fix-xml` would change in a definition, and the problems
+/// What `vm add` would change in a definition, and the problems
 /// that would still stop RAMpire managing it afterwards.
 pub fn add_preview(xml: &str) -> Result<(Vec<String>, Vec<Problem>), String> {
+    let (to_fix, problems, _) = preview(xml)?;
+    Ok((to_fix, problems))
+}
+
+/// What `vm add` would change, what would still stop it, and the sizes it
+/// would suggest.
+type Preview = (Vec<String>, Vec<Problem>, Option<SuggestedSizes>);
+
+/// [`add_preview`], with the sizes `vm add` would suggest.
+fn preview(xml: &str) -> Result<Preview, String> {
     let inspection = crate::vm::inspect(xml)?;
     let to_fix = inspection.fixable();
     let after = match crate::vm::fix_xml(xml, &inspection)? {
         Some(fixed) => crate::vm::inspect(&fixed)?,
         None => inspection,
     };
+    let suggested = crate::vm::suggest(&after, true).map(|sizes| SuggestedSizes {
+        min_ram: sizes.min_ram,
+        max_ram: sizes.max_ram,
+        free_ram: sizes.free_ram,
+    });
     let problems = after
         .problems()
         .into_iter()
         .map(|(problem, fix)| Problem { problem, fix })
         .collect();
-    Ok((to_fix, problems))
+    Ok((to_fix, problems, suggested))
 }
 
 /// Read a guest's publication from its own file through the guest agent:
@@ -204,6 +217,7 @@ pub fn list(context: &Context) -> Result<VmListReport, String> {
                 problems: Vec::new(),
                 guest: Published::Unknown,
                 os_id: None,
+                suggested: None,
             });
         }
     }
@@ -235,6 +249,7 @@ fn listed(
             .virsh(&["dumpxml", "--inactive", name])
             .ok()
             .and_then(|xml| libosinfo_id(&xml)),
+        suggested: None,
     };
     match management {
         Management::Managed => match read_status(context, name) {
@@ -250,9 +265,6 @@ fn listed(
             }
             Err(reason) => vm.detail = format!("{state}, so its status can't be read ({reason})"),
         },
-        Management::Parked => {
-            vm.detail = format!("parked: rampire vm add {name} brings it back as it was");
-        }
         Management::Unfinished => {
             vm.detail =
                 format!("an earlier vm add didn't finish: rampire vm add {name} finishes it");
@@ -260,11 +272,12 @@ fn listed(
         Management::NotManaged => {
             match libvirt
                 .virsh(&["dumpxml", "--inactive", name])
-                .and_then(|xml| add_preview(&xml))
+                .and_then(|xml| preview(&xml))
             {
-                Ok((to_fix, problems)) => {
+                Ok((to_fix, problems, suggested)) => {
                     vm.to_fix = to_fix;
                     vm.problems = problems;
+                    vm.suggested = suggested;
                 }
                 Err(error) => vm.problems.push(Problem {
                     problem: format!("its definition couldn't be read: {error}"),
@@ -326,7 +339,7 @@ pub fn text(report: &VmListReport) -> String {
             }
             if vm.problems.is_empty() {
                 out.push_str(&format!(
-                    "{:width$}  add it with: rampire vm add {} --fix-xml\n",
+                    "{:width$}  add it with: rampire vm add {}\n",
                     "", vm.vm_name
                 ));
             }
@@ -373,15 +386,13 @@ mod tests {
     }
 
     #[test]
-    fn vms_are_managed_parked_unfinished_or_not_managed() {
+    fn vms_are_managed_unfinished_or_not_managed() {
         let known = Known {
             managed: ["web".to_owned()].into(),
-            parked: ["old".to_owned(), "both".to_owned()].into(),
-            unfinished: ["both".to_owned()].into(),
+            unfinished: ["half".to_owned()].into(),
         };
         assert_eq!(known.management("web"), Management::Managed);
-        assert_eq!(known.management("old"), Management::Parked);
-        assert_eq!(known.management("both"), Management::Unfinished);
+        assert_eq!(known.management("half"), Management::Unfinished);
         assert_eq!(known.management("new"), Management::NotManaged);
     }
 
@@ -400,11 +411,12 @@ mod tests {
                 problems: vec![],
                 guest: Published::Yes { age_seconds: 3 },
                 os_id: None,
+                suggested: None,
             }],
         };
         assert_eq!(
             text(&report),
-            "web  not managed  running   published 3s ago\n     to fix: add a 6144 MiB virtio-mem device\n     add it with: rampire vm add web --fix-xml\n"
+            "web  not managed  running   published 3s ago\n     to fix: add a 6144 MiB virtio-mem device\n     add it with: rampire vm add web\n"
         );
     }
 }

@@ -68,9 +68,7 @@ pub fn run(config_path: &Path) -> ExitCode {
     if settings.vms.is_empty() {
         // A configuration with no VMs is valid: a freshly
         // installed host runs, idle, until a VM is added.
-        eprintln!(
-            "event=no_vms rampire manages no VMs yet; add one with: rampire vm add VM --fix-xml"
-        );
+        eprintln!("event=no_vms rampire manages no VMs yet; add one with: rampire vm add VM");
         while !stop.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(200));
         }

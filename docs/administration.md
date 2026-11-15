@@ -169,16 +169,17 @@ VM's settings needs only a controller install, never a guest change.
 
 ## Adding a VM
 
-`sudo rampire vm add VM --fix-xml` does every step below in one guided
-command: it checks and fixes the definition, writes the review and the
-settings, restarts the VM if its definition changed, and applies. The steps
-are what it does, for doing them by hand or in a fleet.
+`sudo rampire vm add VM` does every step below in one command: it shows
+what it will do and asks once, then fixes the definition, starts the VM,
+installs the guest service in it, restarts it if that is needed, writes
+the review and the settings, applies, and waits for the guest to report
+in. The steps are what it does, for doing them by hand or in a fleet.
 
 1. **Device.** Give the domain a virtio-mem device with a stable alias and
    the options the controller requires. The device's `requested` size in
    the saved definition should be zero: the guest asks for what it needs.
    It needs a NUMA cell holding the boot RAM (`<numa>` in `<cpu>`) and a
-   free slot in `<maxMemory>`; `--fix-xml` adds both when they are missing.
+   free slot in `<maxMemory>`; `vm add` adds both when they are missing.
 
    ```xml
    <maxMemory slots='1' unit='GiB'>16</maxMemory>

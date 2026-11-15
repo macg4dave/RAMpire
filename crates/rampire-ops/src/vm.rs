@@ -42,7 +42,7 @@ pub struct Inspection {
     pub locked_memory: bool,
     /// The memory balloon's model; `None` with no balloon element.
     pub balloon: Option<String>,
-    /// `<vcpu>`: the virtual CPUs a NUMA cell added by `--fix-xml` holds.
+    /// `<vcpu>`: the virtual CPUs a NUMA cell added by `vm add` holds.
     pub vcpus: u32,
     /// The domain's `<memory>`: with no NUMA cell, the boot RAM.
     pub memory_bytes: u64,
@@ -73,19 +73,19 @@ impl Inspection {
         if self.numa_cells == 0 {
             problems.push((
                 "the domain has no NUMA cell".to_owned(),
-                "rampire vm add --fix-xml adds one, or add <numa><cell id='0' cpus='0-N' memory='BOOT' unit='KiB'/></numa> inside <cpu>".to_owned(),
+                "rampire vm add adds one, or add <numa><cell id='0' cpus='0-N' memory='BOOT' unit='KiB'/></numa> inside <cpu>".to_owned(),
             ));
         }
         if self.max_memory_slots.is_none() {
             problems.push((
                 "the domain has no <maxMemory>".to_owned(),
-                "rampire vm add --fix-xml adds it, or add <maxMemory slots='1' unit='KiB'>TOTAL</maxMemory>, TOTAL being boot RAM plus the device".to_owned(),
+                "rampire vm add adds it, or add <maxMemory slots='1' unit='KiB'>TOTAL</maxMemory>, TOTAL being boot RAM plus the device".to_owned(),
             ));
         }
         match self.devices.len() {
             0 => problems.push((
                 "the domain has no virtio-mem device".to_owned(),
-                "rampire vm add --fix-xml adds one".to_owned(),
+                "rampire vm add adds one".to_owned(),
             )),
             1 => {}
             _ => problems.push((
@@ -108,7 +108,7 @@ impl Inspection {
         problems
     }
 
-    /// Changes `--fix-xml` would make, in words.
+    /// Changes `vm add` makes to the definition, in words.
     pub fn fixable(&self) -> Vec<String> {
         let mut changes = Vec::new();
         if !self.control_channel {
@@ -189,7 +189,7 @@ impl Inspection {
     }
 
     /// A device can be added once there is a NUMA cell and a free memory
-    /// slot, or when `--fix-xml` can add them: a cell when there is none,
+    /// slot, or when `vm add` can add them: a cell when there is none,
     /// and `<maxMemory>` when it is missing. Too few slots in an existing
     /// `<maxMemory>` is left to a person.
     fn can_add_device(&self) -> bool {

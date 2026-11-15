@@ -50,6 +50,14 @@ contents:
   - src: "./deploy/examples/vms.d/linux-vm.toml"
     dst: /usr/share/doc/rampire/examples/vms.d/linux-vm.toml
     file_info: { mode: 0644 }
+  # The guest packages of the same build, which `rampire vm add` installs
+  # in a VM. Written by build.sh before this package is made.
+  - src: "./target/packaging/guest/rampire-guest.deb"
+    dst: /usr/share/rampire/guest/rampire-guest.deb
+    file_info: { mode: 0644 }
+  - src: "./target/packaging/guest/rampire-guest.rpm"
+    dst: /usr/share/rampire/guest/rampire-guest.rpm
+    file_info: { mode: 0644 }
   - src: "./LICENSE"
     dst: /usr/share/doc/rampire/LICENSE
     file_info: { mode: 0644 }

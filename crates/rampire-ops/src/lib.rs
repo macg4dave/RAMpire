@@ -14,6 +14,7 @@ pub mod doctor;
 pub mod doctor_vm;
 pub mod evidence;
 pub mod flows;
+pub mod guest;
 pub mod host_readings;
 pub mod init;
 pub mod inventory;

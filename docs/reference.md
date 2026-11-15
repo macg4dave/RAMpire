@@ -29,7 +29,7 @@ Piped, or with `--help`, it prints the help instead. It needs a terminal
 of at least 80x24.
 
 Everything starts from one screen: the pool, every VM on the host
-(managed, parked, half-added and not managed), the pool's history and its
+(managed, half-added and not managed), the pool's history and its
 latest events. On a window at least 140 columns wide and tall enough, the
 chosen VM's details are beside the list, live; for a VM RAMpire doesn't
 manage, its facts. **Enter** on a VM opens its menu beside its row, which
@@ -37,10 +37,9 @@ offers only what fits that VM:
 
 | The VM is | Its menu |
 |---|---|
-| Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `c` restart it, so its saved definition takes effect; `k` remove it, keeping its settings; `f` forget it |
-| Not managed | What `vm add --fix-xml` will change, what would stop it, and the guest service's install command when it isn't installed; `a` add it; `o` its doctor |
-| Parked | `b` bring it back; `o` its doctor; `f` forget it |
-| Half-added | `a` finish adding it; `o` its doctor; `f` forget it |
+| Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `c` restart it, so its saved definition takes effect; `k` remove it: stop managing it and delete what RAMpire kept for it |
+| Not managed | What would stop adding it; `a` add it: its settings (Priority, Minimum, Maximum and Free RAM, filled in from its definition, and Guest login), then everything adding will do, asked once; `o` its doctor |
+| Half-added | `a` finish adding it; `o` its doctor |
 
 A menu's letters also work from the list and from a VM's details,
 without opening the menu (in the list, `k` moves; removing is in the
@@ -175,10 +174,10 @@ logged as `event=operator_change action=tui_failed`.
 
 | Command | What it does |
 |---|---|
-| `rampire vm add VM [--fix-xml] [--review PROFILE] [--kernel RELEASE] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE]` | Starts managing a VM: checks its definition (fixing it with `--fix-xml`, keeping the old one: a NUMA cell, `maxMemory`, the device, the control channel and the guest agent channel, and the memory balloon turned off), stops first if another managed VM would fail `apply`'s checks, starts or restarts the VM if it is off or its definition changed, fills in its review from the definition and the guest agent and asks the rest, writes its settings, and applies. A VM with a file in `parked/` gets that file back instead |
+| `rampire vm add VM [--guest-login USER@HOST] [--priority N] [--min-ram SIZE] [--max-ram SIZE] [--free-ram SIZE] [--review PROFILE] [--kernel RELEASE] [--no-guest-install]` | Starts managing a VM. It shows everything it will do and asks once; then it fixes the definition, keeping the old one (a NUMA cell, `maxMemory`, the device, the control channel and the guest agent channel, and the memory balloon turned off), starts the VM, installs or upgrades `rampire-guest` in it (through its guest agent, or over SSH as `--guest-login`, default root at the address libvirt has for it), restarts it if that is needed, writes its review and settings, applies, and waits for the guest to report in. The sizes default to ones suggested from the definition. It stops first if another managed VM would fail `apply`'s checks |
 | `rampire vm restart VM` | Shuts a VM down and starts it again, so its saved definition takes effect, then applies |
-| `rampire vm list` | Every VM on the libvirt connection: managed, parked, unfinished (a `vm add` that didn't apply) or not managed. For one that isn't managed, what `vm add --fix-xml` would change, what would still stop it, and whether its guest service is installed |
-| `rampire vm remove VM [--forget]` | Stops managing a VM at once. It keeps its memory until its next cold start, which begins on boot RAM alone. Its file is kept in `parked/`, for `vm add` to bring it back; `--forget`, for a VM being deleted, removes its settings, recorded setup, request state, definition backups and the review profile `vm add` wrote for it |
+| `rampire vm list` | Every VM on the libvirt connection: managed, unfinished (a `vm add` that didn't apply) or not managed. For one that isn't managed, what `vm add` would change, what would still stop it, and whether its guest service is installed |
+| `rampire vm remove VM` | Stops managing a VM at once, and removes its settings, recorded setup, request state, definition backups and the review profile `vm add` wrote for it. It keeps its memory until its next cold start, which begins on boot RAM alone |
 
 ### Watching
 
@@ -204,11 +203,11 @@ logged as `event=operator_change action=tui_failed`.
 | `/etc/rampire/vms.d/VM.toml` | One VM; the file's name is the VM's |
 | `/etc/rampire/reviews/PROFILE.toml` | A review profile |
 | `/etc/rampire/attestations/VM.attestation.json` | How a VM was set up when `apply` last checked it |
-| `/etc/rampire/parked/` | VM files `vm remove` took out |
 | `/var/lib/rampire/applied/ID/`, `current` | Applied copies, and the one the controller runs |
 | `/var/lib/rampire/evidence/` | What each apply and rollback did |
 | `/var/lib/rampire/state/` | Each VM's durable request state |
-| `/var/lib/rampire/domain-backups/` | Definitions `vm add --fix-xml` replaced |
+| `/var/lib/rampire/domain-backups/` | Definitions `vm add` replaced |
+| `/usr/share/rampire/guest/` | The guest packages of the host's build, which `vm add` installs |
 | `/run/rampire/metrics.prom` | Metrics, every round |
 
 ## Sizes
@@ -275,6 +274,6 @@ can only be confirmed by a person. See the
 | `guest_os` | `"linux"` or `"windows"`, matching the VM |
 | `workload_reviewed` | The VM's programs cope with memory being added and taken away |
 | `no_vdpa`, `no_rdma_migration`, `no_vfio_nvme`, `no_mlock`, `no_secure_virtualization`, `no_unsupported_vhost_user` | None of these, each of which can hold on to guest memory, is used. `no_rdma_migration` is detected on a host with no RDMA hardware |
-| `balloon_resize_inactive` | The memory balloon isn't used to resize the VM; detected when there is none (`--fix-xml` turns it off) |
+| `balloon_resize_inactive` | The memory balloon isn't used to resize the VM; detected when there is none (`vm add` turns it off) |
 | `memory_slot_budget`, `vfio_mapping_budget` | The budgets reviewed for the device |
 | `guest_driver_version` | The kernel release on Linux (`"linux 6.12.0"`), the `viomem` driver version on Windows |

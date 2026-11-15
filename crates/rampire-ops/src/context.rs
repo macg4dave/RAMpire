@@ -19,11 +19,8 @@ pub const DRAFT: &str = "/etc/rampire";
 /// while it runs.
 pub const RUNNING_COPY: &str = "/run/rampire/running-copy";
 
-/// Where `vm add --fix-xml` keeps the definitions it replaced.
+/// Where `vm add` keeps the definitions it replaced.
 pub const DOMAIN_BACKUPS: &str = "/var/lib/rampire/domain-backups";
-
-/// Where `vm remove` keeps a VM's settings, in the draft.
-pub const PARKED_DIRECTORY: &str = "parked";
 
 /// The configuration and connection a command works on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,8 +181,8 @@ mod tests {
             via: "tui",
         };
         assert_eq!(
-            context.command_line(&["vm", "add", "webserver", "--fix-xml"]),
-            "rampire vm add webserver --fix-xml"
+            context.command_line(&["vm", "add", "webserver"]),
+            "rampire vm add webserver"
         );
         context.config = Some(PathBuf::from("/srv/my config"));
         assert_eq!(

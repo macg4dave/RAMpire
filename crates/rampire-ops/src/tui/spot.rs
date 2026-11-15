@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Widget};
 
-use super::app::{install_command, App, Entry};
+use super::app::{App, Entry};
 use super::scroll::Scroll;
 use super::theme::{Icon, Theme};
 use super::widgets::{self, panel, raised_panel};
@@ -40,10 +40,7 @@ pub fn facts(app: &App, entry: &Entry) -> Vec<Fact> {
             match listed.guest {
                 Published::Yes { age_seconds } => format!("running, last heard {age_seconds}s ago"),
                 Published::Installed => "installed".to_owned(),
-                Published::No => format!(
-                    "not installed; in the VM: {}",
-                    install_command(listed.os_id.as_deref())
-                ),
+                Published::No => "not installed yet: adding the VM installs it".to_owned(),
                 Published::Unknown => "unknown".to_owned(),
             },
         );

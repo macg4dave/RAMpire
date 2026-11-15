@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use super::actions::Action;
 use super::dialog::{Confirm, Dialog, OnYes};
-use super::form::{Field, Form};
+use super::form::{Field, Form, Purpose};
 use super::help::Help;
 use super::input::{History, Input};
 use super::jobs::{self, Answer, DoctorSection, FlowEvent, Msg, Question, ReaderControl, TaskId};
@@ -76,6 +76,8 @@ pub enum Pick {
     Open(View),
     /// The settings form for these VMs.
     Settings(Vec<String>),
+    /// The add form for these VMs: their settings, then `vm add`.
+    Add(Vec<String>),
 }
 
 /// One item of a VM's menu.
@@ -282,7 +284,7 @@ impl App {
     }
 
     /// Every VM on the host: the managed ones in the pool's order, then
-    /// half-added, parked and unmanaged ones by name.
+    /// half-added and unmanaged ones by name.
     pub fn entries(&self) -> Vec<Entry> {
         let listed: Vec<&ListedVm> = self
             .inventory
@@ -313,7 +315,6 @@ impl App {
         for management in [
             Management::Managed,
             Management::Unfinished,
-            Management::Parked,
             Management::NotManaged,
         ] {
             for vm in listed.iter().filter(|vm| vm.management == management) {
@@ -663,6 +664,7 @@ impl App {
             Pick::Run(action) => self.start(action),
             Pick::Open(view) => self.open(view),
             Pick::Settings(vms) => self.edit_settings(&vms),
+            Pick::Add(vms) => self.add_form(&vms),
         }
     }
 
@@ -744,14 +746,11 @@ impl App {
             line(&["doctor", vm]),
             Pick::Open(View::Doctor(Some(vm.to_owned()))),
         );
-        let forget = item(
-            'f',
-            "Forget it: stop managing it and delete its settings",
-            line(&["vm", "remove", vm, "--forget"]),
-            Pick::Run(Action::Remove {
-                vm: vm.to_owned(),
-                forget: true,
-            }),
+        let remove = item(
+            'k',
+            "Remove it: stop managing it and delete what RAMpire kept for it",
+            line(&["vm", "remove", vm]),
+            Pick::Run(Action::Remove(vm.to_owned())),
         );
         let listed = entry.listed.as_ref();
         let mut text = Vec::new();
@@ -785,61 +784,32 @@ impl App {
                     line(&["vm", "restart", vm]),
                     Pick::Run(Action::Restart(vm.to_owned())),
                 ),
-                item(
-                    'k',
-                    "Remove it, keeping its settings",
-                    line(&["vm", "remove", vm]),
-                    Pick::Run(Action::Remove {
-                        vm: vm.to_owned(),
-                        forget: false,
-                    }),
-                ),
-                forget,
-            ],
-            Management::Parked => vec![
-                item(
-                    'b',
-                    "Bring it back",
-                    line(&["vm", "add", vm]),
-                    Pick::Run(Action::Add(vm.to_owned())),
-                ),
-                doctor,
-                forget,
+                remove,
             ],
             Management::Unfinished => vec![
                 item(
                     'a',
                     "Finish adding it",
                     line(&["vm", "add", vm]),
-                    Pick::Run(Action::Add(vm.to_owned())),
+                    Pick::Run(Action::add(vm)),
                 ),
                 doctor,
-                forget,
             ],
             Management::NotManaged => {
                 if let Some(listed) = listed {
-                    for change in &listed.to_fix {
-                        text.push(format!("Adding it will {change}."));
-                    }
                     for problem in &listed.problems {
                         text.push(format!(
                             "Problem: {}. To fix it: {}",
                             problem.problem, problem.fix
                         ));
                     }
-                    if listed.guest == crate::reports::Published::No {
-                        text.push(format!(
-                            "Install the guest service in the VM first: {}",
-                            install_command(listed.os_id.as_deref())
-                        ));
-                    }
                 }
                 vec![
                     item(
                         'a',
-                        "Add it",
-                        line(&["vm", "add", vm, "--fix-xml"]),
-                        Pick::Run(Action::Add(vm.to_owned())),
+                        "Add it: choose its settings, then see what adding does",
+                        line(&["vm", "add", vm]),
+                        Pick::Add(vec![vm.to_owned()]),
                     ),
                     doctor,
                 ]
@@ -882,6 +852,7 @@ impl App {
         let marked = self.marked();
         let mut actions = Vec::new();
         let mut settings = Vec::new();
+        let mut adding = Vec::new();
         let mut skipped = Vec::new();
         for entry in &marked {
             let (_, choices) = self.menu(entry);
@@ -894,11 +865,18 @@ impl App {
                     pick: Pick::Settings(vms),
                     ..
                 }) => settings.extend(vms),
+                Some(Choice {
+                    pick: Pick::Add(vms),
+                    ..
+                }) => adding.extend(vms),
                 _ => skipped.push(entry.name.clone()),
             }
         }
         if !settings.is_empty() {
             return self.edit_settings(&settings);
+        }
+        if !adding.is_empty() {
+            return self.add_form(&adding);
         }
         if actions.is_empty() {
             return self.notify(
@@ -956,6 +934,37 @@ impl App {
                 .collect(),
         };
         self.dialog = Some(Dialog::Form(Form {
+            purpose: Purpose::Set,
+            vms: vms.to_vec(),
+            fields,
+            cursor: 0,
+        }));
+    }
+
+    /// The add form for `vms`: one VM's suggested settings, or for several,
+    /// empty fields that give each its own; and how to log in to it.
+    pub(super) fn add_form(&mut self, vms: &[String]) {
+        let suggested = match vms {
+            [vm] => self
+                .entries()
+                .into_iter()
+                .find(|entry| &entry.name == vm)
+                .and_then(|entry| entry.listed)
+                .and_then(|listed| listed.suggested),
+            _ => None,
+        };
+        let one = vms.len() == 1;
+        let mut fields = vec![Field::new("priority", one.then(|| "100".to_owned()))];
+        for (key, bytes) in [
+            ("min_ram", suggested.map(|sizes| sizes.min_ram)),
+            ("max_ram", suggested.map(|sizes| sizes.max_ram)),
+            ("free_ram", suggested.map(|sizes| sizes.free_ram)),
+        ] {
+            fields.push(Field::new(key, bytes.map(format_byte_size)));
+        }
+        fields.push(Field::new("guest_login", None));
+        self.dialog = Some(Dialog::Form(Form {
+            purpose: Purpose::Add,
             vms: vms.to_vec(),
             fields,
             cursor: 0,
@@ -1069,21 +1078,6 @@ fn capitalised(text: &str) -> String {
     })
 }
 
-/// The install command for a VM's system, from its libosinfo name.
-pub fn install_command(os_id: Option<&str>) -> &'static str {
-    match os_id {
-        Some(id) if id.contains("debian") => "apt install rampire-guest",
-        Some(id)
-            if ["rhel", "redhat", "fedora", "rocky", "almalinux", "centos"]
-                .iter()
-                .any(|family| id.contains(family)) =>
-        {
-            "dnf install rampire-guest"
-        }
-        _ => "dnf install rampire-guest (or: apt install rampire-guest)",
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1109,6 +1103,7 @@ pub(crate) mod tests {
                 Published::Yes { age_seconds: 1 }
             },
             os_id: Some("http://debian.org/debian/13".to_owned()),
+            suggested: None,
         }
     }
 
@@ -1129,7 +1124,7 @@ pub(crate) mod tests {
             version: 1,
             vms: vec![
                 listed("newvm", Management::NotManaged),
-                listed("oldvm", Management::Parked),
+                listed("oldvm", Management::Unfinished),
                 listed("vm0", Management::Managed),
             ],
         })));
@@ -1151,7 +1146,7 @@ pub(crate) mod tests {
                 ("vm0".to_owned(), Management::Managed),
                 ("a-very-long-vm-name".to_owned(), Management::Managed),
                 ("vm2".to_owned(), Management::Managed),
-                ("oldvm".to_owned(), Management::Parked),
+                ("oldvm".to_owned(), Management::Unfinished),
                 ("newvm".to_owned(), Management::NotManaged),
             ]
         );
@@ -1177,18 +1172,5 @@ pub(crate) mod tests {
         );
         app.list.filter = Some("old".to_owned());
         assert_eq!(app.visible().len(), 1);
-    }
-
-    #[test]
-    fn the_install_command_follows_the_vms_system() {
-        assert_eq!(
-            install_command(Some("http://debian.org/debian/13")),
-            "apt install rampire-guest"
-        );
-        assert_eq!(
-            install_command(Some("http://redhat.com/rhel/10.0")),
-            "dnf install rampire-guest"
-        );
-        assert!(install_command(None).contains("apt"));
     }
 }

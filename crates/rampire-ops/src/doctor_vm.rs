@@ -48,7 +48,7 @@ pub fn run(context: &Context, vm: &str) -> Result<Vec<Finding>, String> {
         Err(error) => findings.push(Finding::problem(
             "definition",
             format!("libvirt couldn't give {vm}'s definition: {error}"),
-            format!("if {vm} was deleted, stop managing it with: rampire vm remove {vm} --forget"),
+            format!("if {vm} was deleted, stop managing it with: rampire vm remove {vm}"),
         )),
     }
 
@@ -99,11 +99,6 @@ fn read_publication(vm: &str) -> Option<RawTelemetryEnvelope> {
 /// A VM RAMpire doesn't manage: how to bring it under management.
 fn unmanaged(libvirt: &crate::attest::Libvirt, vm: &str, management: Management) -> Vec<Finding> {
     match management {
-        Management::Parked => vec![Finding::problem(
-            "managed",
-            format!("{vm} is parked: its settings are kept, but RAMpire doesn't manage it"),
-            format!("rampire vm add {vm}"),
-        )],
         Management::Unfinished => vec![Finding::problem(
             "managed",
             format!("an earlier vm add {vm} didn't finish"),
@@ -113,7 +108,7 @@ fn unmanaged(libvirt: &crate::attest::Libvirt, vm: &str, management: Management)
             let mut findings = vec![Finding::problem(
                 "managed",
                 format!("RAMpire doesn't manage {vm}"),
-                format!("rampire vm add {vm} --fix-xml"),
+                format!("rampire vm add {vm}"),
             )];
             match libvirt
                 .virsh(&["dumpxml", "--inactive", vm])
@@ -124,7 +119,7 @@ fn unmanaged(libvirt: &crate::attest::Libvirt, vm: &str, management: Management)
                         findings.push(Finding::problem(
                             "definition",
                             format!("vm add would {change}"),
-                            format!("rampire vm add {vm} --fix-xml"),
+                            format!("rampire vm add {vm}"),
                         ));
                     }
                     for problem in problems {
@@ -151,7 +146,7 @@ pub fn definition(
 ) -> Result<Vec<Finding>, String> {
     let inspection = crate::vm::inspect(saved)?;
     let mut findings = Vec::new();
-    let redo = format!("rampire vm remove {vm}, then rampire vm add {vm} --fix-xml");
+    let redo = format!("rampire vm remove {vm}, then rampire vm add {vm}");
     for (problem, fix) in inspection.problems() {
         findings.push(Finding::problem("definition", problem, fix));
     }
@@ -581,7 +576,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             balloon.fix.as_deref(),
-            Some("rampire vm remove web, then rampire vm add web --fix-xml")
+            Some("rampire vm remove web, then rampire vm add web")
         );
         let renamed = definition("web", "ua-other", MANAGED, None).unwrap();
         assert_eq!(problems(&renamed), ["virtio-mem device"]);

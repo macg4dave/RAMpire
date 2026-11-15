@@ -77,10 +77,11 @@ The exit code is 0 when `passed` is true and 1 otherwise.
 |---|---|
 | `vms` | Each VM on the connection, by name |
 | `vm_name`, `state` | The VM, and libvirt's state for it (`running`, `shut off`, ...; `missing` for a managed VM libvirt no longer has) |
-| `management` | `managed`, `parked` (by `vm remove`), `unfinished` (a `vm add` that didn't apply) or `not_managed` |
+| `management` | `managed`, `unfinished` (a `vm add` that didn't apply) or `not_managed` |
 | `status` | A managed VM's `rampire.status`, when it could be read |
 | `detail` | One line about it for a person |
-| `to_fix` | For a VM that isn't managed: what `vm add --fix-xml` would change |
+| `to_fix` | For a VM that isn't managed: what `vm add` would change |
+| `suggested` | For a VM that isn't managed: the `min_ram`, `max_ram` and `free_ram` `vm add` would give it, in bytes |
 | `problems` | For a VM that isn't managed: each `problem` that would still stop `vm add`, and its `fix` |
 | `guest` | Its guest service: `state` is `published` with `age_seconds`, `not_published` (for a VM that isn't managed: not installed), `installed` (not managed yet, so not publishing), or `unknown` (not running, or no guest agent) |
 | `os_id` | The system its definition's libosinfo metadata names, or `null` |

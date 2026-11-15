@@ -33,11 +33,20 @@ cp target/packaging/rampire-guest.service "$stage/rampire-guest.service"
 bash packaging/docs.sh target/packaging/docs
 
 export VERSION=$version ARCH=amd64
-for package in rampire rampire-guest; do
-  for packager in rpm deb; do
-    nfpm package --config "packaging/$package.nfpm.yaml" \
-      --packager "$packager" --target "$output/"
-  done
+# The guest packages first: the host package carries them, so
+# `rampire vm add` installs the guest of the same build in a VM.
+mkdir -p "$stage/guest" target/packaging/guest
+for packager in rpm deb; do
+  nfpm package --config packaging/rampire-guest.nfpm.yaml \
+    --packager "$packager" --target "$stage/guest/"
+  built=$(ls "$stage"/guest/*."$packager")
+  cp "$built" "$output/"
+  cp "$built" "target/packaging/guest/rampire-guest.$packager"
+  rm "$built"
+done
+for packager in rpm deb; do
+  nfpm package --config packaging/rampire.nfpm.yaml \
+    --packager "$packager" --target "$output/"
 done
 
 musl=$repo/target/x86_64-unknown-linux-musl/release

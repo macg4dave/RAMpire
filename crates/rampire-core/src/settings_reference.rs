@@ -192,7 +192,7 @@ pub const REVIEW: SettingsFile = SettingsFile {
         Setting {
             names: "`balloon_resize_inactive`",
             default: None,
-            meaning: "The memory balloon isn't used to resize the VM; detected when there is none (`--fix-xml` turns it off)",
+            meaning: "The memory balloon isn't used to resize the VM; detected when there is none (`vm add` turns it off)",
         },
         Setting {
             names: "`memory_slot_budget`, `vfio_mapping_budget`",

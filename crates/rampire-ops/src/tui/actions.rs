@@ -3,24 +3,23 @@
 //! line that does the same, so a person learns the commands and can script
 //! what they did.
 
-use std::sync::atomic::Ordering;
-use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
-
 use super::jobs::{self, ChannelUi, Msg, ReaderControl, TaskId};
 use crate::context::Context;
 use crate::flows::{apply, controller, lifecycle};
 use crate::ui::Ui;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::Sender;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// `vm add VM --fix-xml`: a new VM, an unfinished one or a parked one.
-    Add(String),
-    /// `vm remove VM`, parking its settings, or forgetting them.
-    Remove {
+    /// `vm add VM`, with the settings the form changed as `KEY=VALUE`:
+    /// `priority`, `min_ram`, `max_ram`, `free_ram` and `guest_login`.
+    Add {
         vm: String,
-        forget: bool,
+        changes: Vec<String>,
     },
+    /// `vm remove VM`.
+    Remove(String),
     /// `vm restart VM`, so its saved definition takes effect.
     Restart(String),
     /// `set TARGET KEY=VALUE...`.
@@ -34,14 +33,42 @@ pub enum Action {
     Init,
 }
 
+/// The `vm add` option for a setting the add form names.
+fn add_flag(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "priority" => "--priority",
+        "min_ram" => "--min-ram",
+        "max_ram" => "--max-ram",
+        "free_ram" => "--free-ram",
+        "guest_login" => "--guest-login",
+        _ => return None,
+    })
+}
+
 impl Action {
+    /// `vm add VM` with every default.
+    pub fn add(vm: &str) -> Self {
+        Self::Add {
+            vm: vm.to_owned(),
+            changes: Vec::new(),
+        }
+    }
+
     /// The words after `rampire` that do the same.
     pub fn words(&self) -> Vec<String> {
         let owned = |words: &[&str]| words.iter().map(|word| (*word).to_owned()).collect();
         match self {
-            Self::Add(vm) => owned(&["vm", "add", vm, "--fix-xml"]),
-            Self::Remove { vm, forget: false } => owned(&["vm", "remove", vm]),
-            Self::Remove { vm, forget: true } => owned(&["vm", "remove", vm, "--forget"]),
+            Self::Add { vm, changes } => {
+                let mut words: Vec<String> = owned(&["vm", "add", vm]);
+                for (key, value) in changes.iter().filter_map(|change| change.split_once('=')) {
+                    if let Some(flag) = add_flag(key) {
+                        words.push(flag.to_owned());
+                        words.push(value.to_owned());
+                    }
+                }
+                words
+            }
+            Self::Remove(vm) => owned(&["vm", "remove", vm]),
             Self::Restart(vm) => owned(&["vm", "restart", vm]),
             Self::Set { target, changes } => {
                 let mut words = owned(&["set", target]);
@@ -64,7 +91,7 @@ impl Action {
     /// The VM this action is about, if it is about one.
     pub fn vm(&self) -> Option<&str> {
         match self {
-            Self::Add(vm) | Self::Remove { vm, .. } | Self::Restart(vm) | Self::Recover(vm) => {
+            Self::Add { vm, .. } | Self::Remove(vm) | Self::Restart(vm) | Self::Recover(vm) => {
                 Some(vm)
             }
             Self::Set { target, .. } if target != crate::set::GLOBAL => Some(target),
@@ -87,20 +114,13 @@ impl Action {
 
     fn run(&self, context: &Context, ui: &mut ChannelUi) -> Result<String, String> {
         match self {
-            Self::Add(vm) => {
-                let changed = lifecycle::vm_add(context, ui, &lifecycle::AddOptions::fixing(vm))?;
-                if changed {
-                    first_publication(context, ui, vm, Duration::from_secs(180));
-                }
+            Self::Add { vm, changes } => {
+                lifecycle::vm_add(context, ui, &add_options(vm, changes)?)?;
                 Ok(format!("{vm} is added"))
             }
-            Self::Remove { vm, forget } => {
-                lifecycle::vm_remove(context, ui, vm, *forget)?;
-                Ok(if *forget {
-                    format!("{vm} is forgotten")
-                } else {
-                    format!("{vm} is removed; its settings are kept")
-                })
+            Self::Remove(vm) => {
+                lifecycle::vm_remove(context, ui, vm)?;
+                Ok(format!("{vm} is removed"))
             }
             Self::Restart(vm) => {
                 lifecycle::vm_restart(context, ui, vm)?;
@@ -140,27 +160,29 @@ impl Action {
     }
 }
 
-/// After a VM is added, wait for its guest's first publication to reach the
-/// controller and say so; or say how long it waited.
-fn first_publication(context: &Context, ui: &mut dyn Ui, vm: &str, limit: Duration) {
-    ui.say(&format!("waiting for {vm}'s guest service to publish..."));
-    let started = Instant::now();
-    while started.elapsed() < limit {
-        if let Ok(status) = crate::inventory::read_status(context, vm) {
-            if status.guest_input.observed_unix_millis.is_some() {
-                ui.say(&format!(
-                    "{vm}'s guest published: {}",
-                    crate::reports::status_line(&status)
-                ));
-                return;
+/// `vm add`'s options from the add form's changes.
+fn add_options(vm: &str, changes: &[String]) -> Result<lifecycle::AddOptions, String> {
+    let mut options = lifecycle::AddOptions::new(vm);
+    for change in changes {
+        let (key, value) = change
+            .split_once('=')
+            .ok_or_else(|| format!("{change} is not KEY=VALUE"))?;
+        let value = value.trim().to_owned();
+        match key {
+            "priority" => {
+                options.priority = value
+                    .parse()
+                    .map_err(|_| format!("priority {value} is not a whole number"))?;
             }
+            "min_ram" => options.min_ram = Some(value),
+            "max_ram" => options.max_ram = Some(value),
+            "free_ram" => options.free_ram = Some(value),
+            "guest_login" if !value.is_empty() => options.guest_login = Some(value),
+            "guest_login" => {}
+            _ => return Err(format!("vm add has no setting {key}")),
         }
-        std::thread::sleep(Duration::from_secs(2));
     }
-    ui.say(&format!(
-        "{vm}'s guest hasn't published after {}s: check rampire-guest in the VM (systemctl status rampire-guest), then rampire doctor {vm}",
-        limit.as_secs()
-    ));
+    Ok(options)
 }
 
 /// The action a doctor's fix names, when it is a whole `rampire` command
@@ -187,18 +209,9 @@ pub fn from_fix(fix: &str) -> Option<Action> {
     match words.as_slice() {
         ["apply"] => Some(Action::Apply),
         ["init", ..] => Some(Action::Init),
-        ["vm", "add", vm, rest @ ..] if rest.iter().all(|word| *word == "--fix-xml") => {
-            Some(Action::Add((*vm).to_owned()))
-        }
+        ["vm", "add", vm] => Some(Action::add(vm)),
         ["vm", "restart", vm] => Some(Action::Restart((*vm).to_owned())),
-        ["vm", "remove", vm] => Some(Action::Remove {
-            vm: (*vm).to_owned(),
-            forget: false,
-        }),
-        ["vm", "remove", vm, "--forget"] => Some(Action::Remove {
-            vm: (*vm).to_owned(),
-            forget: true,
-        }),
+        ["vm", "remove", vm] => Some(Action::Remove((*vm).to_owned())),
         ["recover", vm, ..] => Some(Action::Recover((*vm).to_owned())),
         ["set", target, changes @ ..]
             if !changes.is_empty()
@@ -230,16 +243,23 @@ mod tests {
             via: "tui",
         };
         assert_eq!(
-            Action::Add("webserver".to_owned()).command_line(&context),
-            "rampire vm add webserver --fix-xml"
+            Action::add("webserver").command_line(&context),
+            "rampire vm add webserver"
         );
         assert_eq!(
-            Action::Remove {
+            Action::Add {
                 vm: "web".to_owned(),
-                forget: true
+                changes: vec![
+                    "max_ram=12GB".to_owned(),
+                    "guest_login=admin@web".to_owned()
+                ]
             }
             .command_line(&context),
-            "rampire vm remove web --forget"
+            "rampire vm add web --max-ram 12GB --guest-login admin@web"
+        );
+        assert_eq!(
+            Action::Remove("web".to_owned()).command_line(&context),
+            "rampire vm remove web"
         );
         assert_eq!(
             Action::Set {
@@ -249,6 +269,23 @@ mod tests {
             .command_line(&context),
             "rampire set web max_ram=12GB priority=150"
         );
+    }
+
+    #[test]
+    fn the_add_forms_changes_become_vm_adds_options() {
+        let options = add_options(
+            "web",
+            &[
+                "priority=150".to_owned(),
+                "max_ram=12GB".to_owned(),
+                "guest_login=".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(options.priority, 150);
+        assert_eq!(options.max_ram.as_deref(), Some("12GB"));
+        assert_eq!(options.guest_login, None);
+        assert!(add_options("web", &["priority=lots".to_owned()]).is_err());
     }
 
     #[test]
@@ -266,10 +303,7 @@ mod tests {
             from_fix("once the guest is checked, rampire recover web \"WHY IT IS SAFE TO RESUME\""),
             Some(Action::Recover("web".to_owned()))
         );
-        assert_eq!(
-            from_fix("rampire vm add web --fix-xml"),
-            Some(Action::Add("web".to_owned()))
-        );
+        assert_eq!(from_fix("rampire vm add web"), Some(Action::add("web")));
         // A placeholder to fill in, or no rampire command at all, is not run.
         assert_eq!(
             from_fix("raise max_ram: rampire set web max_ram=SIZE"),
@@ -278,7 +312,7 @@ mod tests {
         assert_eq!(from_fix("boot the guest with psi=1"), None);
         assert_eq!(from_fix("rampire doctor web"), None);
         assert_eq!(
-            from_fix("rampire vm remove web, then rampire vm add web --fix-xml"),
+            from_fix("rampire vm remove web, then rampire vm add web"),
             None
         );
     }

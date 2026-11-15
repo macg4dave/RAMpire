@@ -566,7 +566,6 @@ pub enum Icon {
     Shrinking,
     Steady,
     Latched,
-    Parked,
     Host,
     Pool,
     Guest,
@@ -582,7 +581,7 @@ pub enum Icon {
 }
 
 /// Each meaning with its Unicode and its ASCII symbol: the one table.
-pub const ICONS: [(Icon, &str, &str); 20] = [
+pub const ICONS: [(Icon, &str, &str); 19] = [
     (Icon::Ok, "✓", "[ok]"),
     (Icon::Problem, "⚠", "[!!]"),
     (Icon::Running, "●", "*"),
@@ -594,7 +593,6 @@ pub const ICONS: [(Icon, &str, &str); 20] = [
     (Icon::Shrinking, "▼", "v"),
     (Icon::Steady, "■", "="),
     (Icon::Latched, "✖", "[X]"),
-    (Icon::Parked, "◇", "<.>"),
     (Icon::Host, "⌂", "[h]"),
     (Icon::Pool, "≋", "[p]"),
     (Icon::Guest, "◎", "(g)"),

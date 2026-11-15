@@ -300,7 +300,7 @@ fn vm_table(
         };
         Paragraph::new(widgets::line(
             theme,
-            "RAMpire manages no VMs yet: add one with sudo rampire, or rampire vm add VM --fix-xml",
+            "RAMpire manages no VMs yet: add one with sudo rampire, or rampire vm add VM",
             Tone::Dim,
         ))
         .render(inner, buf);
