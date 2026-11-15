@@ -196,10 +196,11 @@ fn vm_list(
         widths.push(Constraint::Length(12));
     }
     // The guest's gauge takes the width the fixed columns leave, so a
-    // wide window shows it long rather than gaps between columns.
+    // wide window shows it long rather than gaps between columns. The note
+    // keeps room for "update available (u)".
     let fixed = name_width + 14 + 4 + 8 + if guest_mode && wide { 12 } else { 0 };
     let spare = area.width.saturating_sub(
-        fixed + 4 /* borders, padding */ + 2 /* marker */ + 6 /* gaps */ + 14, /* note */
+        fixed + 4 /* borders, padding */ + 2 /* marker */ + 6 /* gaps */ + 21, /* note */
     );
     let gauge = spare.saturating_sub(13).clamp(4, 60) as usize;
     match mode {

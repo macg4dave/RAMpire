@@ -324,6 +324,10 @@ pub fn offline_available() -> bool {
 /// Where the packages wait in the guest for its next boot.
 const OFFLINE_FOLDER: &str = "/var/lib/rampire-guest-install";
 
+/// The first-boot scripts earlier installs queued that haven't run yet:
+/// virt-customize keeps them, numbered, under the script's own name.
+const OFFLINE_SCRIPTS: &str = "/usr/lib/virt-sysprep/scripts/*rampire-guest-install*";
+
 /// Run at the guest's next boot: install the package its system takes,
 /// then boot again when the package turned on what needs a fresh start.
 const FIRST_BOOT: &str = r#"#!/bin/sh
@@ -390,6 +394,12 @@ pub fn install_offline(libvirt: &Libvirt, vm: &str, running: bool) -> Result<Str
             "-d",
             vm,
             "--no-network",
+            // An earlier install that never ran would run too, and could
+            // install an older build after this one: only this one stays.
+            "--delete",
+            OFFLINE_SCRIPTS,
+            "--delete",
+            OFFLINE_FOLDER,
             "--mkdir",
             OFFLINE_FOLDER,
             "--upload",
