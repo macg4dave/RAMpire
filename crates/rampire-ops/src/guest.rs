@@ -125,7 +125,12 @@ impl<'a> Guest<'a> {
         loop {
             match self.run("true") {
                 Ok(_) => return Ok(()),
-                Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_secs(3)),
+                // A VM still booting refuses or doesn't answer yet; a guest
+                // that turns the key down won't change its mind, and asking
+                // again only trips its rate limits.
+                Err(error) if Instant::now() < deadline && !error.contains("Permission denied") => {
+                    std::thread::sleep(Duration::from_secs(5))
+                }
                 Err(error) => {
                     let Route::Ssh(login) = &self.route else {
                         return Err(error);
