@@ -37,6 +37,14 @@ type MonitorCommand = unsafe extern "C" fn(Ptr, *const c_char, *mut *mut c_char,
 type UpdateDeviceFlags = unsafe extern "C" fn(Ptr, *const c_char, c_uint) -> c_int;
 type LastErrorMessage = unsafe extern "C" fn() -> *const c_char;
 type ResetLastError = unsafe extern "C" fn();
+type ErrorFunc = unsafe extern "C" fn(Ptr, Ptr);
+type SetErrorFunc = unsafe extern "C" fn(Ptr, Option<ErrorFunc>);
+
+/// libvirt's error handler: nothing. By default libvirt prints every error
+/// to stderr as well as keeping it for `virGetLastErrorMessage`, and on a
+/// terminal the TUI owns, each failed call (an agent that isn't up while a
+/// VM restarts) wrote over the screen. Errors are read where they happen.
+unsafe extern "C" fn ignore_error(_user_data: Ptr, _error: Ptr) {}
 
 struct Api {
     connect_open: ConnectOpen,
@@ -61,6 +69,9 @@ impl Api {
         // cast to the signature documented in libvirt's public headers. The
         // libraries are never closed, so the pointers stay valid.
         unsafe {
+            let set_error_func =
+                transmute::<Ptr, SetErrorFunc>(symbol(libvirt, c"virSetErrorFunc")?);
+            set_error_func(std::ptr::null_mut(), Some(ignore_error));
             Ok(Self {
                 connect_open: transmute::<Ptr, ConnectOpen>(symbol(libvirt, c"virConnectOpen")?),
                 connect_close: transmute::<Ptr, HandleCall>(symbol(libvirt, c"virConnectClose")?),

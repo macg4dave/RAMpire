@@ -252,9 +252,88 @@ pub fn hung_up() -> bool {
     ready < 0 || descriptor.revents & (POLLERR | POLLHUP | POLLNVAL) != 0
 }
 
+/// While it lives, what is written to stderr (fd 2) goes to `tx` as
+/// [`super::jobs::Msg::Stderr`], a line at a time, instead of over the
+/// screen: a library's warning or a program that inherited stderr. Dropped,
+/// stderr is the terminal again, so a failure after the screen closes is
+/// printed as usual.
+pub struct StderrToErrors {
+    saved: libc::c_int,
+}
+
+impl StderrToErrors {
+    pub fn start(tx: std::sync::mpsc::Sender<super::jobs::Msg>) -> Result<Self, String> {
+        use std::io::BufRead;
+        use std::os::fd::FromRawFd;
+        let mut ends = [0; 2];
+        // SAFETY: pipe2 fills both descriptors or fails; dup and dup2 take
+        // descriptors this process owns, and each is closed once.
+        unsafe {
+            if libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) != 0 {
+                return Err(format!(
+                    "pipe for stderr: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let saved = libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3);
+            if saved < 0 || libc::dup2(ends[1], libc::STDERR_FILENO) < 0 {
+                let error = std::io::Error::last_os_error();
+                libc::close(ends[0]);
+                libc::close(ends[1]);
+                if saved >= 0 {
+                    libc::close(saved);
+                }
+                return Err(format!("send stderr to the errors list: {error}"));
+            }
+            libc::close(ends[1]);
+            let reader = std::fs::File::from_raw_fd(ends[0]);
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(reader).lines() {
+                    let Ok(line) = line else { break };
+                    let line = line.trim().to_owned();
+                    if !line.is_empty() && tx.send(super::jobs::Msg::Stderr(line)).is_err() {
+                        break;
+                    }
+                }
+            });
+            Ok(Self { saved })
+        }
+    }
+}
+
+impl Drop for StderrToErrors {
+    fn drop(&mut self) {
+        // SAFETY: `saved` is the terminal's stderr, duplicated in start.
+        // Once fd 2 is it again, the pipe's last writer is gone (programs
+        // still running hold their own copy) and the reader ends.
+        unsafe {
+            libc::dup2(self.saved, libc::STDERR_FILENO);
+            libc::close(self.saved);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stderr_goes_to_the_errors_list_while_the_screen_is_open() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let capture = StderrToErrors::start(tx).unwrap();
+        // As a library writes it: straight to fd 2, past Rust's capture.
+        let text = b"libvirt: error : guest agent is not responding\n";
+        // SAFETY: fd 2 is open; text is a valid buffer of its length.
+        unsafe { libc::write(libc::STDERR_FILENO, text.as_ptr().cast(), text.len()) };
+        let got = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        drop(capture);
+        match got {
+            super::super::jobs::Msg::Stderr(line) => {
+                assert_eq!(line, "libvirt: error : guest agent is not responding")
+            }
+            _ => panic!("not a stderr line"),
+        }
+    }
 
     #[test]
     fn base64_is_the_standard_padded_alphabet() {

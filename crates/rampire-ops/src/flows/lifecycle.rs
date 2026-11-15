@@ -362,14 +362,31 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
             crate::audit::record(context, "vm_add", Some(name), &[]);
         }
         super::apply::apply_agreed(context, ui)?;
+        // A VM still on its old definition can't be resized, and its guest
+        // service has no channel to report on: it needs a cold start.
+        if runs_behind(&libvirt, name) == Some(true) {
+            ui.say(&format!(
+                "{name} still runs its old definition, without RAMpire's device and channel"
+            ));
+            if ui.confirm(&format!(
+                "Shut {name} down and start it again now, so RAMpire can resize it?"
+            ))? {
+                ui.say(&format!("shutting {name} down and starting it again"));
+                crate::attest::cold_restart(name, &libvirt, Duration::from_secs(300))?;
+                ui.say(&format!("{name} restarted"));
+            } else {
+                return Ok(Outcome::Partly(format!(
+                    "{name} is managed, but runs its old definition until it restarts: rampire vm restart {name}"
+                )));
+            }
+        }
         // An install at boot may boot the VM once more.
         Ok(
-            if guest_reports_in(context, ui, name, Duration::from_secs(300)) {
-                Outcome::Done
-            } else {
-                Outcome::Partly(format!(
-                    "{name} is managed, but its guest service hasn't reported in yet: rampire doctor {name} says why"
-                ))
+            match guest_reports_in(context, &libvirt, ui, name, Duration::from_secs(300)) {
+                Ok(()) => Outcome::Done,
+                Err(why) => Outcome::Partly(format!(
+                    "{name} is managed, but its guest service hasn't reported in {why}"
+                )),
             },
         )
     })();
@@ -533,16 +550,23 @@ fn original_definition(name: &str) -> Option<String> {
     std::fs::read_to_string(Path::new(DOMAIN_BACKUPS).join(oldest)).ok()
 }
 
-/// Wait for the guest service to report in, and say how it is; whether
-/// it did.
+/// Wait for the guest service to report in, and say how it is. While it
+/// waits it says what it sees every [`WAIT_REPORT`], so a long wait isn't
+/// silent; when the wait ends without it, why, as far as the host can tell.
 fn guest_reports_in(
     context: &Context,
+    libvirt: &crate::attest::Libvirt,
     ui: &mut dyn Ui,
     vm: &str,
     limit: std::time::Duration,
-) -> bool {
-    ui.say(&format!("waiting for {vm}'s guest service to report in"));
-    let started = std::time::Instant::now();
+) -> Result<(), String> {
+    use std::time::{Duration, Instant};
+    ui.say(&format!(
+        "waiting up to {} s for {vm}'s guest service to report in",
+        limit.as_secs()
+    ));
+    let started = Instant::now();
+    let mut reported = started;
     let cancel = ui.cancel();
     while started.elapsed() < limit {
         if let Ok(status) = crate::inventory::read_status(context, vm) {
@@ -551,21 +575,91 @@ fn guest_reports_in(
                     "{vm} is added: {}",
                     crate::reports::status_line(&status)
                 ));
-                return true;
+                return Ok(());
             }
         }
-        if cancel.sleep(std::time::Duration::from_secs(2)) {
+        if reported.elapsed() >= WAIT_REPORT {
+            reported = Instant::now();
             ui.say(&format!(
-                "{vm} is added; stopped waiting for its guest service to report in"
+                "still waiting, {} s of {}: {}",
+                started.elapsed().as_secs(),
+                limit.as_secs(),
+                why_not_reported(context, libvirt, vm)
             ));
-            return false;
+        }
+        if cancel.sleep(Duration::from_secs(2)) {
+            return Err(format!(
+                "(you stopped waiting): {}",
+                why_not_reported(context, libvirt, vm)
+            ));
         }
     }
-    ui.say(&format!(
-        "{vm} is added, but its guest service hasn't reported in after {} s: rampire doctor {vm} says why",
-        limit.as_secs()
-    ));
-    false
+    Err(format!(
+        "after {} s: {}",
+        limit.as_secs(),
+        why_not_reported(context, libvirt, vm)
+    ))
+}
+
+/// How often a wait for a guest says what it sees.
+const WAIT_REPORT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Why `vm`'s guest service hasn't reported in, as far as the host can
+/// tell, the first cause found: the VM isn't running, it runs an older
+/// definition, the service in it isn't running (with its last log lines),
+/// or what the controller says.
+fn why_not_reported(context: &Context, libvirt: &crate::attest::Libvirt, vm: &str) -> String {
+    match libvirt.state(vm) {
+        Ok(state) if state == "running" => {}
+        Ok(state) => return format!("{vm} is {state}; it reports in once it runs"),
+        Err(error) => return format!("libvirt can't say how {vm} is: {error}"),
+    }
+    if runs_behind(libvirt, vm) == Some(true) {
+        return format!(
+            "{vm} still runs its old definition, without RAMpire's device and channel: it needs a restart (rampire vm restart {vm})"
+        );
+    }
+    match crate::guest::service_state(libvirt, vm) {
+        Some(state) if state.starts_with("active") => {}
+        Some(state) => {
+            return format!(
+                "its guest service isn't running: {state}. In {vm}: systemctl status rampire-guest"
+            )
+        }
+        None => {
+            return format!(
+                "its guest agent doesn't run commands, so RAMpire can't see inside {vm}. In {vm}: systemctl status rampire-guest"
+            )
+        }
+    }
+    match crate::inventory::read_status(context, vm) {
+        Ok(status) => {
+            let problems: Vec<String> = crate::doctor_vm::controller(vm, &status)
+                .into_iter()
+                .filter(|finding| !finding.ok)
+                .map(|finding| finding.detail)
+                .collect();
+            if problems.is_empty() {
+                format!(
+                    "its guest service runs, but the controller has nothing from it yet ({})",
+                    crate::reports::status_line(&status)
+                )
+            } else {
+                problems.join("; ")
+            }
+        }
+        Err(error) => format!(
+            "its guest service runs, but the controller has no status for {vm}: {error}. rampire status says how the controller is"
+        ),
+    }
+}
+
+/// Whether the running `vm` lacks what its saved definition gives RAMpire,
+/// so it needs a cold start; `None` when libvirt can't say.
+fn runs_behind(libvirt: &crate::attest::Libvirt, vm: &str) -> Option<bool> {
+    let saved = crate::vm::inspect(&libvirt.virsh(&["dumpxml", "--inactive", vm]).ok()?).ok()?;
+    let live = crate::vm::inspect(&libvirt.virsh(&["dumpxml", vm]).ok()?).ok()?;
+    Some(saved.runs_behind(&live))
 }
 
 /// Fail, saying why, when a VM other than `name` would fail `apply`'s

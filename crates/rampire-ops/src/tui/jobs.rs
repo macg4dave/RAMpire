@@ -48,6 +48,9 @@ pub enum Msg {
     Term(Event),
     /// The terminal can't be read any more.
     Gone(String),
+    /// A line written to stderr while the screen is open, by a library or
+    /// a program RAMpire ran: kept in the errors list, off the screen.
+    Stderr(String),
 }
 
 /// One part of the doctor screen: the host (`vm` is `None`) or one VM.

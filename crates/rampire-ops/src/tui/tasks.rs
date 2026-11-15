@@ -506,27 +506,6 @@ pub fn render_task(
             "Waiting for the task before it to finish.",
             Tone::Dim,
         )),
-        (None, State::Running) => {
-            // Still at work between the lines it says, which can be minutes
-            // apart, as when a VM boots.
-            let seconds = task.elapsed(now).map_or(0, |elapsed| elapsed.as_secs());
-            let frames: &[&str] = if theme.icons.unicode {
-                &["◐", "◓", "◑", "◒"]
-            } else {
-                &["|", "/", "-", "\\"]
-            };
-            let frame = frames[seconds as usize % frames.len()];
-            let stopping = if task.cancel.is_set() {
-                "; it stops at its next question or wait"
-            } else {
-                ""
-            };
-            lines.push(widgets::line(
-                theme,
-                format!("{frame} working, {seconds}s so far{stopping}"),
-                Tone::Info,
-            ));
-        }
         _ => {}
     }
     let rows: Vec<Line<'static>> = lines
@@ -551,6 +530,10 @@ pub fn render_task(
             )),
             _ => Some(widgets::buttons(theme, inner.width, pending.yes)),
         },
+        // Still at work between the lines it says, which can be minutes
+        // apart, as when a VM boots: where the buttons were, a moving mark,
+        // what it is doing now and for how long, so it never looks ended.
+        None if task.state == State::Running => Some(progress(theme, task, now, width)),
         None => None,
     };
     let [text_area, _, answer_area] = Layout::vertical([
@@ -568,6 +551,44 @@ pub fn render_task(
             .style(theme.raised())
             .render(answer_area, buf);
     }
+}
+
+/// The row under a running task with no question: a spinner, the step it
+/// said last, and the time it has run.
+fn progress(theme: &Theme, task: &Task, now: Instant, width: usize) -> Line<'static> {
+    let seconds = task.elapsed(now).map_or(0, |elapsed| elapsed.as_secs());
+    let frames: &[&str] = if theme.icons.unicode {
+        &["◐", "◓", "◑", "◒"]
+    } else {
+        &["|", "/", "-", "\\"]
+    };
+    let frame = frames[seconds as usize % frames.len()];
+    let doing = task
+        .lines
+        .iter()
+        .rev()
+        .map(|(text, _)| text.trim())
+        .find(|text| !text.is_empty() && !text.starts_with('$'))
+        .unwrap_or("starting");
+    let doing = doing.lines().next().unwrap_or(doing);
+    let stopping = if task.cancel.is_set() {
+        "stopping at its next question or wait; "
+    } else {
+        ""
+    };
+    let time = format!("  {stopping}{seconds}s, x cancels");
+    let room = width.saturating_sub(time.chars().count() + 3);
+    let doing: String = if doing.chars().count() > room {
+        let cut: String = doing.chars().take(room.saturating_sub(1)).collect();
+        format!("{cut}…")
+    } else {
+        doing.to_owned()
+    };
+    Line::from(vec![
+        Span::styled(format!("{frame} "), theme.tone(Tone::Info)),
+        Span::styled(format!("Working: {doing}"), theme.tone(Tone::Info)),
+        Span::styled(time, theme.dim()),
+    ])
 }
 
 #[cfg(test)]
@@ -660,7 +681,8 @@ mod tests {
         let text = widgets::plain_text(&buf);
         assert!(text.contains("checking"), "{text}");
         // Between the lines it says, it shows it is still at work.
-        assert!(text.contains("working, 0s so far"), "{text}");
+        assert!(text.contains("Working: checking"), "{text}");
+        assert!(text.contains("0s, x cancels"), "{text}");
         let gauge = gauge(&theme, &tasks, 20).unwrap().to_string();
         assert!(gauge.contains("2 left"), "{gauge}");
         // A task that changed nothing, as when No was answered, says so

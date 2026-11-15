@@ -43,6 +43,22 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   only. Only a system with a read-only root (Home Assistant OS) is still
   refused before anything changes. The guest tarball installs the same
   way.
+- A TUI task's window shows, once its question is answered, a moving
+  mark, what it is doing now and for how long, where the buttons were, so
+  a long step no longer looks finished; the status bar offers only the
+  keys that do something then.
+- Installing the guest service through the guest agent no longer fails
+  with "Argument list too long": each part of a file sent is small
+  enough for one argument.
+- While `vm add` waits for the guest service to report in, it says every
+  20 s what it sees: the VM not running, still on its old definition, the
+  service in the guest not running (with its last log lines), or what the
+  controller says. When the wait ends without it, the result says that
+  cause instead of only naming `rampire doctor`. A VM still on its old
+  definition after the add is offered a restart there and then.
+- Nothing is written over the TUI any more: libvirt's own error printing
+  is off (errors are read where they happen), and anything else written
+  to stderr while the screen is open goes to the errors list (**e**).
 - GNOME Software and other software centres show a screenshot of the
   TUI's dashboard first, then the diagram of how RAMpire moves memory.
 - A VM's settings form shows the draft's values, which saving changes,

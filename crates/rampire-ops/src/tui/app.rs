@@ -573,6 +573,11 @@ impl App {
                 }
             }
             Msg::Gone(_) => self.quit = true,
+            Msg::Stderr(line) => self.errors.push(ErrorEntry {
+                time: crate::dashboard::clock(),
+                what: "a message on stderr".to_owned(),
+                error: line,
+            }),
         }
         self.follow_selection();
         self.surface_question();

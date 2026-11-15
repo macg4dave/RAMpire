@@ -372,7 +372,10 @@ impl<'a> Guest<'a> {
         let handle = self.agent(&serde_json::json!({
             "execute": "guest-file-open", "arguments": {"path": remote, "mode": "w"}
         }))?;
-        for chunk in bytes.chunks(256 * 1024) {
+        // Each chunk goes base64-encoded in one argument to virsh, and Linux
+        // takes no argument over 128 KiB (MAX_ARG_STRLEN): 64 KiB is about
+        // 87 KiB encoded, with room for the JSON around it.
+        for chunk in bytes.chunks(AGENT_CHUNK) {
             self.agent(&serde_json::json!({
                 "execute": "guest-file-write",
                 "arguments": {"handle": handle, "buf-b64": crate::tui::term::base64(chunk)}
@@ -383,6 +386,39 @@ impl<'a> Guest<'a> {
         }))
         .map(|_| ())
     }
+}
+
+/// The bytes of a file each guest-agent write carries; see `agent_put`.
+const AGENT_CHUNK: usize = 64 * 1024;
+
+/// What the guest service is doing inside a running VM, read through its
+/// guest agent: `systemctl is-active` and its last log lines. `None` when
+/// the agent can't run commands, so nothing can be read from inside.
+pub fn service_state(libvirt: &Libvirt, vm: &str) -> Option<String> {
+    if !agent_runs_commands(libvirt, vm) {
+        return None;
+    }
+    let guest = Guest {
+        libvirt,
+        vm: vm.to_owned(),
+        route: Route::Agent,
+    };
+    // is-active exits non-zero when the service isn't active: `|| true`
+    // keeps its answer.
+    let text = guest
+        .run(
+            "systemctl is-active rampire-guest.service 2>/dev/null || true; \
+             journalctl -u rampire-guest.service -n 3 --no-pager -o cat 2>/dev/null || true",
+        )
+        .ok()?;
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let state = lines.next().unwrap_or("unknown").to_owned();
+    let log: Vec<&str> = lines.collect();
+    Some(if log.is_empty() {
+        state
+    } else {
+        format!("{state}; it last logged: {}", log.join(" | "))
+    })
 }
 
 /// The build a guest's service runs, from its publication.
@@ -894,6 +930,19 @@ mod tests {
             Some("6.12.0-124.el10.x86_64")
         );
         assert_eq!(newest(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn a_file_chunk_fits_in_one_argument() {
+        // Base64 and the guest-file-write JSON around it, under the 128 KiB
+        // a single argument may have.
+        let encoded = crate::tui::term::base64(&vec![0xff; AGENT_CHUNK]);
+        let command = serde_json::json!({
+            "execute": "guest-file-write",
+            "arguments": {"handle": 1_000_000, "buf-b64": encoded}
+        })
+        .to_string();
+        assert!(command.len() < 128 * 1024, "{}", command.len());
     }
 
     #[test]

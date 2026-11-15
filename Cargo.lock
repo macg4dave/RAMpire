@@ -730,6 +730,7 @@ dependencies = [
 name = "rampire-ops"
 version = "0.5.0"
 dependencies = [
+ "libc",
  "quick-xml",
  "rampire-core",
  "rampire-host",

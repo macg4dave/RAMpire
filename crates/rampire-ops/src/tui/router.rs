@@ -1271,6 +1271,41 @@ mod tests {
     }
 
     #[test]
+    fn a_task_answered_stays_open_and_says_it_is_working() {
+        let (mut app, _rx) = app();
+        let id = app
+            .tasks
+            .add(Action::add("newvm"), "rampire vm add newvm".to_owned());
+        app.tasks.start_next(Instant::now());
+        app.on_msg(Msg::Task(
+            id,
+            FlowEvent::Shown("Adding newvm to RAMpire".to_owned()),
+        ));
+        let (reply, answer) = std::sync::mpsc::channel();
+        app.on_msg(Msg::Task(
+            id,
+            FlowEvent::Ask(Question::Review("Add newvm?".to_owned()), reply),
+        ));
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(answer.recv().unwrap(), Answer::Yes);
+        app.on_msg(Msg::Task(
+            id,
+            FlowEvent::Line("logging in to newvm to install rampire-guest".to_owned()),
+        ));
+        assert_eq!(app.layer(), Layer::Task, "the window stays open");
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        crate::tui::views::render(area, &mut buf, &app);
+        let text = crate::tui::widgets::plain_text(&buf);
+        assert!(
+            text.contains("Working: logging in to newvm to install rampire-guest"),
+            "{text}"
+        );
+        assert!(!text.contains("y  yes"), "no buttons to press:\n{text}");
+        assert!(text.contains("x  cancel"), "{text}");
+    }
+
+    #[test]
     fn a_tasks_question_comes_forward_and_is_answered_there() {
         let (mut app, _rx) = app();
         let id = app.tasks.add(Action::Apply, "rampire apply".to_owned());

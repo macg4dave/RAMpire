@@ -140,6 +140,10 @@ fn run_app(context: Context) -> Result<(), String> {
     );
     let mut app = app::App::new(context, theme, tx.clone(), control.clone());
     app.check_setup();
+    // Anything written to stderr while the screen is open goes to the
+    // errors list instead of over the screen. Declared before `screen`, it
+    // is put back after the screen closes, however this ends.
+    let _stderr = term::StderrToErrors::start(tx.clone())?;
     let mut screen = term::Term::open()?;
     jobs::spawn_keys(tx);
     let result = (|| -> Result<(), String> {

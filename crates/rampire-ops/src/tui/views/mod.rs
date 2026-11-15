@@ -163,6 +163,16 @@ fn status_bar(area: Rect, buf: &mut Buffer, app: &App) {
             ("Enter".to_owned(), "answer"),
             ("Esc".to_owned(), "later"),
         ]
+    } else if layer == Layer::Task
+        && matches!(&app.overlay, Some(Overlay::Task { id, .. })
+            if app.tasks.get(*id).is_some_and(|task| task.pending.is_none()))
+    {
+        // Nothing asked: no buttons to press.
+        vec![
+            ("x".to_owned(), "cancel"),
+            ("c".to_owned(), "copy"),
+            ("Esc".to_owned(), "close; it goes on"),
+        ]
     } else if layer == Layer::Which {
         vec![("Esc".to_owned(), "back")]
     } else {
