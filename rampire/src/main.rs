@@ -692,6 +692,103 @@ mod tests {
         assert_eq!(roff_text(".x"), "\\&.x");
     }
 
+    /// Every `rampire` command line the docs give a person to type, in
+    /// code, is one the command line takes once its placeholders are
+    /// filled in. A bare mention such as `rampire set` may leave out what
+    /// the command needs; nothing may be unknown or of the wrong kind.
+    #[test]
+    fn every_command_in_the_docs_parses() {
+        use clap::error::ErrorKind;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut pages = vec![root.join("README.md")];
+        for entry in std::fs::read_dir(root.join("docs")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|extension| extension == "md") {
+                pages.push(path);
+            }
+        }
+        let mut failures = Vec::new();
+        let mut checked = 0;
+        for page in &pages {
+            for code in code_in(&std::fs::read_to_string(page).unwrap()) {
+                let Some(line) = code
+                    .strip_prefix("sudo rampire ")
+                    .or_else(|| code.strip_prefix("rampire "))
+                else {
+                    continue;
+                };
+                let line = line.split(" #").next().unwrap_or(line);
+                let words = std::iter::once("rampire".to_owned()).chain(filled(line));
+                match Cli::try_parse_from(words) {
+                    Err(error)
+                        if !matches!(
+                            error.kind(),
+                            ErrorKind::DisplayHelp
+                                | ErrorKind::DisplayVersion
+                                | ErrorKind::MissingRequiredArgument
+                                | ErrorKind::MissingSubcommand
+                                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                        ) =>
+                    {
+                        failures.push(format!("{}: {code}: {}", page.display(), error.kind()));
+                    }
+                    _ => checked += 1,
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(checked > 50, "checked only {checked} commands");
+    }
+
+    /// The code in a Markdown page: each inline code span, and each line
+    /// of a fenced block.
+    fn code_in(markdown: &str) -> Vec<String> {
+        let mut code = Vec::new();
+        let mut fenced = false;
+        for line in markdown.lines() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+            } else if fenced {
+                code.push(line.trim().to_owned());
+            } else {
+                code.extend(line.split('`').skip(1).step_by(2).map(str::to_owned));
+            }
+        }
+        code
+    }
+
+    /// A documented command's words, its placeholders as values: `[VM]` and
+    /// `VM` a name, `SIZE` and `N` a number, `a|b` the first, `"..."` one
+    /// word.
+    fn filled(line: &str) -> Vec<String> {
+        let mut words = Vec::new();
+        let mut rest = line.trim();
+        while !rest.is_empty() {
+            let (word, after) = match rest.strip_prefix('"') {
+                Some(quoted) => match quoted.split_once('"') {
+                    Some((word, after)) => (word, after),
+                    None => (quoted, ""),
+                },
+                None => rest.split_once(' ').unwrap_or((rest, "")),
+            };
+            let word = word.trim_start_matches('[').trim_end_matches(']');
+            let word = match word {
+                "VM" | "NAME" | "TARGET" => "web".to_owned(),
+                "COMMAND" => "status".to_owned(),
+                "KEY=VALUE" | "KEY=VALUE..." => "priority=1".to_owned(),
+                "N" | "SECONDS" => "1".to_owned(),
+                // One of several: the first.
+                _ if word.contains('|') => word.split('|').next().unwrap_or(word).to_owned(),
+                _ => word.replace("=SIZE", "=1GB"),
+            };
+            if !word.is_empty() && word != "..." && word != "|" {
+                words.push(word);
+            }
+            rest = after.trim_start();
+        }
+        words
+    }
+
     #[test]
     fn script_options_are_under_their_own_heading() {
         let command = Cli::command();
