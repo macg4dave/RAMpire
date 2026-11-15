@@ -76,12 +76,15 @@ Rocky Linux 10, Fedora 45 and Debian 13, and RAMpire runs on RHEL 10.
    `init` checks the host first, and changes nothing if something is
    missing. Then it writes a suggested `global.toml`: it reads the host's
    memory and every libvirt domain, sets aside the boot RAM of each VM
-   with a virtio-mem device and all the memory of every other VM, and
+   with a virtio-mem device and all the memory of every other running VM
+   (a shut-off one isn't counted: while it runs, growth stops at the
+   reserve), and
    asks for `host_reserve`, the memory the host keeps, with the
    recommended eighth of the host (2 to 8 GiB) filled in to keep or
    change; `--host-reserve SIZE` gives it without asking. It never
    overwrites an existing `global.toml`. The TUI opens the same as
-   **Set up this host** on a host without one (**I** opens it again). It applies it and leaves the
+   **Set up this host** on a host without one (**I** opens it again);
+   **S** there changes the global settings later. It applies it and leaves the
    controller enabled and running.
 
    To start from your own settings instead, write them in `/etc/rampire`

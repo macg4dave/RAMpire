@@ -22,6 +22,20 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 - The add form warns when the VM is running and adding will shut it
   down; the plan `vm add` shows puts that warning first.
 - The add form and `vm add`'s plan are shorter and plainer.
+- **S** in the TUI edits the global settings (`global.toml`), each
+  checked as it is typed; saving runs `rampire set global` and applies.
+- A VM's name may have dots, as libvirt names often do
+  (`rhel10.2-web`).
+- `init` no longer counts the memory of VMs that are shut off and not
+  managed, so a host with more VMs defined than it can run at once still
+  gets a pool.
+- The TUI's events panel and its notices of other people's changes work
+  again: an event line that starts with `event=` was missed, and
+  journalctl's "nothing matched" was taken for a failure.
+- The TUI's VM list asks an unmanaged VM's guest agent for RAMpire's
+  files at most every 5 minutes (and again when the VM restarts, or on
+  `r`), instead of every 30 seconds, so libvirt's log isn't filled with
+  failed guest-agent calls.
 
 ## 0.5.0 (2026-11-15): Linux only
 

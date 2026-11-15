@@ -14,18 +14,25 @@ use crate::ui::Ui;
 pub fn host_facts(context: &Context) -> Result<(u64, Vec<crate::init::DomainMemory>), String> {
     let host = crate::host_readings::read_meminfo()?.total;
     let libvirt = context.libvirt()?;
+    let names = |state: &str| -> Result<Vec<String>, String> {
+        Ok(libvirt
+            .virsh(&["list", state, "--name"])?
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect())
+    };
+    // Any domain but a shut-off one holds its memory: running, paused,
+    // shutting down.
+    let off = names("--state-shutoff")?;
     let mut domains = Vec::new();
-    for name in libvirt
-        .virsh(&["list", "--all", "--name"])?
-        .lines()
-        .map(str::trim)
-    {
-        if !name.is_empty() {
-            domains.push(crate::init::parse_domain(
-                name,
-                &libvirt.virsh(&["dumpxml", "--inactive", name])?,
-            )?);
-        }
+    for name in names("--all")? {
+        domains.push(crate::init::parse_domain(
+            &name,
+            &libvirt.virsh(&["dumpxml", "--inactive", &name])?,
+            !off.contains(&name),
+        )?);
     }
     Ok((host, domains))
 }

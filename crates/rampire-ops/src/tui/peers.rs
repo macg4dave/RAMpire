@@ -82,7 +82,7 @@ impl Watch {
         let text = match process::bounded_text("journalctl", &arguments, Path::new("/"), TIMEOUT) {
             Ok(text) => text,
             // journalctl exits 1 when --grep matches nothing.
-            Err(error) if error.contains("status 1") => String::new(),
+            Err(error) if process::exited_one(&error) => String::new(),
             Err(_) => {
                 self.off = true;
                 return Vec::new();

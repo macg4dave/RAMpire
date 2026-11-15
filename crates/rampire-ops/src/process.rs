@@ -53,6 +53,13 @@ fn bounded_output(
         .map_err(|error| format!("{program}: {error}"))
 }
 
+/// Whether `error`, from a command here, says it exited with code 1, as
+/// `journalctl --grep` does when nothing matches. Rust prints the status
+/// as `exit status: 1`.
+pub fn exited_one(error: &str) -> bool {
+    error.contains("failed with status exit status: 1:") || error.ends_with("exit status: 1")
+}
+
 /// The output's stdout, or the failure with its stderr.
 fn succeeded(program: &str, output: Output) -> Result<Vec<u8>, String> {
     if !output.status.success() {
@@ -101,5 +108,23 @@ mod tests {
     #[test]
     fn os_preserves_plain_arguments() {
         assert_eq!(os("value"), OsString::from("value"));
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    #[test]
+    fn exit_code_one_is_told_from_other_failures() {
+        use std::os::unix::process::ExitStatusExt;
+        let one = std::process::ExitStatus::from_raw(1 << 8);
+        let error = format!("journalctl failed with status {one}: ");
+        assert!(super::exited_one(&error), "{error}");
+        let two = std::process::ExitStatus::from_raw(2 << 8);
+        assert!(!super::exited_one(&format!(
+            "journalctl failed with status {two}: x"
+        )));
+        assert!(!super::exited_one(&format!(
+            "journalctl failed with status {one}0: x"
+        )));
     }
 }

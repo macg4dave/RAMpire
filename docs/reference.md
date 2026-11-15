@@ -105,6 +105,7 @@ Anywhere:
 | `t` | The next colour theme: midnight (the default: the mascot's colours on near-black), midnight in 256 colours, light, or the terminal's own 16 colours, which match your terminal's theme |
 | `i` | Unicode or ASCII icons |
 | `I` | Set up this host, when it isn't set up yet (`rampire init`) |
+| `S` | The global settings: every setting in `global.toml` (pool, host reserve, observe only, the poll interval, the libvirt limits and URI, the copies kept), filled in with its value now and checked as you type; Enter runs `rampire set global KEY=VALUE...` for what changed, and applies |
 | `?`, F1 | The keys |
 | `q`, Ctrl+C | Quit; while tasks run it asks first, and Ctrl+C twice quits at once |
 | Ctrl+Z | Back to the shell; `fg` brings the TUI back |
@@ -261,7 +262,8 @@ Every setting is optional.
 ## `vms.d/VM.toml`
 
 One file per VM, named for the libvirt domain with `.toml` added:
-lower-case ASCII letters, digits, `-` and `_`, at most 64 characters. The
+lower-case ASCII letters, digits, `-`, `_` and `.`, starting with a letter
+or digit, at most 64 characters. The
 name isn't repeated inside. Only `vms.d/*.toml` files are read, so editor
 backups and `.rpmnew` files there are ignored.
 

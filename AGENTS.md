@@ -34,6 +34,14 @@ Do not install, upgrade or start RAMpire's host or guest packages or
 services on any machine without the user's permission first. Ask each
 time; permission for one install does not cover the next.
 
+This is only about putting the product on a machine. Building and
+testing the build need no permission: `cargo build`, `cargo test`,
+`cargo xtask gate ...`, `cargo xtask package`, `tools/build.sh` without
+`install` (including `tools/build.sh package` and the build container),
+`tools/build.sh install-check` (it installs only into throwaway
+containers), and running the built binary from `target/` without
+installing it.
+
 Once the user agrees, install the current build: in the checkout, at the
 commit under test,
 

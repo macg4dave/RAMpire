@@ -380,14 +380,20 @@ pub fn valid_alias(alias: &str) -> bool {
 /// traversal collisions on both Linux and Windows; no lossy sanitisation.
 /// VM and review profile names follow it, since each names a file.
 fn validate_name(kind: &str, name: &str) -> Result<(), String> {
+    check_name(kind, name, b"-_", "'-' or '_'")
+}
+
+/// `name` is 1..=64 lower-case ASCII letters, digits and `extra`, starting
+/// with a letter or digit, so it is never `.`, `..` or hidden.
+fn check_name(kind: &str, name: &str, extra: &[u8], said: &str) -> Result<(), String> {
     if name.is_empty()
         || name.len() > 64
         || !name
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || extra.contains(&b))
         || !name.as_bytes()[0].is_ascii_alphanumeric()
     {
-        return Err(format!("{kind} name {name:?} must be 1..=64 lower-case ASCII letters, digits, '-' or '_', starting with a letter or digit"));
+        return Err(format!("{kind} name {name:?} must be 1..=64 lower-case ASCII letters, digits, {said}, starting with a letter or digit"));
     }
     Ok(())
 }
@@ -395,8 +401,11 @@ fn validate_name(kind: &str, name: &str) -> Result<(), String> {
 /// A name the command line uses for `global.toml`, so no VM may have it.
 pub const RESERVED_VM_NAME: &str = "global";
 
+/// A VM's name may also have dots, as libvirt names often do
+/// (`rhel10.2-web`): it starts with a letter or digit, so it is never a
+/// path of its own.
 fn validate_vm_name(name: &str) -> Result<(), String> {
-    validate_name("VM", name)?;
+    check_name("VM", name, b"-_.", "'-', '_' or '.'")?;
     if name == RESERVED_VM_NAME {
         return Err(format!(
             "a VM can't be named {RESERVED_VM_NAME:?}: rampire set uses that name for global.toml"
@@ -544,10 +553,17 @@ mod tests {
             .collect();
         assert_eq!(names.len(), filenames.len());
         for name in [
-            "", "Guest", "../guest", ".", "guest/x", "guest\\x", "-guest", "guest ", "a.b", "é",
+            "", "Guest", "../guest", ".", "..", ".guest", "guest/x", "guest\\x", "-guest",
+            "guest ", "é",
         ] {
             assert!(vm_filename(name).is_err(), "{name}");
         }
+        // libvirt names often have dots; a review profile's may not.
+        assert_eq!(
+            vm_filename("rhel10.2-2026-11-1").unwrap(),
+            "rhel10.2-2026-11-1.toml"
+        );
+        assert!(validate_name("review profile", "a.b").is_err());
         assert!(vm_filename(&"x".repeat(65)).is_err());
         assert_eq!(vm_filename("guest").unwrap(), "guest.toml");
         assert!(vm_filename("global").is_err());

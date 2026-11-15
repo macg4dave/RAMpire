@@ -13,6 +13,9 @@ const LINES: &str = "600";
 /// The only keys whose values contain spaces; they end the line.
 const SPACED_KEYS: [&str; 2] = ["reason", "command_result"];
 
+/// The `journalctl --grep` pattern for event lines.
+const EVENT_PATTERN: &str = "(^|\\s)event=";
+
 const UNREADABLE: &str = "journal unreadable: run with sudo or join the systemd-journal group";
 
 /// The unit's event lines, oldest first, or why the journal gave none: an
@@ -24,7 +27,9 @@ pub fn read_events(unit: &str, cwd: &Path) -> Result<String, String> {
         "-u",
         unit,
         "--grep",
-        " event=",
+        // A controller line starts with its event; an operator's has
+        // `rampire:` before it.
+        EVENT_PATTERN,
         "-n",
         LINES,
         "--no-pager",
@@ -41,7 +46,7 @@ pub fn read_events(unit: &str, cwd: &Path) -> Result<String, String> {
         }
         Ok(_) if root => Ok(String::new()),
         // journalctl exits 1 when --grep matches nothing.
-        Err(error) if root && error.contains("status 1") => Ok(String::new()),
+        Err(error) if root && process::exited_one(&error) => Ok(String::new()),
         Ok(_) => Err(UNREADABLE.to_owned()),
         Err(error) if error.contains("permission") => Err(UNREADABLE.to_owned()),
         Err(error) => Err(error),
@@ -120,7 +125,7 @@ pub fn read_log(vm: Option<&str>, lines: usize, cwd: &Path) -> Result<String, St
     match process::bounded_text("journalctl", &arguments, cwd, COMMAND_TIMEOUT) {
         Ok(text) => Ok(text),
         // journalctl exits 1 when --grep matches nothing.
-        Err(error) if error.contains("status 1") => Ok(String::new()),
+        Err(error) if process::exited_one(&error) => Ok(String::new()),
         Err(error) if error.contains("permission") => Err(UNREADABLE.to_owned()),
         Err(error) => Err(error),
     }

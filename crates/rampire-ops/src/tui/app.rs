@@ -508,7 +508,10 @@ impl App {
                 self.setup = Some(HostFacts {
                     host_bytes,
                     set_aside_bytes: crate::init::set_aside(&domains),
-                    vms: domains.len(),
+                    vms: domains
+                        .iter()
+                        .filter(|domain| domain.set_aside_bytes() > 0)
+                        .count(),
                 });
                 // Asked first, before anything else is done.
                 if self.dialog.is_none() {
@@ -639,6 +642,7 @@ impl App {
                 }
                 self.tasks.finish(id, result, Instant::now());
                 // What the action changed shows on the next reads.
+                crate::inventory::forget_guest_probes();
                 self.load_inventory();
                 self.refresh_view();
                 self.start_tasks();
@@ -758,6 +762,7 @@ impl App {
     pub(super) fn reload(&mut self) {
         match self.view.clone() {
             View::Main | View::Details(_) => {
+                crate::inventory::forget_guest_probes();
                 self.load_inventory();
                 self.control
                     .reload
@@ -963,6 +968,51 @@ impl App {
             list,
             OnYes::Run(actions),
         )));
+    }
+
+    /// The global settings form: `global.toml` in the draft, every setting
+    /// filled in with its value now, defaults included. A host that isn't
+    /// set up gets the setup form instead.
+    pub(super) fn global_form(&mut self) {
+        if self.setup.is_some() {
+            return self.setup_form();
+        }
+        let globals = match rampire_core::settings::load_globals(&self.context.draft()) {
+            Ok(globals) => globals,
+            Err(error) => {
+                return self.notify(
+                    format!("global.toml can't be read: {error}; fix it, then try again"),
+                    Tone::Bad,
+                )
+            }
+        };
+        let fields = vec![
+            Field::new("pool", globals.pool.map(format_byte_size)),
+            Field::new("host_reserve", Some(format_byte_size(globals.host_reserve))),
+            Field::new("observe_only", Some(globals.observe_only.to_string())),
+            Field::new(
+                "poll_interval_seconds",
+                Some(globals.poll_interval_seconds.to_string()),
+            ),
+            Field::new(
+                "command_timeout_seconds",
+                Some(globals.command_timeout_seconds.to_string()),
+            ),
+            Field::new(
+                "convergence_timeout_seconds",
+                Some(globals.convergence_timeout_seconds.to_string()),
+            ),
+            Field::new("libvirt_uri", Some(globals.libvirt_uri.clone())),
+            Field::new("retention", Some(globals.retention.to_string())),
+        ];
+        self.dialog = Some(Dialog::Form(Form {
+            purpose: Purpose::Global,
+            vms: Vec::new(),
+            fields,
+            cursor: 0,
+            warning: None,
+            host: None,
+        }));
     }
 
     /// The settings form for `vms`: one VM's values to change, or for

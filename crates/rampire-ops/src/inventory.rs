@@ -188,6 +188,52 @@ pub fn read_guest_publication(
     }
 }
 
+/// How long a VM's guest probe is kept: each probe of a guest without
+/// RAMpire's files is a failed guest-agent call, which libvirt logs as an
+/// error, so the TUI's list doesn't ask every time it reads.
+const PROBE_KEPT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Each VM's last guest probe: its domain ID then, when, and what it said.
+type Probes = std::collections::HashMap<String, (String, std::time::Instant, Published, String)>;
+
+static PROBES: std::sync::Mutex<Option<Probes>> = std::sync::Mutex::new(None);
+
+/// A VM's guest probe, kept for [`PROBE_KEPT`] while the domain runs as
+/// the same ID: a VM started again, as after a guest install, is asked
+/// again. A guest that publishes is asked every time, since that costs no
+/// failed call.
+fn probe_guest(libvirt: &crate::attest::Libvirt, vm: &str) -> (Published, String) {
+    let id = libvirt
+        .virsh(&["domid", vm])
+        .map(|id| id.trim().to_owned())
+        .unwrap_or_default();
+    let now = std::time::Instant::now();
+    let mut probes = PROBES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let probes = probes.get_or_insert_with(Probes::new);
+    if let Some((kept_id, at, published, detail)) = probes.get(vm) {
+        if *kept_id == id && !id.is_empty() && now.saturating_duration_since(*at) < PROBE_KEPT {
+            return (published.clone(), detail.clone());
+        }
+    }
+    let (published, _, detail) = read_guest_publication(libvirt, vm);
+    if matches!(published, Published::Yes { .. }) {
+        probes.remove(vm);
+    } else {
+        probes.insert(vm.to_owned(), (id, now, published.clone(), detail.clone()));
+    }
+    (published, detail)
+}
+
+/// Forget the kept guest probes, so the next list asks every guest: after
+/// a change, or when a person reads again.
+pub fn forget_guest_probes() {
+    if let Ok(mut probes) = PROBES.lock() {
+        *probes = None;
+    }
+}
+
 /// The guest service's unit, as the guest package installs it.
 const GUEST_UNIT: &str = "/usr/lib/systemd/system/rampire-guest.service";
 
@@ -289,7 +335,7 @@ fn listed(
                 }),
             }
             if state == "running" {
-                let (published, _, detail) = read_guest_publication(libvirt, name);
+                let (published, detail) = probe_guest(libvirt, name);
                 vm.guest = published;
                 vm.detail = detail;
             } else {

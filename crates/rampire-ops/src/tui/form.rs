@@ -25,6 +25,20 @@ enum Kind {
     Size,
     /// A login, `USER@HOST`.
     Login,
+    /// `true` or `false`.
+    Bool,
+    /// A libvirt connection URI.
+    Uri,
+}
+
+/// The whole numbers a number setting takes.
+fn range(key: &str) -> Option<(u64, u64)> {
+    match key {
+        "poll_interval_seconds" => Some((1, 10)),
+        "command_timeout_seconds" | "convergence_timeout_seconds" => Some((1, 86_400)),
+        "retention" => Some((2, 1000)),
+        _ => None,
+    }
 }
 
 /// What the form is for.
@@ -36,6 +50,8 @@ pub enum Purpose {
     Add,
     /// Setting the host up: Save runs `init`.
     Init,
+    /// The host's global settings: Save runs `set global`.
+    Global,
 }
 
 /// The host's memory and what its VMs hold, for the setup form to show the
@@ -45,6 +61,8 @@ pub struct HostFacts {
     pub host_bytes: u64,
     /// What the host's VMs hold whatever happens, together.
     pub set_aside_bytes: u64,
+    /// The VMs that hold memory now; shut-off ones that RAMpire doesn't
+    /// manage aren't counted.
     pub vms: usize,
 }
 
@@ -81,6 +99,41 @@ fn about(key: &str) -> (&'static str, &'static str, Kind) {
             "Memory the host keeps for itself. VMs never get it.",
             Kind::Size,
         ),
+        "pool" => (
+            "Pool",
+            "Memory the managed VMs share beyond their boot RAM. Needed with more than one VM.",
+            Kind::Size,
+        ),
+        "observe_only" => (
+            "Observe only",
+            "true: decide and log everything, but change no VM's memory.",
+            Kind::Bool,
+        ),
+        "poll_interval_seconds" => (
+            "Poll interval",
+            "Seconds between readings of the host and the guests, 1 to 10.",
+            Kind::Number,
+        ),
+        "command_timeout_seconds" => (
+            "Command limit",
+            "Seconds each libvirt command may take.",
+            Kind::Number,
+        ),
+        "convergence_timeout_seconds" => (
+            "Settle limit",
+            "Seconds a Windows removal may stall before it is settled. Linux uses 380.",
+            Kind::Number,
+        ),
+        "libvirt_uri" => (
+            "libvirt URI",
+            "The libvirt connection, such as qemu:///system.",
+            Kind::Uri,
+        ),
+        "retention" => (
+            "Copies kept",
+            "Applied copies kept for rolling back, 2 to 1000.",
+            Kind::Number,
+        ),
         _ => ("Setting", "", Kind::Size),
     }
 }
@@ -99,7 +152,10 @@ pub struct Field {
 impl Field {
     pub fn new(key: &'static str, original: Option<String>) -> Self {
         let offers = match about(key).2 {
+            Kind::Number if range(key).is_some() => Vec::new(),
             Kind::Number => vec!["100".to_owned(), "150".to_owned(), "50".to_owned()],
+            Kind::Bool => vec!["false".to_owned(), "true".to_owned()],
+            Kind::Uri => vec!["qemu:///system".to_owned()],
             Kind::Size => ["1GB", "2GB", "4GB", "8GB", "16GB", "512MB"]
                 .iter()
                 .map(|size| (*size).to_owned())
@@ -147,10 +203,20 @@ impl Field {
             return self.original.is_some().then(|| "needs a value".to_owned());
         }
         match about(self.key).2 {
-            Kind::Number => value
-                .parse::<u32>()
-                .err()
-                .map(|_| "a whole number, such as 100".to_owned()),
+            Kind::Number => match (value.parse::<u64>(), range(self.key)) {
+                (Ok(number), Some((low, high))) if !(low..=high).contains(&number) => {
+                    Some(format!("{low} to {high}"))
+                }
+                (Ok(number), None) if u32::try_from(number).is_err() => {
+                    Some("a whole number, such as 100".to_owned())
+                }
+                (Ok(_), _) => None,
+                (Err(_), Some((low, high))) => Some(format!("a whole number, {low} to {high}")),
+                (Err(_), None) => Some("a whole number, such as 100".to_owned()),
+            },
+            Kind::Bool => (value != "true" && value != "false").then(|| "true or false".to_owned()),
+            Kind::Uri => (!value.contains(":/") || value.contains(char::is_whitespace))
+                .then(|| "a libvirt URI, such as qemu:///system".to_owned()),
             Kind::Size if value.chars().all(|character| character.is_ascii_digit()) => {
                 Some(format!("add a unit: {value}GB or {value}MB"))
             }
@@ -245,6 +311,11 @@ impl Form {
                     changes: changes.clone(),
                 })
                 .collect(),
+            Purpose::Global if changes.is_empty() => Vec::new(),
+            Purpose::Global => vec![Action::Set {
+                target: crate::set::GLOBAL.to_owned(),
+                changes,
+            }],
             Purpose::Init => vec![Action::Init {
                 host_reserve: self
                     .field("host_reserve")
@@ -263,9 +334,10 @@ impl Form {
         let mut lines = vec![widgets::line(
             theme,
             format!(
-                "This host has {:.1} GiB. Its {} VMs hold {:.1} GiB until RAMpire manages them.",
+                "This host has {:.1} GiB. {} running VM{} hold {:.1} GiB; shut-off ones aren't counted.",
                 gib(host.host_bytes),
                 host.vms,
+                if host.vms == 1 { "" } else { "s" },
                 gib(host.set_aside_bytes)
             ),
             Tone::Dim,
@@ -336,6 +408,10 @@ impl Form {
             (Purpose::Add, [vm]) => (format!("Add {vm}"), "Enter: review, then add"),
             (Purpose::Add, vms) => (format!("Add {} VMs", vms.len()), "Enter: review, then add"),
             (Purpose::Init, _) => ("Set up this host".to_owned(), "Enter: set up"),
+            (Purpose::Global, _) => (
+                "Global settings".to_owned(),
+                "global.toml; Enter: save and apply",
+            ),
         };
         let block =
             raised_panel(theme, Icon::Settings, &title, subtitle).padding(Padding::new(2, 2, 1, 0));
@@ -358,9 +434,24 @@ impl Form {
                 );
             y += top;
         }
-        let label_width = 14u16;
+        let label_width = self
+            .fields
+            .iter()
+            .map(|field| field.label().len() as u16 + 2)
+            .max()
+            .unwrap_or(0)
+            .max(14);
         let box_width = 24u16.min(inner_width.saturating_sub(label_width + 2));
-        for (index, field) in self.fields.iter().enumerate() {
+        // When not every box fits, the ones shown start where the chosen
+        // one is still in view.
+        let step = if roomy { 3 } else { 2 };
+        // Inside the border and the top padding, everything but the boxes
+        // takes `fixed - 3` rows, the warning included.
+        let room = inner.height.saturating_sub(fixed - 3) / step;
+        let shown = usize::from(room.max(1));
+        let first = self.cursor.saturating_sub(shown.saturating_sub(1));
+        let hidden = (first, self.fields.len().saturating_sub(first + shown));
+        for (index, field) in self.fields.iter().enumerate().skip(first).take(shown) {
             let chosen = index == self.cursor;
             let problem = problems.get(index).cloned().flatten();
             let row = Rect {
@@ -425,6 +516,7 @@ impl Form {
                 let blank = match (self.purpose, field.key) {
                     (Purpose::Add, "guest_login") => "automatic",
                     (Purpose::Add | Purpose::Init, _) => "suggested",
+                    (Purpose::Global, _) => "not set",
                     (Purpose::Set, _) => "each keeps its own",
                 };
                 Line::styled(blank, theme.dim())
@@ -563,9 +655,14 @@ impl Form {
             height: 1,
         };
         Paragraph::new(buttons).render(place, buf);
-        let hint = "Tab or arrows: the next setting";
+        let hint = match hidden {
+            (0, 0) => "Tab or arrows: the next setting".to_owned(),
+            (above, below) => {
+                format!("Tab: next setting; {above} above, {below} below")
+            }
+        };
         if inner.width as usize > hint.len() + width as usize + 2 {
-            buf.set_string(inner.x, buttons_y, hint, theme.dim());
+            buf.set_string(inner.x, buttons_y, &hint, theme.dim());
         }
     }
 }
@@ -726,6 +823,78 @@ mod tests {
         let text = draw(&add);
         assert!(
             text.contains("web is running. Adding it shuts it"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_global_form_checks_each_setting_and_runs_set_global() {
+        let theme = Theme::new(Palette::Midnight, Depth::TrueColor, Icons { unicode: true });
+        let context = Context {
+            config: None,
+            connect: None,
+            build: String::new(),
+            via: "tui",
+        };
+        let field = |key, value: Option<&str>| Field::new(key, value.map(str::to_owned));
+        let mut form = Form {
+            purpose: Purpose::Global,
+            vms: Vec::new(),
+            fields: vec![
+                field("pool", None),
+                field("host_reserve", Some("2GB")),
+                field("observe_only", Some("false")),
+                field("poll_interval_seconds", Some("5")),
+                field("command_timeout_seconds", Some("10")),
+                field("convergence_timeout_seconds", Some("300")),
+                field("libvirt_uri", Some("qemu:///system")),
+                field("retention", Some("10")),
+            ],
+            cursor: 0,
+            warning: None,
+            host: None,
+        };
+        assert!(form.valid());
+        assert!(form.actions().is_empty());
+        form.fields[0].input.set("8GB");
+        form.fields[2].input.set("yes");
+        form.fields[3].input.set("11");
+        form.fields[6].input.set("qemu system");
+        form.fields[7].input.set("1");
+        let problems = form.problems();
+        assert_eq!(problems[0], None, "an unset pool may be set");
+        assert_eq!(problems[2].as_deref(), Some("true or false"));
+        assert_eq!(problems[3].as_deref(), Some("1 to 10"));
+        assert_eq!(
+            problems[6].as_deref(),
+            Some("a libvirt URI, such as qemu:///system")
+        );
+        assert_eq!(problems[7].as_deref(), Some("2 to 1000"));
+        for (index, value) in [(2, "true"), (3, "3"), (6, "qemu:///system"), (7, "10")] {
+            form.fields[index].input.set(value);
+        }
+        assert_eq!(
+            form.actions(),
+            [Action::Set {
+                target: crate::set::GLOBAL.to_owned(),
+                changes: vec![
+                    "pool=8GB".to_owned(),
+                    "observe_only=true".to_owned(),
+                    "poll_interval_seconds=3".to_owned()
+                ],
+            }]
+        );
+        // In a short window the boxes scroll so the chosen one shows.
+        form.cursor = 7;
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+        form.render(area, &mut buf, &theme, &History::default(), &context);
+        let text = widgets::plain_text(&buf);
+        assert!(text.contains("Global settings"), "{text}");
+        assert!(text.contains("Copies kept:"), "{text}");
+        assert!(text.contains("above, 0 below"), "{text}");
+        assert!(
+            text.contains("Runs  rampire set global pool=8GB observe_only=true"),
             "{text}"
         );
     }

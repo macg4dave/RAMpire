@@ -182,6 +182,7 @@ impl App {
             Cmd::Reload => self.reload(),
             Cmd::Doctor => self.open(View::Doctor(None)),
             Cmd::Setup => self.setup_form(),
+            Cmd::Global => self.global_form(),
             Cmd::Logs => self.open(View::Logs(None)),
             Cmd::Back if self.view != View::Main => self.open(View::Main),
             _ => {}

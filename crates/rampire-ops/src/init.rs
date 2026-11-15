@@ -2,9 +2,11 @@
 //! libvirt domains.
 //!
 //! A domain with a virtio-mem device is one RAMpire will manage: only its
-//! boot RAM, the memory of its NUMA cells, is set aside. Every other domain
-//! keeps all its memory, so all of it is set aside. The pool is what is left
-//! of the host's memory after the host's own reserve.
+//! boot RAM, the memory of its NUMA cells, is set aside. Every other running
+//! domain keeps all its memory, so all of it is set aside. One that is shut
+//! off holds nothing now and is left out: when it starts, the controller
+//! still stops growth at the host's reserve. The pool is what is left of
+//! the host's memory after the host's own reserve.
 
 use rampire_core::GIB;
 
@@ -18,15 +20,20 @@ pub struct DomainMemory {
     pub memory_bytes: u64,
     /// The memory of its NUMA cells: the fixed boot RAM of a resizable VM.
     pub boot_bytes: u64,
+    /// It is running, or paused: it holds its memory now.
+    pub running: bool,
 }
 
 impl DomainMemory {
-    /// What the pool can never use for this domain.
+    /// What the pool can never use for this domain: none for one that
+    /// isn't managed and is shut off.
     pub fn set_aside_bytes(&self) -> u64 {
         if self.resizable && self.boot_bytes > 0 {
             self.boot_bytes
-        } else {
+        } else if self.running {
             self.memory_bytes
+        } else {
+            0
         }
     }
 }
@@ -144,15 +151,23 @@ pub fn global_toml(suggestion: &Suggestion, domains: &[DomainMemory]) -> String 
         "# The pool every managed VM grows from: the host's memory, less the\n# reserve, less what each of these VMs needs whatever happens:\n"
     });
     for domain in domains {
-        let what = if domain.resizable && domain.boot_bytes > 0 {
-            "boot RAM; it can be managed"
+        let (bytes, what) = if domain.resizable && domain.boot_bytes > 0 {
+            (domain.boot_bytes, "boot RAM; it can be managed")
+        } else if domain.running {
+            (
+                domain.memory_bytes,
+                "all of it; it has no virtio-mem device",
+            )
         } else {
-            "all of it; it has no virtio-mem device"
+            (
+                0,
+                "shut off, so not counted; while it runs, growth stops at the reserve",
+            )
         };
         text.push_str(&format!(
             "#   {}: {} MiB ({what})\n",
             domain.name,
-            domain.set_aside_bytes() >> 20
+            bytes >> 20
         ));
     }
     match suggestion.pool_bytes {
@@ -162,8 +177,9 @@ pub fn global_toml(suggestion: &Suggestion, domains: &[DomainMemory]) -> String 
     text
 }
 
-/// Read a domain's memory from its XML definition, as `vm add` reads it.
-pub fn parse_domain(name: &str, xml: &str) -> Result<DomainMemory, String> {
+/// Read a domain's memory from its XML definition, as `vm add` reads it;
+/// `running` says whether it holds its memory now.
+pub fn parse_domain(name: &str, xml: &str, running: bool) -> Result<DomainMemory, String> {
     let inspection = crate::vm::inspect(xml).map_err(|error| format!("{name}: {error}"))?;
     if inspection.memory_bytes == 0 {
         return Err(format!("{name}: domain XML has no <memory>"));
@@ -173,6 +189,7 @@ pub fn parse_domain(name: &str, xml: &str) -> Result<DomainMemory, String> {
         resizable: !inspection.devices.is_empty(),
         memory_bytes: inspection.memory_bytes,
         boot_bytes: inspection.boot_bytes,
+        running,
     })
 }
 
@@ -192,21 +209,30 @@ mod tests {
 
     #[test]
     fn a_virtio_mem_domain_sets_aside_its_boot_ram_and_another_all_its_memory() {
-        let web = parse_domain("web", RESIZABLE).unwrap();
+        let web = parse_domain("web", RESIZABLE, true).unwrap();
         assert!(web.resizable);
         assert_eq!(web.memory_bytes, 9 * GIB);
         assert_eq!(web.set_aside_bytes(), GIB);
-        let desk = parse_domain("desk", FIXED).unwrap();
+        let desk = parse_domain("desk", FIXED, true).unwrap();
         assert!(!desk.resizable);
         assert_eq!(desk.set_aside_bytes(), 4 * GIB);
-        assert!(parse_domain("bad", "<domain/>").is_err());
+        assert!(parse_domain("bad", "<domain/>", true).is_err());
+        // Shut off and not managed, it holds nothing now.
+        let off = parse_domain("desk", FIXED, false).unwrap();
+        assert_eq!(off.set_aside_bytes(), 0);
+        let text = global_toml(&suggest(16 * GIB, std::slice::from_ref(&off)), &[off]);
+        assert!(
+            text.contains("#   desk: 0 MiB (shut off, so not counted"),
+            "{text}"
+        );
+        assert!(text.contains("pool = \"14GB\""), "{text}");
     }
 
     #[test]
     fn the_pool_is_what_is_left_after_the_reserve_and_every_vm() {
         let domains = [
-            parse_domain("web", RESIZABLE).unwrap(),
-            parse_domain("desk", FIXED).unwrap(),
+            parse_domain("web", RESIZABLE, true).unwrap(),
+            parse_domain("desk", FIXED, true).unwrap(),
         ];
         let suggestion = suggest(64 * GIB, &domains);
         assert_eq!(suggestion.host_reserve_bytes, 8 * GIB);
