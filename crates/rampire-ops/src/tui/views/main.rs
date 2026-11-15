@@ -27,24 +27,24 @@ struct Areas {
     preview: Option<Rect>,
 }
 
-/// Wide windows put the pool beside its history and events, and the list
-/// beside the preview when there is height for it.
+/// Wide windows put the pool beside its events, the history across the
+/// whole width under them, and the list beside the preview when there is
+/// height for it. Tall windows give the history room for its chart.
 fn areas(area: Rect, app: &App) -> Areas {
     let pool = matches!(app.pool, Some(Ok(_)));
     let tall = area.height >= 36;
     if area.width >= 140 {
         let top_height = if tall { 9 } else { 7 };
-        let [top, bottom] =
-            Layout::vertical([Constraint::Length(top_height), Constraint::Min(5)]).areas(area);
-        let [left, right] =
+        let [top, history, bottom] = Layout::vertical([
+            Constraint::Length(top_height),
+            Constraint::Length(if tall { 12 } else { 6 }),
+            Constraint::Min(5),
+        ])
+        .areas(area);
+        let [left, events] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .spacing(1)
                 .areas(top);
-        let [history, events] = Layout::vertical([
-            Constraint::Length(if tall { 4 } else { 3 }),
-            Constraint::Min(3),
-        ])
-        .areas(right);
         let (list, preview) = if bottom.height >= 20 {
             let [list, preview] =
                 Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
@@ -69,8 +69,8 @@ fn areas(area: Rect, app: &App) -> Areas {
             (true, true) => crate::tui::pool::POOL_HEIGHT_ROOMY,
         }),
         Constraint::Min(5),
-        Constraint::Length(if tall { 5 } else { 3 }),
-        Constraint::Length(if tall { 7 } else { 4 }),
+        Constraint::Length(if tall { 9 } else { 4 }),
+        Constraint::Length(if tall { 6 } else { 4 }),
     ])
     .areas(area);
     Areas {
@@ -117,7 +117,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &App) {
     vm_list(areas.list, buf, app, &entries, pool);
     match pool {
         Some(snapshot) => {
-            history_strip(areas.history, buf, theme, snapshot);
+            crate::tui::chart::pool_history(areas.history, buf, theme, snapshot);
             crate::tui::pool::events_panel(areas.events, buf, theme, snapshot);
         }
         None => {
@@ -418,32 +418,4 @@ fn guest_short<'a>(theme: &Theme, guest: &Published) -> Span<'a> {
         Published::No => Span::styled("no guest service", theme.dim()),
         Published::Unknown => Span::styled("unknown", theme.dim()),
     }
-}
-
-/// The pool's charge over time, as one strip of bars.
-fn history_strip(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
-    use ratatui::widgets::Sparkline;
-    let scale = snapshot.scale().max(1);
-    let width = area.width.saturating_sub(2) as usize;
-    let totals: Vec<u64> = snapshot
-        .history
-        .iter()
-        .rev()
-        .take(width)
-        .rev()
-        .map(|charges| charges.iter().copied().fold(0, u64::saturating_add))
-        .collect();
-    let block = panel(
-        theme,
-        Icon::Pool,
-        "HISTORY",
-        &format!("0-{:.0} GiB", scale as f64 / crate::dashboard::GIB as f64),
-    );
-    Sparkline::default()
-        .block(block)
-        .data(&totals)
-        .max(scale)
-        .bar_set(theme.icons.bars())
-        .style(theme.tone(Tone::Info))
-        .render(area, buf);
 }

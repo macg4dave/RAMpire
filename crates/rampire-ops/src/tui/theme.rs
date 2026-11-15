@@ -75,17 +75,17 @@ pub enum Palette {
     Midnight256,
     /// Dark text on a light background.
     Light,
-    /// The default: the terminal's own 16 colours on its own background,
+    /// The terminal's own 16 colours on its own background,
     /// so it matches a person's terminal theme.
     Terminal,
 }
 
 impl Palette {
     pub const ALL: [Self; 4] = [
-        Self::Terminal,
         Self::Midnight,
         Self::Midnight256,
         Self::Light,
+        Self::Terminal,
     ];
 
     pub fn name(self) -> &'static str {
@@ -102,10 +102,10 @@ impl Palette {
     pub fn order(light: bool) -> [Self; 4] {
         if light {
             [
-                Self::Terminal,
-                Self::Light,
                 Self::Midnight,
+                Self::Light,
                 Self::Midnight256,
+                Self::Terminal,
             ]
         } else {
             Self::ALL
@@ -698,8 +698,8 @@ mod tests {
 
     #[test]
     fn a_light_terminal_gets_light_before_midnight_and_darker_dim_text() {
-        assert_eq!(Palette::Terminal.next(true), Palette::Light);
-        assert_eq!(Palette::Terminal.next(false), Palette::Midnight);
+        assert_eq!(Palette::Midnight.next(true), Palette::Light);
+        assert_eq!(Palette::Midnight.next(false), Palette::Midnight256);
         let theme = Theme::new(Palette::Terminal, Depth::Colours16, Icons { unicode: true });
         assert_eq!(theme.dim().fg, Some(Color::Gray));
         assert_eq!(theme.on_light(true).dim().fg, Some(Color::DarkGray));

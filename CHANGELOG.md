@@ -26,7 +26,11 @@ again (decision D9).
   people's changes show as they happen. The TUI asks the terminal for its
   colours and background, draws each frame whole, only when something
   changes, and Ctrl+Z suspends it. Its layout and parts of its code come
-  from Yazi (THIRD_PARTY_NOTICES.md).
+  from Yazi (THIRD_PARTY_NOTICES.md). Midnight is the default theme. The
+  histories are line charts on a GiB scale against time, coloured by
+  load, with each VM's line, the host's free memory against its floor,
+  and their figures; a VM's details chart plugged, requested and the
+  guest's use.
 - `rampire vm list` and `rampire doctor VM`.
 - Each package installs `THIRD_PARTY_LICENSES` in its doc directory: the
   license and notices of every crate built into its binary

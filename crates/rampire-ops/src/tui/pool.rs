@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, StatefulWidget, Table, TableState, Widget};
 
 use super::theme::{Icon, Theme};
-use super::widgets::{self, panel, StackedHistory};
+use super::widgets::{self, panel};
 use crate::dashboard::{mib, GIB};
 use crate::tone::{self, Tone};
 use crate::top::{short_gib, PoolSnapshot, STALE_PUBLICATION};
@@ -360,28 +360,7 @@ pub(crate) fn guest_cells_sized<'a>(
 }
 
 fn history_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
-    let scale = snapshot.scale().max(1);
-    let shown = snapshot
-        .history
-        .len()
-        .min(area.width.saturating_sub(8) as usize);
-    let block = panel(
-        theme,
-        Icon::Pool,
-        "POOL HISTORY",
-        &format!(
-            "last {shown} samples, stacked by VM, 0..{:.1} GiB",
-            scale as f64 / GIB as f64
-        ),
-    );
-    let inner = block.inner(area);
-    block.render(area, buf);
-    StackedHistory {
-        theme,
-        history: &snapshot.history,
-        scale,
-    }
-    .render(inner, buf);
+    super::chart::pool_history(area, buf, theme, snapshot);
 }
 
 pub(crate) fn events_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
@@ -489,6 +468,7 @@ pub(crate) mod tests {
             samples: 3,
             session: Session::default(),
             history: std::iter::repeat_n(vec![GIB; vms], 400).collect(),
+            host_history: std::iter::repeat_n(20 * GIB, 400).collect(),
             events: Ok(vec![PoolEvent {
                 time: "10:00:00".to_owned(),
                 vm: "vm0".to_owned(),

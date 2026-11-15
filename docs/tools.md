@@ -51,8 +51,14 @@ A live view of every VM in the configuration on one screen, read-only like
   - the guest's pending request
 
   A publication older than 30 s is marked stale.
-- **Pool history**: the pool's charge over time, stacked by VM, against
-  the pool size.
+- **Pool history**: a line chart of the pool's use over the last five
+  minutes, in GiB against time, green, amber then red as the pool fills,
+  with each VM's own line in its colour and the pool's size. Beneath it,
+  the host's free memory as bars coloured against its floor, and the
+  figures: now, the average, the peak, the least free, the host's low and
+  the change over what is shown. A short window shows coloured columns.
+  A VM's details chart what is plugged, what was requested, and the
+  guest's use against its total, with the count of grows and shrinks.
 - **Pool events**: grants, refusals, completed requests, latches and
   control-channel changes from the controller's journal, for every VM.
 

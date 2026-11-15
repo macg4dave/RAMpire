@@ -284,7 +284,11 @@ Its first screen is the dashboard. How to read it:
   whether it is growing or shrinking, how much of its memory is in use,
   and any request it is waiting on. A VM marked **stale** hasn't reported
   in for over 30 seconds.
-- **Pool history**: a chart of how the pool's use has changed.
+- **Pool history**: a chart of the pool's use over the last few
+  minutes, on a scale in GiB. The line turns amber, then red, as the pool
+  fills; each VM has its own line in its colour. Under the chart, the
+  host's free memory turns red when it nears its floor, and a line of
+  figures says where the pool is now, its average and its peak.
 - **Pool events**: the latest decisions, such as memory given, refused or
   returned.
 

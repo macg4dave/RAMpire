@@ -5,7 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Widget};
+use ratatui::widgets::{Block, Borders};
 
 use super::theme::{Icon, Theme};
 use crate::tone::{self, Tone};
@@ -117,54 +117,6 @@ pub fn stacked_bar<'a>(theme: &Theme, charges: &[u64], scale: u64, cells: usize)
         theme.track(),
     ));
     spans
-}
-
-/// The pool's history, stacked by VM, newest on the right, with a scale on
-/// the left.
-pub struct StackedHistory<'a> {
-    pub theme: &'a Theme,
-    /// Each sample's charge per VM, oldest first.
-    pub history: &'a [Vec<u64>],
-    pub scale: u64,
-}
-
-impl Widget for StackedHistory<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        const AXIS: u16 = 6;
-        if area.width <= AXIS || area.height == 0 {
-            return;
-        }
-        let columns = (area.width - AXIS) as usize;
-        let points: Vec<&Vec<u64>> = self.history.iter().rev().take(columns).rev().collect();
-        let height = area.height as usize;
-        let scale = self.scale.max(1);
-        let gib = scale as f64 / crate::dashboard::GIB as f64;
-        let axis = if self.theme.icons.unicode { "┤" } else { "|" };
-        for row in 0..height {
-            let y = area.y + row as u16;
-            let level = height - row;
-            let label = if row == 0 || row + 1 == height {
-                format!("{:5.1}", gib * level as f64 / height as f64)
-            } else {
-                String::new()
-            };
-            buf.set_string(area.x, y, format!("{label:>5}{axis}"), self.theme.dim());
-            // Half-cell resolution: a cell belongs to the VM covering its middle.
-            let middle = level * 2 - 1;
-            for (column, charges) in points.iter().enumerate() {
-                let ends = crate::top::segment_ends(charges, scale, height * 2);
-                let x = area.x + AXIS + column as u16;
-                match ends.iter().position(|end| *end > middle) {
-                    Some(index) => {
-                        buf.set_string(x, y, self.theme.icon(Icon::Full), self.theme.series(index));
-                    }
-                    None => {
-                        buf.set_string(x, y, " ", self.theme.base());
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// A screen as plain text: each row with its trailing spaces removed, and

@@ -418,6 +418,9 @@ pub struct VmSnapshot {
     pub guest_age: Option<Duration>,
     /// Device samples, oldest first.
     pub history: Vec<VirtioMemState>,
+    /// The guest's memory in use and its total at each device sample, as
+    /// last published; `None` before a publication.
+    pub guest_history: Vec<Option<(u64, u64)>>,
     pub journal: Journal,
     pub samples: u64,
 }
@@ -429,6 +432,7 @@ pub struct VmReader {
     virsh: Virsh,
     files: PublicationCopyFirst<VirshGuestFiles<Virsh>>,
     history: VecDeque<VirtioMemState>,
+    guest_history: VecDeque<Option<(u64, u64)>>,
     guest: GuestView,
     guest_read: Option<Instant>,
     samples: u64,
@@ -445,6 +449,7 @@ impl VmReader {
             virsh,
             command,
             history: VecDeque::new(),
+            guest_history: VecDeque::new(),
             guest: GuestView::default(),
             guest_read: None,
             samples: 0,
@@ -459,12 +464,6 @@ impl VmReader {
         let started = Instant::now();
         self.samples += 1;
         let device = device_state(&self.virsh, &self.command.vm, &self.command.alias);
-        if let Some(device) = device {
-            self.history.push_back(device);
-            if self.history.len() > HISTORY_SAMPLES {
-                self.history.pop_front();
-            }
-        }
         if self.command.guest
             && self
                 .guest_read
@@ -473,6 +472,23 @@ impl VmReader {
             self.guest = read_guest(&self.files, &self.command.telemetry_path);
             self.guest_read = Some(started);
         }
+        if let Some(device) = device {
+            let memory = self.guest.telemetry.as_ref().map(|telemetry| {
+                let memory = &telemetry.memory;
+                (
+                    memory
+                        .physical_total_bytes
+                        .saturating_sub(memory.physical_available_bytes),
+                    memory.physical_total_bytes,
+                )
+            });
+            self.history.push_back(device);
+            self.guest_history.push_back(memory);
+            if self.history.len() > HISTORY_SAMPLES {
+                self.history.pop_front();
+                self.guest_history.pop_front();
+            }
+        }
         Ok(VmSnapshot {
             command: self.command.clone(),
             host: read_meminfo()?,
@@ -480,6 +496,7 @@ impl VmReader {
             guest: self.guest.clone(),
             guest_age: self.guest_read.map(|read| started - read),
             history: self.history.iter().copied().collect(),
+            guest_history: self.guest_history.iter().copied().collect(),
             journal: read_journal(&self.command, cwd),
             samples: self.samples,
         })

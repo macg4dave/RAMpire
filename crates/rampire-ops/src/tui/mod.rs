@@ -26,6 +26,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod chart;
 pub mod dialog;
 pub mod help;
 pub mod input;
@@ -57,11 +58,11 @@ use crate::context::Context;
 use app::Effect;
 use theme::{Depth, Icons, Palette, Theme};
 
-/// The look from the environment alone: the terminal's own colours at the
+/// The look from the environment alone: midnight, at the
 /// depth `TERM` names, with Unicode icons where the locale allows.
 pub fn theme_from_environment() -> Theme {
     Theme::new(
-        Palette::Terminal,
+        Palette::Midnight,
         Depth::from_environment(),
         Icons::from_environment(),
     )

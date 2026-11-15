@@ -196,6 +196,8 @@ pub struct PoolSnapshot {
     pub session: Session,
     /// Each VM's charge at each refresh, oldest first.
     pub history: Vec<Vec<u64>>,
+    /// The host's available memory at each refresh, beside `history`.
+    pub host_history: Vec<u64>,
     /// Newest first, or why the journal gave none.
     pub events: Result<Vec<PoolEvent>, String>,
 }
@@ -254,6 +256,7 @@ pub struct PoolReader {
     command: Command,
     virsh: Virsh,
     history: VecDeque<Vec<u64>>,
+    host_history: VecDeque<u64>,
     session: Session,
     samples: u64,
 }
@@ -264,6 +267,7 @@ impl PoolReader {
             virsh: Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect),
             command,
             history: VecDeque::new(),
+            host_history: VecDeque::new(),
             session: Session::default(),
             samples: 0,
         }
@@ -298,8 +302,10 @@ impl PoolReader {
         );
         self.history
             .push_back(vms.iter().map(VmSample::charge).collect());
+        self.host_history.push_back(host.available);
         if self.history.len() > HISTORY_SAMPLES {
             self.history.pop_front();
+            self.host_history.pop_front();
         }
         Ok(PoolSnapshot {
             command: self.command.clone(),
@@ -309,6 +315,7 @@ impl PoolReader {
             samples: self.samples,
             session: self.session,
             history: self.history.iter().cloned().collect(),
+            host_history: self.host_history.iter().copied().collect(),
             events: read_events(&self.command, cwd),
         })
     }
@@ -568,6 +575,7 @@ mod tests {
             samples: 1,
             session: Session::default(),
             history: vec![],
+            host_history: vec![],
             events: Ok(vec![]),
         };
         assert_eq!(snapshot.charged(), 2 * GIB);

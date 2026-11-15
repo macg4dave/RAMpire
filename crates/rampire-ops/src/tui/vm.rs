@@ -6,7 +6,7 @@ use rampire_core::settings::VmSettings;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Sparkline, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use super::theme::{Icon, Theme};
 use super::widgets::{self, panel};
@@ -324,35 +324,7 @@ fn guest_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsho
 }
 
 fn history_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapshot) {
-    let width = area.width.saturating_sub(2) as usize;
-    let points: Vec<u64> = snapshot
-        .history
-        .iter()
-        .rev()
-        .take(width)
-        .rev()
-        .map(|device| device.current_bytes)
-        .collect();
-    let peak = snapshot
-        .history
-        .iter()
-        .map(|device| device.requested_bytes.max(device.current_bytes))
-        .max()
-        .unwrap_or(0);
-    let scale = peak.div_ceil(GIB).max(1) * GIB;
-    let block = panel(
-        theme,
-        Icon::Device,
-        "HISTORY",
-        &format!("last {} samples, 0..{} GiB", points.len(), scale / GIB),
-    );
-    Sparkline::default()
-        .block(block)
-        .data(&points)
-        .max(scale)
-        .bar_set(theme.icons.bars())
-        .style(theme.tone(Tone::Info))
-        .render(area, buf);
+    super::chart::vm_history(area, buf, theme, snapshot);
 }
 
 fn events_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapshot) {
@@ -433,6 +405,7 @@ pub(crate) mod tests {
             },
             guest_age: Some(std::time::Duration::ZERO),
             history: std::iter::repeat_n(device, 400).collect(),
+            guest_history: std::iter::repeat_n(Some((GIB, 2 * GIB)), 400).collect(),
             journal: Journal {
                 events: vec![Event {
                     time: "09:00:00".to_owned(),

@@ -89,7 +89,7 @@ Anywhere:
 | `g` then `d`, `l`, `w`, `e` | Go to the doctor, the logs, the tasks, the errors |
 | Esc | Back to the list, or close what is open; in the list, clear a filter and the marks |
 | `r` | Read again |
-| `t` | The next colour theme: the terminal's own 16 colours (the default, so it matches your terminal's theme), midnight (the mascot's colours on near-black), midnight in 256 colours, or light |
+| `t` | The next colour theme: midnight (the default: the mascot's colours on near-black), midnight in 256 colours, light, or the terminal's own 16 colours, which match your terminal's theme |
 | `i` | Unicode or ASCII icons |
 | `?`, F1 | The keys |
 | `q`, Ctrl+C | Quit; while tasks run it asks first, and Ctrl+C twice quits at once |
@@ -136,7 +136,7 @@ logged to the journal as `event=operator_change` with the person and
 As it opens, the TUI asks the terminal whether it shows 24-bit colour and
 whether its background is light. Midnight is in true colour where the
 terminal keeps it, whatever `TERM` says, and in 256 colours where it
-gives one of 256 back; on a light background, light comes before midnight
+gives one of 256 back; on a light background, light comes next after midnight
 in `t`'s order, and the terminal theme's dim text is darker. A terminal
 that doesn't answer is taken at its `TERM`: true colour on any
 `256color` terminal, else 16 colours, or none with `NO_COLOR` or
