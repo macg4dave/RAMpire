@@ -21,9 +21,19 @@ pub const BINARIES: [(&str, &str); 2] = [
 /// the project's copyright notice. THIRD_PARTY_NOTICES.md records each.
 const COPIED: [(&str, &str, &str); 1] = [(
     "rampire",
-    "Yazi, https://github.com/sxyazi/yazi, at commit d5e4beb6b5212c28d1026d8e7d4ae985dcf174cb: its notifications, adapted in crates/rampire-ops/src/tui/notify.rs",
+    "Yazi, https://github.com/sxyazi/yazi, at commit d5e4beb6b5212c28d1026d8e7d4ae985dcf174cb: its notifications, list scrolling, which popup, help filter and input history, adapted in crates/rampire-ops/src/tui/notify.rs, scroll.rs, which.rs, help.rs and input.rs",
     "LICENSES/MIT.txt",
 )];
+
+/// The files that hold Yazi's code, each with its notice at the top.
+#[cfg(test)]
+const YAZI_FILES: [&str; 5] = [
+    "crates/rampire-ops/src/tui/notify.rs",
+    "crates/rampire-ops/src/tui/scroll.rs",
+    "crates/rampire-ops/src/tui/which.rs",
+    "crates/rampire-ops/src/tui/help.rs",
+    "crates/rampire-ops/src/tui/input.rs",
+];
 
 /// The platform the packages are built for: only its dependencies count.
 const PLATFORM: &str = "x86_64-unknown-linux-gnu";
@@ -264,11 +274,17 @@ mod tests {
             "{host}"
         );
         assert_eq!(copied(&repo, "rampire-guest-linux").unwrap(), "");
-        // Every file named here says where it came from.
-        let notify =
-            std::fs::read_to_string(repo.join("crates/rampire-ops/src/tui/notify.rs")).unwrap();
-        assert!(notify.starts_with("// Copyright (c) 2023 - sxyazi"));
-        assert!(notify.contains("SPDX-License-Identifier: MIT"));
+        // Every file named here says where it came from, and the notices
+        // name it.
+        let notices = std::fs::read_to_string(repo.join("THIRD_PARTY_NOTICES.md")).unwrap();
+        for file in YAZI_FILES {
+            let text = std::fs::read_to_string(repo.join(file)).unwrap();
+            assert!(text.starts_with("// Copyright (c) 2023 - sxyazi"), "{file}");
+            assert!(text.contains("SPDX-License-Identifier: MIT"), "{file}");
+            assert!(notices.contains(&format!("`{file}`")), "{file}");
+            let name = file.rsplit('/').next().unwrap();
+            assert!(host.contains(name), "{file}");
+        }
     }
 
     #[test]

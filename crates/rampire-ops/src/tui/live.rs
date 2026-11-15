@@ -1,5 +1,6 @@
 //! `rampire top` and `rampire watch`: the TUI's dashboard or a VM's details
-//! alone, refreshed until `q`, Esc or Ctrl+C, read-only. With `--once`, or
+//! alone, refreshed until `q`, Esc or Ctrl+C, read-only; Ctrl+Z goes back
+//! to the shell until `fg`. With `--once`, or
 //! when stdout isn't a terminal, one plain snapshot is printed instead; on
 //! leaving, the last view is left on the normal screen as plain text to
 //! copy.
@@ -167,23 +168,20 @@ fn run<S>(
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGHUP,
     ])?;
-    let theme = super::theme_from_environment();
-    let mut terminal =
-        ratatui::try_init().map_err(|error| format!("open the terminal: {error}"))?;
+    let theme = super::theme_for_screen();
+    let mut screen = super::term::Term::open()?;
     let mut last: Option<S> = None;
     let result = (|| -> Result<(), String> {
         while !stop.load(Ordering::Acquire) {
             let started = Instant::now();
             let snapshot = read()?;
-            terminal
-                .draw(|frame| {
-                    let area = frame.area();
-                    draw(area, frame.buffer_mut(), &theme, &snapshot);
-                })
-                .map_err(|error| format!("draw: {error}"))?;
+            screen.draw(|frame| {
+                let area = frame.area();
+                draw(area, frame.buffer_mut(), &theme, &snapshot);
+            })?;
             last = Some(snapshot);
             while started.elapsed() < interval && !stop.load(Ordering::Acquire) {
-                if super::hung_up() {
+                if super::term::hung_up() {
                     return Ok(());
                 }
                 let wait = interval
@@ -193,12 +191,19 @@ fn run<S>(
                     if let Event::Key(key) =
                         event::read().map_err(|error| format!("read a key: {error}"))?
                     {
-                        let quit = key.kind == KeyEventKind::Press
-                            && (matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                                || (key.code == KeyCode::Char('c')
-                                    && key.modifiers.contains(KeyModifiers::CONTROL)));
-                        if quit {
-                            return Ok(());
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                            KeyCode::Char('c') if ctrl => return Ok(()),
+                            // Ctrl+Z: to the shell, and back on fg.
+                            KeyCode::Char('z') if ctrl => {
+                                screen.suspend()?;
+                                break;
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -206,7 +211,7 @@ fn run<S>(
         }
         Ok(())
     })();
-    ratatui::try_restore().map_err(|error| format!("restore the terminal: {error}"))?;
+    screen.close()?;
     if let Some(snapshot) = &last {
         let width = ratatui::crossterm::terminal::size()
             .map_or(100, |(columns, _)| columns.saturating_sub(1))

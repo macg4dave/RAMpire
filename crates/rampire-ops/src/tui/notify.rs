@@ -8,7 +8,8 @@
 // yazi-actor/src/notify/tick.rs. Changed for RAMpire: the messages take
 // their level from a `Tone` and their colours from the TUI's theme, they
 // slide in and out by the time since they were shown rather than by a
-// ticker task, and they are drawn with RAMpire's panel borders. The MIT
+// ticker task, the screen is woken only while one slides, and they are
+// drawn with RAMpire's panel borders. The MIT
 // license is in LICENSES/MIT.txt; THIRD_PARTY_NOTICES.md records it.
 
 //! Notices that slide in at the bottom right, each a titled box as wide as
@@ -33,6 +34,8 @@ const SPACING: u16 = 1;
 const SLIDE: Duration = Duration::from_millis(250);
 /// The most boxes shown at once.
 const MOST: usize = 3;
+/// How often a sliding notice is drawn.
+const FRAME: Duration = Duration::from_millis(33);
 
 /// One notice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +63,26 @@ impl Message {
             tone,
             timeout,
             shown: Instant::now(),
+        }
+    }
+
+    /// A notice with its own title, timed by its tone.
+    pub fn titled(title: impl Into<String>, content: impl Into<String>, tone: Tone) -> Self {
+        Self {
+            title: title.into(),
+            ..Self::new(content, tone)
+        }
+    }
+
+    /// When it next changes on the screen: soon while it slides, else when
+    /// it starts to slide out.
+    pub fn next_change(&self, now: Instant) -> Instant {
+        let age = now.saturating_duration_since(self.shown);
+        let staying = SLIDE + self.timeout;
+        if age < SLIDE || age >= staying {
+            now + FRAME
+        } else {
+            self.shown + staying
         }
     }
 
@@ -132,9 +155,12 @@ impl Notify {
         self.messages.retain(|message| !message.gone(now));
     }
 
-    /// Whether any notice is showing, so the screen keeps redrawing.
-    pub fn busy(&self) -> bool {
-        !self.messages.is_empty()
+    /// When the notices next change on the screen, if any show.
+    pub fn next_change(&self, now: Instant) -> Option<Instant> {
+        self.messages
+            .iter()
+            .map(|message| message.next_change(now))
+            .min()
     }
 
     /// Where notices go: the right of the screen, at most 80 columns,
@@ -249,6 +275,10 @@ mod tests {
         assert_eq!(message.percent(leaving), 50);
         assert!(!message.gone(leaving));
         assert!(message.gone(at + SLIDE * 2 + message.timeout));
+        // The screen wakes while it slides, and not while it stays.
+        assert_eq!(message.next_change(at), at + FRAME);
+        let staying = at + SLIDE + Duration::from_secs(1);
+        assert_eq!(message.next_change(staying), at + SLIDE + message.timeout);
         // An error stays longer than a done.
         assert!(Message::new("x", Tone::Bad).timeout > message.timeout);
     }

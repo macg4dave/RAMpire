@@ -30,8 +30,10 @@ of at least 80x24.
 
 Everything starts from one screen: the pool, every VM on the host
 (managed, parked, half-added and not managed), the pool's history and its
-latest events. **Enter** on a VM opens its menu, which offers only what
-fits that VM:
+latest events. On a window at least 140 columns wide and tall enough, the
+chosen VM's details are beside the list, live; for a VM RAMpire doesn't
+manage, its facts. **Enter** on a VM opens its menu beside its row, which
+offers only what fits that VM:
 
 | The VM is | Its menu |
 |---|---|
@@ -41,35 +43,110 @@ fits that VM:
 | Half-added | `a` finish adding it; `o` its doctor; `f` forget it |
 
 A menu's letters also work from the list and from a VM's details,
-without opening the menu. What an action did slides in briefly at the
-bottom right; an error stays longer, and in the errors list (`e`).
+without opening the menu (in the list, `k` moves; removing is in the
+menu). In the menu, Shift with a letter copies the item's command line
+instead of doing it.
+
+### Tasks
+
+What an action does runs as a task, in the background, so the screen
+stays free. Tasks run one at a time, in the order they were started,
+since each changes the host's configuration; the others wait their turn.
+A task's question comes forward when nothing else is open, with the
+task's output above it: `y` or `n`, or the arrows and Enter (No is
+chosen first); Esc leaves it waiting. The status bar shows how many of
+the tasks started are left, red once one has failed, and how many are
+asking.
+
+`w` lists the tasks. Enter shows one's output and its question; `x`
+cancels one: a waiting one at once, a running one at its next question,
+which is answered with a stop, so nothing more is changed; `D` clears the
+finished ones. `q` asks first while tasks run: they stop with the TUI,
+and a `vm add` that stopped finishes when it is run again.
+
+What a task did slides in briefly at the bottom right; an error stays
+longer, and in the errors list (`e`). A change someone else makes while
+the TUI is open, with a command or another TUI, slides in too, with who
+made it, and the screen reads again (from the journal's
+`event=operator_change` lines).
+
+### Keys
+
+Every key is in one table, which the help, the status bar and the
+command palette are made from. `?`, or F1 anywhere, lists the keys for
+what is open; type a few letters to find one (a key itself first, then a
+word of what it does), and Enter does it. A key followed by "then" is the
+first of two: a popup shows what can follow.
+
+Anywhere:
 
 | Key | Does |
 |---|---|
-| Ctrl+P or `:` | The command palette: type a few letters of anything the TUI can do, for the chosen VM or anywhere; a theme shows as the cursor reaches it |
-| arrows, `j` `k`, Home, End, PgUp, PgDn | Choose a VM, or move |
-| Enter | The chosen VM's menu, or run what is chosen |
-| `d` | The doctor for the host and every VM; Enter runs a fix that is a `rampire` command |
-| `l` | The journal; `f` shows one VM's lines |
-| Esc | Back to the list, or close a dialog |
-| left, right | In a VM's details, the previous and next VM |
-| `y`, `n` | Answer a question |
-| `r` | Read again |
+| Ctrl+P or `:` | The command palette: type a few letters of anything the TUI can do, for the chosen VM or anywhere, each with its key; a theme shows as the cursor reaches it |
+| arrows, `j` `k`; `g` then `g`, `G`, Home, End; Ctrl+U, Ctrl+D; PgUp, PgDn, Ctrl+B, Ctrl+F | Move in any list: a row, to either end, half a page, a page |
+| `w` | The tasks |
 | `e` | The errors list |
-| `t` | The next colour theme: the terminal's own 16 colours (the default, so it matches your terminal's theme), midnight (the mascot's colours on near-black, in true colour), midnight in 256 colours, or light |
+| `g` then `d`, `l`, `w`, `e` | Go to the doctor, the logs, the tasks, the errors |
+| Esc | Back to the list, or close what is open; in the list, clear a filter and the marks |
+| `r` | Read again |
+| `t` | The next colour theme: the terminal's own 16 colours (the default, so it matches your terminal's theme), midnight (the mascot's colours on near-black), midnight in 256 colours, or light |
 | `i` | Unicode or ASCII icons |
-| `?` | The keys |
-| `q`, Ctrl+C | Quit |
+| `?`, F1 | The keys |
+| `q`, Ctrl+C | Quit; while tasks run it asks first, and Ctrl+C twice quits at once |
+| Ctrl+Z | Back to the shell; `fg` brings the TUI back |
+
+The VMs:
+
+| Key | Does |
+|---|---|
+| Enter | The chosen VM's menu |
+| Tab | Its facts: what `vm list`, the pool and its settings say, and the commands that show more; Left and Right go through the VMs, `y` copies the chosen fact |
+| `/` | Show only the VMs whose name has what is typed, as it is typed; Tab completes a name, Enter keeps the filter, Esc puts back what was there |
+| Space, Ctrl+A | Mark the chosen VM, or every VM shown (again: none). A menu's letter then does its item for each marked VM, after one question that lists the commands; `s` opens one settings form for them all, whose empty fields leave each VM its own |
+| `,` then `o`, `n`, `r`, `p`, `u` | Sort as the pool lists them, by name, by RAM plugged, by priority, by the guest's memory in use; a capital letter reverses. VMs without the figure go last |
+| `m` then `g`, `l`, `d`, `t` | The last columns: the guest's memory and request, the RAM limits, the device, what `vm list` says |
+| `y` | Copy the chosen VM's name |
+| `d`, `l` | The doctor for the host and every VM; the logs |
+
+A VM's details: Left, Right, Up and Down go to the VM before or after;
+Tab, its facts; `y` copies `rampire watch VM`; the menu's letters work.
+The doctor: Enter runs the chosen fix when it is a `rampire` command,
+after a question; `y` copies it; `/` filters the findings; `p` shows only
+the problems. The logs: `/` finds a text and marks its lines, `n` and `N`
+go to the next and the one before; `f` shows one VM's lines; `y` copies
+the chosen line. A settings form: Tab and Shift+Tab go between the
+settings, Enter applies.
+
+Text fields take the usual keys: Home, End, Ctrl+A, Ctrl+E, Ctrl+U,
+Ctrl+K, Ctrl+W, Alt+B, Alt+F. Up and Down recall what was typed for the
+same question earlier this session, and Tab takes the suggestion shown
+dim after the cursor.
+
+`y` and Shift with a menu's letter copy with OSC 52: the text goes to the
+clipboard of the computer you sit at, through SSH and sudo, in terminals
+that allow it (most do; in tmux, `set -g set-clipboard on`).
+
+### How it looks
 
 Every action runs the same steps as its command, asks the same
-questions in a dialog, and shows the command line that does the same.
-Each change is logged to the journal as `event=operator_change` with the
-person and `via=tui` ([journal](journal.md)). Colour follows the terminal: true colour on any `256color` terminal for the midnight theme (in 256 colours a `t` further on, for a terminal
-that lacks it), 16
-colours, or none with `NO_COLOR` or `TERM=dumb`; icons are ASCII
-when the locale isn't UTF-8. If the TUI fails, the terminal is given back
-and the error printed, and logged as `event=operator_change
-action=tui_failed`.
+questions, and shows the command line that does the same. Each change is
+logged to the journal as `event=operator_change` with the person and
+`via=tui` ([journal](journal.md)).
+
+As it opens, the TUI asks the terminal whether it shows 24-bit colour and
+whether its background is light. Midnight is in true colour where the
+terminal keeps it, whatever `TERM` says, and in 256 colours where it
+gives one of 256 back; on a light background, light comes before midnight
+in `t`'s order, and the terminal theme's dim text is darker. A terminal
+that doesn't answer is taken at its `TERM`: true colour on any
+`256color` terminal, else 16 colours, or none with `NO_COLOR` or
+`TERM=dumb`, when nothing is asked. Icons are ASCII when the locale isn't
+UTF-8. Each frame is drawn whole, as one synchronized update where the
+terminal has them, so a slow link never shows half of one; the screen is
+drawn only when something changes.
+
+If the TUI fails, the terminal is given back and the error printed, and
+logged as `event=operator_change action=tui_failed`.
 
 ## Commands
 

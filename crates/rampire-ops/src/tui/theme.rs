@@ -51,6 +51,18 @@ impl Depth {
             std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
         )
     }
+
+    /// The depth after asking the terminal: one that kept a 24-bit colour
+    /// has true colour whatever its `TERM`, and one that gave back one of
+    /// 256 has 256, however `TERM` reads. No colour stays no colour.
+    pub fn probed(self, true_colour: Option<bool>) -> Self {
+        match (self, true_colour) {
+            (Self::None, _) | (_, None) => self,
+            (_, Some(true)) => Self::TrueColor,
+            (Self::TrueColor | Self::Colours256, Some(false)) => Self::Colours256,
+            (Self::Colours16, Some(false)) => Self::Colours16,
+        }
+    }
 }
 
 /// The palettes a person can choose between with `t`.
@@ -85,12 +97,28 @@ impl Palette {
         }
     }
 
-    pub fn next(self) -> Self {
-        let at = Self::ALL
+    /// The palettes in the order `t` goes through them: on a light
+    /// terminal, light comes before midnight.
+    pub fn order(light: bool) -> [Self; 4] {
+        if light {
+            [
+                Self::Terminal,
+                Self::Light,
+                Self::Midnight,
+                Self::Midnight256,
+            ]
+        } else {
+            Self::ALL
+        }
+    }
+
+    pub fn next(self, light: bool) -> Self {
+        let order = Self::order(light);
+        let at = order
             .iter()
             .position(|palette| *palette == self)
             .unwrap_or(0);
-        Self::ALL[(at + 1) % Self::ALL.len()]
+        order[(at + 1) % order.len()]
     }
 }
 
@@ -227,6 +255,8 @@ pub struct Theme {
     pub palette: Palette,
     pub depth: Depth,
     pub icons: Icons,
+    /// The terminal's background is light, as it said when asked.
+    pub light: bool,
 }
 
 /// The 16 named colours' roles, for the terminal palette and 16-colour
@@ -249,7 +279,19 @@ impl Theme {
             palette,
             depth,
             icons,
+            light: false,
         }
+    }
+
+    /// On a terminal whose background is light.
+    pub fn on_light(mut self, light: bool) -> Self {
+        self.light = light;
+        self
+    }
+
+    /// The next palette for `t`.
+    pub fn next_palette(&mut self) {
+        self.palette = self.palette.next(self.light);
     }
 
     /// The palette's colours, when it has its own (not the terminal's).
@@ -275,6 +317,8 @@ impl Theme {
         }
         Some(match named {
             Named::Text => Color::Reset,
+            // Light grey disappears on a light background.
+            Named::Dim if self.light => Color::DarkGray,
             Named::Dim => Color::Gray,
             Named::Frame | Named::Info => Color::Magenta,
             Named::Good => Color::Green,
@@ -645,6 +689,20 @@ mod tests {
             Depth::None
         );
         assert_eq!(Depth::detect(None, None, false), Depth::None);
+        // What the terminal says, asked, comes before what TERM says.
+        assert_eq!(Depth::Colours16.probed(Some(true)), Depth::TrueColor);
+        assert_eq!(Depth::TrueColor.probed(Some(false)), Depth::Colours256);
+        assert_eq!(Depth::TrueColor.probed(None), Depth::TrueColor);
+        assert_eq!(Depth::None.probed(Some(true)), Depth::None);
+    }
+
+    #[test]
+    fn a_light_terminal_gets_light_before_midnight_and_darker_dim_text() {
+        assert_eq!(Palette::Terminal.next(true), Palette::Light);
+        assert_eq!(Palette::Terminal.next(false), Palette::Midnight);
+        let theme = Theme::new(Palette::Terminal, Depth::Colours16, Icons { unicode: true });
+        assert_eq!(theme.dim().fg, Some(Color::Gray));
+        assert_eq!(theme.on_light(true).dim().fg, Some(Color::DarkGray));
     }
 
     #[test]

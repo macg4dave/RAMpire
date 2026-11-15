@@ -220,6 +220,91 @@ pub fn none() -> Style {
     Style::new()
 }
 
+/// `line` cut into rows of at most `width` columns at its spaces, keeping
+/// each span's style; a word wider than a row is cut where the row ends.
+pub fn wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    // Words with the spaces after them, each with its span's style.
+    let mut words: Vec<(String, Style)> = Vec::new();
+    for span in line.spans {
+        let mut word = String::new();
+        for character in span.content.chars() {
+            if character != ' ' && word.ends_with(' ') {
+                words.push((std::mem::take(&mut word), span.style));
+            }
+            word.push(character);
+        }
+        if !word.is_empty() {
+            words.push((word, span.style));
+        }
+    }
+    let cells = |text: &str| Span::raw(text.to_owned()).width();
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for (word, style) in words {
+        let trimmed = cells(word.trim_end());
+        if used > 0 && used + trimmed > width {
+            rows.push(Line::from(std::mem::take(&mut row)));
+            used = 0;
+        }
+        if trimmed <= width {
+            used += cells(&word);
+            row.push(Span::styled(word, style));
+            continue;
+        }
+        let mut piece = String::new();
+        for character in word.chars() {
+            let cell = cells(&character.to_string());
+            if used + cell > width {
+                row.push(Span::styled(std::mem::take(&mut piece), style));
+                rows.push(Line::from(std::mem::take(&mut row)));
+                used = 0;
+            }
+            piece.push(character);
+            used += cell;
+        }
+        row.push(Span::styled(piece, style));
+    }
+    rows.push(Line::from(row));
+    rows
+}
+
+/// A yes-or-no question's buttons, each centred in its half of `width`, as
+/// Yazi lays them out; the chosen one stands out.
+pub fn buttons(theme: &Theme, width: u16, yes: bool) -> Line<'static> {
+    let half = usize::from(width / 2);
+    let button = |label: &str, chosen: bool| {
+        let text = format!("  {label}  ");
+        let pad = half.saturating_sub(text.chars().count());
+        let style = if chosen {
+            theme.selected()
+        } else {
+            theme.chip()
+        };
+        vec![
+            Span::styled(" ".repeat(pad / 2), theme.raised()),
+            Span::styled(text, style),
+            Span::styled(" ".repeat(pad - pad / 2), theme.raised()),
+        ]
+    };
+    let mut spans = button("n  No", !yes);
+    spans.extend(button("y  Yes", yes));
+    Line::from(spans)
+}
+
+/// A box in the middle of `area`, at most `width` by `height`.
+pub fn centred(area: Rect, width: u16, height: u16) -> Rect {
+    use ratatui::layout::{Constraint, Flex, Layout};
+    let [area] = Layout::horizontal([Constraint::Length(width.min(area.width))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [area] = Layout::vertical([Constraint::Length(height.min(area.height))])
+        .flex(Flex::Center)
+        .areas(area);
+    area
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +331,27 @@ mod tests {
         }
         assert_eq!(fit("abcdef", 4), "abc~");
         assert_eq!(fit("abc", 4), "abc");
+    }
+
+    #[test]
+    fn lines_wrap_at_words_and_long_words_are_cut() {
+        let rows = wrap(Line::from("abcdef"), 4);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].to_string(), "ef");
+        let rows = wrap(Line::from("one two three"), 8);
+        assert_eq!(
+            rows.iter().map(|row| row.to_string()).collect::<Vec<_>>(),
+            ["one two ", "three"]
+        );
+    }
+
+    #[test]
+    fn each_button_is_centred_in_its_half() {
+        let theme = Theme::new(Palette::Midnight, Depth::None, Icons { unicode: true });
+        let line = buttons(&theme, 40, false).to_string();
+        assert_eq!(line.chars().count(), 40);
+        let no = line.find("n  No").unwrap();
+        let yes = line.find("y  Yes").unwrap();
+        assert!(no < 20 && yes >= 20, "{line}");
     }
 }

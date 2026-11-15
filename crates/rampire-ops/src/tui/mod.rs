@@ -1,41 +1,84 @@
 //! The TUI: one full-screen program on the KVM host, on its console or over
 //! `ssh -t HOST sudo rampire`. It shows the pool and each VM, adds and
 //! removes VMs, and runs the doctor, through the same flows as the
-//! commands. `rampire top` and `rampire watch` draw its dashboard and VM
-//! details alone ([`live`]).
+//! commands, each as a task in the background. `rampire top` and
+//! `rampire watch` draw its dashboard and VM details alone ([`live`]).
 //!
-//! Keys are plain letters, arrows, Enter, Esc and Tab, so they work in any
-//! terminal, tmux and screen. Every action names the command that does the
-//! same, and is logged to the journal with the person and `via=tui`.
+//! It is built as Yazi is built: one key table ([`keymap`]) that every
+//! key, hint, help line and palette command comes from; layers that take
+//! keys topmost first ([`router`]) and are drawn bottom first ([`views`]);
+//! and a loop that sleeps until a key, a reading or a moving notice needs
+//! the screen drawn. Every action names the command that does the same,
+//! and is logged to the journal with the person and `via=tui`.
+//!
+//! | Module | Holds |
+//! |---|---|
+//! | [`app`] | The state, what is derived from it, and the messages |
+//! | [`router`] | Where a key goes, and what each command does there |
+//! | [`keymap`] | Every key, its command, description and hint |
+//! | [`views`] | The screen: header, view, status bar, layers |
+//! | [`tasks`] | The actions running in the background, and their questions |
+//! | [`which`], [`help`], [`palette`], [`spot`], [`dialog`], [`notify`] | What opens over the view |
+//! | [`list`], [`scroll`], [`input`] | The VM list's state, moving through lists, text fields |
+//! | [`jobs`], [`actions`], [`peers`] | The work off the screen's thread |
+//! | [`term`], [`theme`], [`widgets`] | The terminal, the colours and the drawing pieces |
+//! | [`pool`], [`vm`], [`live`] | The dashboard and a VM's details, shared with `top` and `watch` |
 
 pub mod actions;
 pub mod app;
+pub mod dialog;
+pub mod help;
+pub mod input;
 pub mod jobs;
+pub mod keymap;
+pub mod list;
 pub mod live;
 pub mod notify;
+pub mod palette;
+pub mod peers;
 pub mod pool;
-pub mod screens;
+pub mod router;
+pub mod scroll;
+pub mod spot;
+pub mod tasks;
+pub mod term;
 pub mod theme;
+pub mod views;
 pub mod vm;
+pub mod which;
 pub mod widgets;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
-use std::time::Duration;
-
-use ratatui::crossterm::event::{self, Event};
+use std::time::{Duration, Instant};
 
 use crate::context::Context;
+use app::Effect;
 use theme::{Depth, Icons, Palette, Theme};
 
-/// The look for this terminal: the midnight palette at the terminal's depth,
-/// with Unicode icons where the locale allows.
+/// The look from the environment alone: the terminal's own colours at the
+/// depth `TERM` names, with Unicode icons where the locale allows.
 pub fn theme_from_environment() -> Theme {
     Theme::new(
         Palette::Terminal,
         Depth::from_environment(),
         Icons::from_environment(),
     )
+}
+
+/// The look for a screen about to open: as the environment says, then as
+/// the terminal says when asked, what it can show and whether its
+/// background is light. Only for a terminal the screen will take over.
+pub fn theme_for_screen() -> Theme {
+    let theme = theme_from_environment();
+    if theme.depth == Depth::None {
+        return theme;
+    }
+    let probe = term::probe();
+    let mut theme = theme.on_light(probe.light.unwrap_or(false));
+    theme.depth = theme.depth.probed(probe.true_colour);
+    theme
 }
 
 /// Run the TUI until the person quits or the terminal goes away. The
@@ -73,32 +116,16 @@ pub(crate) fn stop_on_signals(signals: &[i32]) -> Result<Arc<AtomicBool>, String
     Ok(stop)
 }
 
-/// Whether the terminal on stdin has hung up or gone.
-pub(crate) fn hung_up() -> bool {
-    #[repr(C)]
-    struct PollFd {
-        fd: i32,
-        events: i16,
-        revents: i16,
-    }
-    unsafe extern "C" {
-        fn poll(fds: *mut PollFd, count: u64, timeout: i32) -> i32;
-    }
-    const POLLERR: i16 = 0x8;
-    const POLLHUP: i16 = 0x10;
-    const POLLNVAL: i16 = 0x20;
-    let mut descriptor = PollFd {
-        fd: 0,
-        events: 0,
-        revents: 0,
-    };
-    // SAFETY: one caller-owned pollfd, and a zero timeout.
-    let ready = unsafe { poll(&mut descriptor, 1, 0) };
-    ready < 0 || descriptor.revents & (POLLERR | POLLHUP | POLLNVAL) != 0
-}
+/// The shortest time between two frames: a burst of keys or readings is
+/// drawn once.
+const FRAME: Duration = Duration::from_millis(16);
+/// The longest sleep, so a signal or a hang-up is noticed soon.
+const NAP: Duration = Duration::from_millis(250);
 
 fn run_app(context: Context) -> Result<(), String> {
     let stop = stop_on_signals(&[signal_hook::consts::SIGHUP, signal_hook::consts::SIGTERM])?;
+    // Asked before the screen opens, so the answers aren't read as keys.
+    let theme = theme_for_screen();
     let (tx, rx) = jobs::channel();
     let control = jobs::ReaderControl::new();
     jobs::spawn_reader(
@@ -107,46 +134,55 @@ fn run_app(context: Context) -> Result<(), String> {
         tx.clone(),
         Duration::from_secs(1),
     );
-    let mut app = app::App::new(context, theme_from_environment(), tx, control.clone());
-    let mut terminal =
-        ratatui::try_init().map_err(|error| format!("open the terminal: {error}"))?;
+    let mut app = app::App::new(context, theme, tx.clone(), control.clone());
+    let mut screen = term::Term::open()?;
+    jobs::spawn_keys(tx);
     let result = (|| -> Result<(), String> {
         let mut dirty = true;
+        let mut drawn = Instant::now() - FRAME;
         while !app.quit && !stop.load(Ordering::Acquire) {
             // A terminal that has gone away (a dropped SSH connection
             // under sudo's own pty sends no SIGHUP) ends the TUI.
-            if hung_up() {
+            if term::hung_up() {
                 return Ok(());
             }
-            // Notices slide in and out, so keep drawing while any show.
-            dirty |= app.notices.busy();
-            if dirty {
-                terminal
-                    .draw(|frame| screens::draw(frame, &app))
-                    .map_err(|error| format!("draw: {error}"))?;
+            let now = Instant::now();
+            if dirty && now >= drawn + FRAME {
+                screen.draw(|frame| views::draw(frame, &app))?;
+                drawn = now;
                 dirty = false;
             }
-            // Short polls: keys answer at once, and readings show as they come.
-            let wait = if app.notices.busy() { 40 } else { 100 };
-            if event::poll(Duration::from_millis(wait))
-                .map_err(|error| format!("read a key: {error}"))?
-            {
-                if let Event::Key(key) =
-                    event::read().map_err(|error| format!("read a key: {error}"))?
-                {
-                    app.on_key(key);
+            // Asleep until something comes, or the screen changes by
+            // itself (a notice moving, the clock), or a frame is due.
+            let deadline = if dirty {
+                drawn + FRAME
+            } else {
+                app.next_wake(now)
+            };
+            let wait = deadline.saturating_duration_since(now).min(NAP);
+            match rx.recv_timeout(wait) {
+                Ok(msg) => {
+                    app.on_msg(msg);
+                    while let Ok(msg) = rx.try_recv() {
+                        app.on_msg(msg);
+                    }
+                    dirty = true;
                 }
-                dirty = true;
+                Err(RecvTimeoutError::Timeout) => dirty |= Instant::now() >= deadline,
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
-            app.tick();
-            while let Ok(msg) = rx.try_recv() {
-                app.on_msg(msg);
+            app.tick(Instant::now());
+            for effect in std::mem::take(&mut app.effects) {
+                match effect {
+                    Effect::Copy(text) => term::copy(&text)?,
+                    Effect::Suspend => screen.suspend()?,
+                }
                 dirty = true;
             }
         }
         Ok(())
     })();
     control.stop.store(true, Ordering::Release);
-    ratatui::try_restore().map_err(|error| format!("restore the terminal: {error}"))?;
+    screen.close()?;
     result
 }

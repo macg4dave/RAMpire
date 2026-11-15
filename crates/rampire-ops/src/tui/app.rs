@@ -1,22 +1,34 @@
-//! The TUI's state and what each key does. Drawing is in
-//! [`super::screens`]; the work off the screen's thread is in
+//! The TUI's state: what has been read, what is shown, what is open over
+//! it, and the tasks. Keys reach it through [`super::router`]; it is drawn
+//! by [`super::views`]; the work off the screen's thread is in
 //! [`super::jobs`].
 //!
 //! Everything starts from one screen: the pool and every VM on the host,
 //! managed or not. Enter on a VM opens its menu, which offers what can be
 //! done with it: its details, settings, doctor and logs, attesting it,
-//! removing it, or adding it when RAMpire doesn't manage it yet.
+//! removing it, or adding it when RAMpire doesn't manage it yet. What it
+//! does runs as a task, so the screen stays free.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-
-use super::actions::{self, Action};
-use super::jobs::{self, Answer, DoctorSection, FlowEvent, Msg, Question, ReaderControl};
-use super::theme::Theme;
+use super::actions::Action;
+use super::dialog::{Confirm, Dialog, Field, Form, OnYes};
+use super::help::Help;
+use super::input::{History, Input};
+use super::jobs::{self, Answer, DoctorSection, FlowEvent, Msg, Question, ReaderControl, TaskId};
+use super::keymap::{self, Cmd, Key, Layer, Scope};
+use super::list::{ListState, SortBy};
+use super::notify::{Message, Notify};
+use super::palette::{CommandPalette, Item};
+use super::scroll::Scroll;
+use super::spot::Spot;
+use super::tasks::{Pending, Tasks};
+use super::theme::{Palette, Theme};
 use super::vm::VmDetails;
+use super::which::{Cand, Which};
 use crate::context::Context;
 use crate::reports::{ControllerUnit, ListedVm, Management, VmListReport};
 use crate::tone::Tone;
@@ -53,92 +65,56 @@ impl<T> Loaded<T> {
     }
 }
 
-/// A question a flow is waiting on.
-pub struct Pending {
-    pub question: Question,
-    pub reply: Sender<Answer>,
-    /// What has been typed, for a text question.
-    pub input: String,
-}
-
-/// A flow running in a dialog: what it said, the question it waits on, and
-/// how it ended.
-pub struct FlowDialog {
-    pub action: Action,
-    /// The command line that does the same.
-    pub title: String,
-    pub lines: Vec<(String, Tone)>,
-    pub pending: Option<Pending>,
-    pub done: Option<Result<String, String>>,
-    /// Lines scrolled back from the newest.
-    pub scroll: usize,
-}
-
 /// What choosing a menu item does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pick {
-    /// Run an action in a dialog.
+    /// Run an action as a task.
     Run(Action),
     /// Show a view.
     Open(View),
-    /// The settings form for a VM.
-    Settings(String),
+    /// The settings form for these VMs.
+    Settings(Vec<String>),
 }
 
-/// One item of a menu, with what it does.
+/// One item of a VM's menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     pub key: char,
     pub label: String,
-    /// What it does, or the command that does the same.
-    pub detail: String,
+    /// The command that does the same.
+    pub command: String,
     pub pick: Pick,
 }
 
+/// Anything a key, a menu, the palette or the help can lead to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChoiceDialog {
-    pub title: String,
-    pub text: Vec<String>,
-    pub choices: Vec<Choice>,
-    pub cursor: usize,
+pub enum Run {
+    Cmd(Cmd),
+    Pick(Pick),
+    /// Copy this to the clipboard.
+    Copy(String),
+    Theme(Palette),
 }
 
-/// One setting in the settings form.
+/// What is open over the view.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Field {
-    pub key: &'static str,
-    pub value: String,
-    pub original: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FormDialog {
-    pub vm: String,
-    pub fields: Vec<Field>,
-    pub cursor: usize,
-}
-
-impl FormDialog {
-    /// The changes, as `KEY=VALUE`.
-    pub fn changes(&self) -> Vec<String> {
-        self.fields
-            .iter()
-            .filter(|field| field.value.trim() != field.original)
-            .map(|field| format!("{}={}", field.key, field.value.trim()))
-            .collect()
-    }
-}
-
-pub enum Dialog {
-    Flow(FlowDialog),
-    Choice(ChoiceDialog),
-    Form(FormDialog),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
-    Help,
-    Errors,
+    Tasks,
+    /// One task, opened from the tasks list or come forward by itself.
+    Task {
+        id: TaskId,
+        from_list: bool,
+    },
+    Spot(Spot),
+    Errors(Scroll),
+}
+
+/// A filter or a find being typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prompt {
+    pub input: Input,
+    /// What it was before, put back on Esc.
+    pub before: Option<String>,
 }
 
 /// An error kept until a person has seen it.
@@ -149,82 +125,13 @@ pub struct ErrorEntry {
     pub error: String,
 }
 
-/// What a command palette item does.
+/// What the screen's loop does for the app, which can't from inside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command {
-    Pick(Pick),
-    Theme(super::theme::Palette),
-    Icons,
-    Help,
-    Errors,
-    Reload,
-    Quit,
-}
-
-/// One command in the palette.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaletteItem {
-    /// The group it is listed under: the VM's name, View, Theme.
-    pub group: String,
-    pub label: String,
-    /// The key that does the same, if there is one.
-    pub key: String,
-    pub command: Command,
-}
-
-/// The command palette: type a few letters of anything the TUI can do.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandPalette {
-    pub query: String,
-    pub cursor: usize,
-    pub items: Vec<PaletteItem>,
-    /// The theme before a theme was previewed, put back on Esc.
-    pub theme_before: super::theme::Palette,
-}
-
-impl CommandPalette {
-    /// The items the query matches, best first; all of them, in their
-    /// groups, before anything is typed.
-    pub fn matches(&self) -> Vec<&PaletteItem> {
-        if self.query.trim().is_empty() {
-            return self.items.iter().collect();
-        }
-        let mut scored: Vec<(i64, usize, &PaletteItem)> = self
-            .items
-            .iter()
-            .enumerate()
-            .filter_map(|(index, item)| {
-                let text = format!("{} {}", item.group, item.label);
-                fuzzy_score(&self.query, &text).map(|score| (score, index, item))
-            })
-            .collect();
-        scored.sort_by_key(|(score, index, _)| (-score, *index));
-        scored.into_iter().map(|(_, _, item)| item).collect()
-    }
-}
-
-/// How well `query` matches `text`: its letters in order, case aside,
-/// scoring letters that follow each other or start a word higher. `None`
-/// when they aren't all there.
-pub fn fuzzy_score(query: &str, text: &str) -> Option<i64> {
-    let text: Vec<char> = text.to_lowercase().chars().collect();
-    let mut score = 0i64;
-    let mut at = 0usize;
-    let mut last: Option<usize> = None;
-    for wanted in query.to_lowercase().chars().filter(|c| !c.is_whitespace()) {
-        let found = (at..text.len()).find(|&index| text[index] == wanted)?;
-        score += 1;
-        if last.is_some_and(|last| last + 1 == found) {
-            score += 5;
-        }
-        if found == 0 || !text[found - 1].is_alphanumeric() {
-            score += 3;
-        }
-        last = Some(found);
-        at = found + 1;
-    }
-    // Shorter texts with the same letters come first.
-    Some(score * 100 - text.len() as i64)
+pub enum Effect {
+    /// Put this on the clipboard.
+    Copy(String),
+    /// Ctrl+Z.
+    Suspend,
 }
 
 /// One VM in the main list.
@@ -238,41 +145,64 @@ pub struct Entry {
     pub listed: Option<ListedVm>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoctorState {
+    pub loaded: Loaded<Vec<DoctorSection>>,
+    /// Whose doctor is loaded: the host and every VM, or one VM.
+    pub of: Option<Option<String>>,
+    pub scroll: Scroll,
+    pub filter: Option<String>,
+    pub problems_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogState {
+    pub loaded: Loaded<String>,
+    pub of: Option<Option<String>>,
+    pub scroll: Scroll,
+    /// The text found: its lines are marked, and n and N go between them.
+    pub find: Option<String>,
+}
+
 /// How often the list of the host's VMs is read again by itself.
 const INVENTORY_EVERY: Duration = Duration::from_secs(30);
+/// The header's clock ticks.
+const CLOCK: Duration = Duration::from_secs(1);
 
 pub struct App {
     pub context: Context,
     pub theme: Theme,
     pub view: View,
-    tx: Sender<Msg>,
+    pub(super) tx: Sender<Msg>,
     pub control: ReaderControl,
     pub pool: Option<Result<PoolSnapshot, String>>,
     pub inventory: Loaded<VmListReport>,
-    inventory_read: Option<Instant>,
-    /// The chosen VM, by its place in [`App::entries`].
-    pub cursor: usize,
+    pub(super) inventory_read: Option<Instant>,
+    pub list: ListState,
+    /// The chosen managed VM's live readings.
     pub vm: Option<(String, Result<VmSnapshot, String>)>,
     pub details: BTreeMap<String, VmDetails>,
     pub controller: Option<ControllerUnit>,
-    pub doctor: Loaded<Vec<DoctorSection>>,
-    /// Whose doctor is loaded: the host and every VM, or one VM.
-    doctor_for: Option<Option<String>>,
-    pub doctor_cursor: usize,
-    pub log: Loaded<String>,
-    log_for: Option<Option<String>>,
-    /// Lines scrolled back from the newest.
-    pub log_scroll: usize,
+    pub doctor: DoctorState,
+    pub logs: LogState,
+    pub tasks: Tasks,
     pub dialog: Option<Dialog>,
     pub overlay: Option<Overlay>,
+    pub prompt: Option<Prompt>,
+    pub palette: Option<CommandPalette>,
+    pub which: Option<Which>,
+    pub help: Option<Help>,
     pub errors: Vec<ErrorEntry>,
     /// Notices sliding in at the bottom right.
-    pub notices: super::notify::Notify,
-    /// The command palette, while it is open.
-    pub palette: Option<CommandPalette>,
+    pub notices: Notify,
+    /// Earlier answers, for the text fields.
+    pub history: History,
+    /// For the screen's loop to do, in order.
+    pub effects: Vec<Effect>,
     pub quit: bool,
-    /// `q` was pressed while an action ran: a second `q` quits.
-    quit_armed: bool,
+    /// Tasks are queued but never started: for tests, which mustn't run
+    /// the commands.
+    pub(crate) hold_tasks: bool,
 }
 
 impl App {
@@ -286,23 +216,66 @@ impl App {
             pool: None,
             inventory: Loaded::NotYet,
             inventory_read: None,
-            cursor: 0,
+            list: ListState::default(),
             vm: None,
             details: BTreeMap::new(),
             controller: None,
-            doctor: Loaded::NotYet,
-            doctor_for: None,
-            doctor_cursor: 0,
-            log: Loaded::NotYet,
-            log_for: None,
-            log_scroll: 0,
+            doctor: DoctorState {
+                loaded: Loaded::NotYet,
+                of: None,
+                scroll: Scroll::default(),
+                filter: None,
+                problems_only: false,
+            },
+            logs: LogState {
+                loaded: Loaded::NotYet,
+                of: None,
+                scroll: Scroll::default(),
+                find: None,
+            },
+            tasks: Tasks::default(),
             dialog: None,
             overlay: None,
-            errors: Vec::new(),
-            notices: super::notify::Notify::default(),
+            prompt: None,
             palette: None,
+            which: None,
+            help: None,
+            errors: Vec::new(),
+            notices: Notify::default(),
+            history: History::default(),
+            effects: Vec::new(),
             quit: false,
-            quit_armed: false,
+            hold_tasks: false,
+        }
+    }
+
+    /// What takes the next key: the topmost of what is open, else the view.
+    pub fn layer(&self) -> Layer {
+        if self.help.is_some() {
+            return Layer::Help;
+        }
+        if self.which.is_some() {
+            return Layer::Which;
+        }
+        if self.palette.is_some() {
+            return Layer::Palette;
+        }
+        if self.prompt.is_some() {
+            return Layer::Prompt;
+        }
+        match (&self.dialog, &self.overlay) {
+            (Some(Dialog::Confirm(_)), _) => Layer::Confirm,
+            (Some(Dialog::Form(_)), _) => Layer::Form,
+            (None, Some(Overlay::Tasks)) => Layer::Tasks,
+            (None, Some(Overlay::Task { .. })) => Layer::Task,
+            (None, Some(Overlay::Spot(_))) => Layer::Spot,
+            (None, Some(Overlay::Errors(_))) => Layer::Errors,
+            (None, None) => match self.view {
+                View::Main => Layer::List,
+                View::Details(_) => Layer::Details,
+                View::Doctor(_) => Layer::Doctor,
+                View::Logs(_) => Layer::Logs,
+            },
         }
     }
 
@@ -355,185 +328,135 @@ impl App {
         entries
     }
 
-    pub fn selected(&self) -> Option<Entry> {
-        let entries = self.entries();
-        let at = self.cursor.min(entries.len().saturating_sub(1));
-        entries.into_iter().nth(at)
+    /// The VMs the list shows: filtered, in its order.
+    pub fn visible(&self) -> Vec<Entry> {
+        let mut entries: Vec<Entry> = self
+            .entries()
+            .into_iter()
+            .filter(|entry| self.list.shows(&entry.name))
+            .collect();
+        if self.list.sort == SortBy::Pool {
+            if self.list.reverse {
+                entries.reverse();
+            }
+            return entries;
+        }
+        // Stable, so VMs alike stay in the pool's order; a VM without the
+        // figure goes last either way.
+        entries.sort_by(|a, b| {
+            let ordering = match self.list.sort {
+                SortBy::Name => Some(a.name.cmp(&b.name)),
+                _ => match (self.figure(a), self.figure(b)) {
+                    (Some(x), Some(y)) => Some(x.cmp(&y)),
+                    (Some(_), None) => return Ordering::Less,
+                    (None, Some(_)) => return Ordering::Greater,
+                    (None, None) => return Ordering::Equal,
+                },
+            };
+            let ordering = ordering.unwrap_or(Ordering::Equal);
+            if self.list.reverse {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        });
+        entries
     }
 
-    /// The managed VMs, in the pool's order.
+    /// The figure the list is sorted by, for a VM the pool reads.
+    fn figure(&self, entry: &Entry) -> Option<u64> {
+        let pool = self.pool.as_ref()?.as_ref().ok()?;
+        let index = entry.pool_index?;
+        let sample = pool.vms.get(index)?;
+        match self.list.sort {
+            SortBy::Plugged => sample.device.map(|device| device.current_bytes),
+            SortBy::Priority => pool.command.vms.get(index).map(|vm| u64::from(vm.priority)),
+            SortBy::GuestUse => sample.guest.as_ref().map(|guest| {
+                let memory = &guest.memory;
+                let total = memory.physical_total_bytes.max(1);
+                total.saturating_sub(memory.physical_available_bytes) * 1000 / total
+            }),
+            SortBy::Pool | SortBy::Name => None,
+        }
+    }
+
+    pub fn selected(&self) -> Option<Entry> {
+        let visible = self.visible();
+        let at = self.list.scroll.cursor(visible.len());
+        visible.into_iter().nth(at)
+    }
+
+    pub fn entry(&self, name: &str) -> Option<Entry> {
+        self.entries().into_iter().find(|entry| entry.name == name)
+    }
+
+    /// The managed VMs, in the list's order.
     pub fn managed(&self) -> Vec<String> {
-        self.entries()
+        self.visible()
             .into_iter()
             .filter(|entry| entry.management == Management::Managed)
             .map(|entry| entry.name)
             .collect()
     }
 
+    /// The VMs marked, in the list's order.
+    pub fn marked(&self) -> Vec<Entry> {
+        self.entries()
+            .into_iter()
+            .filter(|entry| self.list.marks.contains(&entry.name))
+            .collect()
+    }
+
     /// Show a short notice at the bottom right.
     pub fn notify(&mut self, text: impl Into<String>, tone: Tone) {
-        self.notices.push(super::notify::Message::new(text, tone));
+        self.notices.push(Message::new(text, tone));
     }
 
-    /// Open the command palette, with what can be done now.
-    pub fn open_palette(&mut self) {
-        let mut items = Vec::new();
-        if let Some(entry) = self.selected() {
-            for choice in self.menu(&entry).choices {
-                items.push(PaletteItem {
-                    group: entry.name.clone(),
-                    label: choice.label,
-                    key: choice.key.to_string(),
-                    command: Command::Pick(choice.pick),
-                });
-            }
+    /// Copy `text` to the clipboard of the person's own computer.
+    pub fn copy(&mut self, text: String) {
+        self.notify(
+            format!("copied: {}", super::widgets::fit(&text, 60)),
+            Tone::Good,
+        );
+        self.effects.push(Effect::Copy(text));
+    }
+
+    /// Nothing is open over the view.
+    pub fn free(&self) -> bool {
+        self.help.is_none()
+            && self.which.is_none()
+            && self.palette.is_none()
+            && self.prompt.is_none()
+            && self.dialog.is_none()
+            && matches!(self.overlay, None | Some(Overlay::Tasks))
+    }
+
+    /// When the screen next changes by itself: a notice moving, the clock,
+    /// the list of VMs read again.
+    pub fn next_wake(&self, now: Instant) -> Instant {
+        let mut wake = now + CLOCK;
+        if let Some(notice) = self.notices.next_change(now) {
+            wake = wake.min(notice);
         }
-        let item = |group: &str, label: &str, key: &str, command| PaletteItem {
-            group: group.to_owned(),
-            label: label.to_owned(),
-            key: key.to_owned(),
-            command,
-        };
-        items.extend([
-            item(
-                "View",
-                "The VMs and the pool",
-                "Esc",
-                Command::Pick(Pick::Open(View::Main)),
-            ),
-            item(
-                "View",
-                "Doctor: the host and every VM",
-                "d",
-                Command::Pick(Pick::Open(View::Doctor(None))),
-            ),
-            item(
-                "View",
-                "Logs",
-                "l",
-                Command::Pick(Pick::Open(View::Logs(None))),
-            ),
-            item("View", "Read everything again", "r", Command::Reload),
-            item("View", "Keys", "?", Command::Help),
-        ]);
-        if !self.errors.is_empty() {
-            items.push(item("View", "Errors", "e", Command::Errors));
+        if let Some(read) = self.inventory_read {
+            wake = wake.min(read + INVENTORY_EVERY);
         }
-        for palette in super::theme::Palette::ALL {
-            items.push(item(
-                "Theme",
-                &format!("Theme: {}", palette.name()),
-                "",
-                Command::Theme(palette),
-            ));
-        }
-        items.push(item("Theme", "Unicode or ASCII icons", "i", Command::Icons));
-        items.push(item("RAMpire", "Quit", "q", Command::Quit));
-        self.palette = Some(CommandPalette {
-            query: String::new(),
-            cursor: 0,
-            items,
-            theme_before: self.theme.palette,
-        });
+        wake.max(now)
     }
 
-    /// Show the theme the palette's cursor is on, as a preview.
-    fn preview_theme(&mut self) {
-        let Some(palette) = &self.palette else {
-            return;
-        };
-        let chosen = palette
-            .matches()
-            .get(palette.cursor)
-            .and_then(|item| match item.command {
-                Command::Theme(theme) => Some(theme),
-                _ => None,
-            });
-        self.theme.palette = chosen.unwrap_or(palette.theme_before);
-    }
-
-    fn on_palette_key(&mut self, key: KeyEvent) {
-        let Some(palette) = self.palette.as_mut() else {
-            return;
-        };
-        let count = palette.matches().len();
-        match key.code {
-            KeyCode::Esc => {
-                self.theme.palette = palette.theme_before;
-                self.palette = None;
-                return;
-            }
-            KeyCode::Up => palette.cursor = palette.cursor.saturating_sub(1),
-            KeyCode::Down => palette.cursor = (palette.cursor + 1).min(count.saturating_sub(1)),
-            KeyCode::Backspace => {
-                palette.query.pop();
-                palette.cursor = 0;
-            }
-            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                palette.query.push(character);
-                palette.cursor = 0;
-            }
-            KeyCode::Enter => {
-                let chosen = palette
-                    .matches()
-                    .get(palette.cursor)
-                    .map(|item| item.command.clone());
-                let before = palette.theme_before;
-                self.palette = None;
-                self.theme.palette = before;
-                if let Some(command) = chosen {
-                    self.run_command(command);
-                }
-                return;
-            }
-            _ => {}
-        }
-        self.preview_theme();
-    }
-
-    fn run_command(&mut self, command: Command) {
-        match command {
-            Command::Pick(pick) => self.pick(pick),
-            Command::Theme(palette) => {
-                self.theme.palette = palette;
-                self.notify(format!("theme: {}", palette.name()), Tone::Dim);
-            }
-            Command::Icons => self.toggle_icons(),
-            Command::Help => self.overlay = Some(Overlay::Help),
-            Command::Errors => self.overlay = Some(Overlay::Errors),
-            Command::Reload => self.reload(),
-            Command::Quit => self.ask_quit(),
-        }
-    }
-
-    fn toggle_icons(&mut self) {
-        self.theme.icons.unicode = !self.theme.icons.unicode;
-        let set = if self.theme.icons.unicode {
-            "Unicode"
-        } else {
-            "ASCII"
-        };
-        self.notify(format!("icons: {set}"), Tone::Dim);
-    }
-
-    /// A flow is running in the dialog.
-    pub fn busy(&self) -> bool {
-        matches!(&self.dialog, Some(Dialog::Flow(flow)) if flow.done.is_none())
-    }
-
-    /// Called every turn of the screen's loop: reads the host's VMs again
-    /// when they are old.
-    pub fn tick(&mut self) {
-        self.notices.tick(Instant::now());
+    /// Called each time the screen wakes: notices that have gone go, and
+    /// the host's VMs are read again when they are old.
+    pub fn tick(&mut self, now: Instant) {
+        self.notices.tick(now);
         let stale = self
             .inventory_read
-            .is_none_or(|read| read.elapsed() >= INVENTORY_EVERY);
+            .is_none_or(|read| now.saturating_duration_since(read) >= INVENTORY_EVERY);
         if stale && self.inventory != Loaded::Loading {
             self.load_inventory();
         }
     }
 
-    fn load_inventory(&mut self) {
+    pub(super) fn load_inventory(&mut self) {
         self.inventory_read = Some(Instant::now());
         if self.inventory.ok().is_none() {
             self.inventory = Loaded::Loading;
@@ -544,6 +467,7 @@ impl App {
         });
     }
 
+    /// What the background work said. Keys go to [`App::on_key`].
     pub fn on_msg(&mut self, msg: Msg) {
         match msg {
             Msg::Pool(pool) => self.pool = Some(pool),
@@ -557,16 +481,37 @@ impl App {
                 self.notify(format!("reading the VMs failed: {error}"), Tone::Warn);
             }
             Msg::Inventory(report) => self.inventory = Loaded::Done(report),
-            Msg::Doctor(sections) => self.doctor = Loaded::Done(sections),
-            Msg::Log(text) => self.log = Loaded::Done(text),
-            Msg::Flow(event) => self.on_flow(event),
+            Msg::Doctor(sections) => self.doctor.loaded = Loaded::Done(sections),
+            Msg::Log(text) => self.logs.loaded = Loaded::Done(text),
+            Msg::Task(id, event) => self.on_task(id, event),
+            Msg::Peers(changes) => {
+                for change in changes {
+                    self.notices.push(Message::titled(
+                        format!("Change by {}", change.user),
+                        change.text(),
+                        Tone::Info,
+                    ));
+                }
+                // What they changed shows on the next reads.
+                self.load_inventory();
+                self.control
+                    .reload
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            Msg::Term(event) => {
+                if let ratatui::crossterm::event::Event::Key(key) = event {
+                    self.on_key(key);
+                }
+            }
+            Msg::Gone(_) => self.quit = true,
         }
         self.follow_selection();
+        self.surface_question();
     }
 
     /// The reader follows the chosen VM, so its details and settings are at
-    /// hand when its menu or details open.
-    fn follow_selection(&mut self) {
+    /// hand when its menu, facts or details open.
+    pub(super) fn follow_selection(&mut self) {
         let vm = match &self.view {
             View::Details(vm) => Some(vm.clone()),
             _ => self
@@ -577,99 +522,151 @@ impl App {
         self.control.want_vm(vm);
     }
 
-    fn on_flow(&mut self, event: FlowEvent) {
-        let Some(Dialog::Flow(flow)) = &mut self.dialog else {
-            // A flow whose dialog was closed: refuse its questions.
+    /// A task's question comes forward when nothing else is open.
+    pub(super) fn surface_question(&mut self) {
+        if !self.free() {
+            return;
+        }
+        if let Some(id) = self.tasks.asking() {
+            let from_list = self.overlay == Some(Overlay::Tasks);
+            self.overlay = Some(Overlay::Task { id, from_list });
+        }
+    }
+
+    fn on_task(&mut self, id: TaskId, event: FlowEvent) {
+        let free = self.free();
+        let Some(task) = self.tasks.get_mut(id) else {
+            // A task that is gone: refuse its question.
             if let FlowEvent::Ask(_, reply) = event {
                 let _ = reply.send(Answer::Cancelled);
             }
             return;
         };
         match event {
-            FlowEvent::Line(line) => {
-                let tone = line_tone(&line);
-                flow.lines.push((line, tone));
-            }
-            FlowEvent::Shown(text) => {
-                for line in text.replace('\t', "    ").lines() {
-                    let tone = if line.starts_with('+') && !line.starts_with("+++") {
-                        Tone::Good
-                    } else if line.starts_with('-') && !line.starts_with("---") {
-                        Tone::Bad
-                    } else {
-                        Tone::Dim
-                    };
-                    flow.lines.push((line.to_owned(), tone));
-                }
+            FlowEvent::Line(line) => task.say(line),
+            FlowEvent::Shown(text) => task.show(&text),
+            FlowEvent::Ask(question, reply) if task.cancel => {
+                task.lines
+                    .push((format!("{} (cancelled)", question.text()), Tone::Warn));
+                let _ = reply.send(Answer::Cancelled);
             }
             FlowEvent::Ask(question, reply) => {
-                flow.scroll = 0;
-                flow.pending = Some(Pending {
+                let input = match &question {
+                    Question::Text(text) => Input::default().remembering(text.clone()),
+                    _ => Input::default(),
+                };
+                task.pager.follow();
+                task.pending = Some(Pending {
                     question,
                     reply,
-                    input: String::new(),
+                    input,
+                    yes: false,
+                    later: false,
                 });
+                if !free {
+                    let title = task.title.clone();
+                    self.notify(format!("a question waits (w): {title}"), Tone::Accent);
+                }
             }
             FlowEvent::Done(result) => {
-                let title = flow.title.clone();
-                // The dialog is borrowed, so the notice is made after it.
-                let notice = match &result {
-                    Ok(_) => (format!("ran: {title}"), Tone::Good),
+                let title = task.title.clone();
+                match &result {
+                    Ok(_) => self.notify(format!("done: {title}"), Tone::Good),
                     Err(error) => {
                         self.errors.push(ErrorEntry {
                             time: crate::dashboard::clock(),
                             what: title.clone(),
                             error: error.clone(),
                         });
-                        (format!("failed: {title}"), Tone::Bad)
+                        self.notify(format!("failed: {title}"), Tone::Bad);
                     }
-                };
-                flow.pending = None;
-                flow.done = Some(result);
-                self.notify(notice.0, notice.1);
+                }
+                self.tasks.finish(id, result, Instant::now());
                 // What the action changed shows on the next reads.
                 self.load_inventory();
-                self.doctor = Loaded::NotYet;
-                self.log = Loaded::NotYet;
+                self.refresh_view();
+                self.start_tasks();
             }
         }
     }
 
-    /// Start an action in a dialog that shows what it does.
+    /// A doctor or the logs read again after a task, to show what it did.
+    fn refresh_view(&mut self) {
+        self.doctor.loaded = Loaded::NotYet;
+        self.logs.loaded = Loaded::NotYet;
+        if matches!(self.view, View::Doctor(_) | View::Logs(_)) {
+            let view = self.view.clone();
+            self.open(view);
+        }
+    }
+
+    /// Queue `action` as a task.
     pub fn start(&mut self, action: Action) {
         let title = action.command_line(&self.context);
-        action.spawn(&self.context, &self.control, self.tx.clone());
-        self.dialog = Some(Dialog::Flow(FlowDialog {
-            action,
-            lines: vec![(format!("$ {title}"), Tone::Dim)],
-            title,
-            pending: None,
-            done: None,
-            scroll: 0,
-        }));
+        let waiting = self.tasks.active() > 0;
+        self.tasks.add(action, title.clone());
+        if waiting {
+            self.notify(format!("queued after the running task: {title}"), Tone::Dim);
+        }
+        self.start_tasks();
+    }
+
+    /// Start the next task when none is running.
+    pub(super) fn start_tasks(&mut self) {
+        if self.hold_tasks {
+            return;
+        }
+        if let Some((id, action)) = self.tasks.start_next(Instant::now()) {
+            action.spawn(&self.context, &self.control, self.tx.clone(), id);
+        }
+    }
+
+    /// Answer task `id`'s question.
+    pub(super) fn answer(&mut self, id: TaskId, answer: Answer) {
+        let Some(task) = self.tasks.get_mut(id) else {
+            return;
+        };
+        let Some(pending) = task.pending.take() else {
+            return;
+        };
+        let shown = match &answer {
+            Answer::Yes => "yes".to_owned(),
+            Answer::No => "no".to_owned(),
+            Answer::Text(text) => text.clone(),
+            Answer::Cancelled => "(cancelled)".to_owned(),
+        };
+        task.lines
+            .push((format!("{} {shown}", pending.question.text()), Tone::Value));
+        if let (Answer::Text(text), Some(group)) = (&answer, &pending.input.group) {
+            self.history.remember(group, text);
+        }
+        // A flow that has gone can't be told; it has stopped already.
+        let _ = pending.reply.send(answer);
     }
 
     /// Do what a menu item says.
     pub fn pick(&mut self, pick: Pick) {
-        self.dialog = None;
         match pick {
             Pick::Run(action) => self.start(action),
             Pick::Open(view) => self.open(view),
-            Pick::Settings(vm) => self.edit_settings(&vm),
+            Pick::Settings(vms) => self.edit_settings(&vms),
         }
     }
 
     pub fn open(&mut self, view: View) {
         self.view = view;
+        self.overlay = None;
         self.follow_selection();
         let context = self.context.clone();
         match self.view.clone() {
             View::Doctor(vm)
-                if self.doctor_for.as_ref() != Some(&vm) || self.doctor == Loaded::NotYet =>
+                if self.doctor.of.as_ref() != Some(&vm) || self.doctor.loaded == Loaded::NotYet =>
             {
-                self.doctor = Loaded::Loading;
-                self.doctor_for = Some(vm.clone());
-                self.doctor_cursor = 0;
+                self.doctor.loaded = Loaded::Loading;
+                if self.doctor.of.as_ref() != Some(&vm) {
+                    self.doctor.scroll = Scroll::default();
+                }
+                self.doctor.of = Some(vm.clone());
                 jobs::spawn_load(self.tx.clone(), move || {
                     Msg::Doctor(match vm {
                         None => jobs::doctor(&context),
@@ -677,10 +674,15 @@ impl App {
                     })
                 });
             }
-            View::Logs(vm) if self.log_for.as_ref() != Some(&vm) || self.log == Loaded::NotYet => {
-                self.log = Loaded::Loading;
-                self.log_for = Some(vm.clone());
-                self.log_scroll = 0;
+            View::Logs(vm)
+                if self.logs.of.as_ref() != Some(&vm) || self.logs.loaded == Loaded::NotYet =>
+            {
+                self.logs.loaded = Loaded::Loading;
+                if self.logs.of.as_ref() != Some(&vm) {
+                    // The newest line chosen: the cursor is held at the end.
+                    self.logs.scroll = Scroll::at(usize::MAX);
+                }
+                self.logs.of = Some(vm.clone());
                 jobs::spawn_load(self.tx.clone(), move || {
                     Msg::Log(crate::journal::read_log(
                         vm.as_deref(),
@@ -693,7 +695,7 @@ impl App {
         }
     }
 
-    fn reload(&mut self) {
+    pub(super) fn reload(&mut self) {
         match self.view.clone() {
             View::Main | View::Details(_) => {
                 self.load_inventory();
@@ -702,24 +704,25 @@ impl App {
                     .store(true, std::sync::atomic::Ordering::Release);
             }
             view @ View::Doctor(_) => {
-                self.doctor = Loaded::NotYet;
+                self.doctor.loaded = Loaded::NotYet;
                 self.open(view);
             }
             view @ View::Logs(_) => {
-                self.log = Loaded::NotYet;
+                self.logs.loaded = Loaded::NotYet;
                 self.open(view);
             }
         }
     }
 
-    /// The menu for a VM: what can be done with it, each with its key.
-    pub fn menu(&self, entry: &Entry) -> ChoiceDialog {
+    /// The menu for a VM: what can be done with it, each with its key, and
+    /// a few lines about it.
+    pub fn menu(&self, entry: &Entry) -> (Vec<String>, Vec<Choice>) {
         let vm = entry.name.as_str();
         let line = |words: &[&str]| self.context.command_line(words);
-        let item = |key, label: &str, detail: String, pick| Choice {
+        let item = |key, label: &str, command: String, pick| Choice {
             key,
             label: label.to_owned(),
-            detail,
+            command,
             pick,
         };
         let doctor = item(
@@ -754,7 +757,7 @@ impl App {
                     's',
                     "Settings",
                     line(&["set", vm, "KEY=VALUE"]),
-                    Pick::Settings(vm.to_owned()),
+                    Pick::Settings(vec![vm.to_owned()]),
                 ),
                 doctor,
                 item(
@@ -841,195 +844,180 @@ impl App {
                 ]
             }
         };
-        ChoiceDialog {
-            title: format!("{vm} ({})", entry.management.label()),
+        (text, choices)
+    }
+
+    /// Open the chosen VM's menu beside its row.
+    pub(super) fn open_menu(&mut self, entry: &Entry) {
+        let (text, choices) = self.menu(entry);
+        let cands = choices
+            .into_iter()
+            .map(|choice| Cand {
+                keys: vec![Key::ch(choice.key)],
+                desc: choice.label,
+                command: Some(choice.command),
+                run: Run::Pick(choice.pick),
+            })
+            .collect();
+        self.which = Some(Which::menu(
+            format!("{} ({})", entry.name, entry.management.label()),
             text,
-            choices,
-            cursor: 0,
-        }
+            cands,
+        ));
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) {
-        if key.kind != KeyEventKind::Press {
-            return;
-        }
-        let ctrl_c =
-            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
-        if ctrl_c {
-            return self.ask_quit();
-        }
-        if self.overlay.is_some() {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?' | 'e')
-            ) {
-                self.overlay = None;
-            }
-            return;
-        }
-        if self.palette.is_some() {
-            return self.on_palette_key(key);
-        }
-        if self.dialog.is_some() {
-            return self.on_dialog_key(key);
-        }
-        let ctrl_p =
-            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p');
-        if ctrl_p || key.code == KeyCode::Char(':') {
-            return self.open_palette();
-        }
-        match key.code {
-            KeyCode::Char('q') => return self.ask_quit(),
-            KeyCode::Char('?') => return self.overlay = Some(Overlay::Help),
-            KeyCode::Char('e') if !self.errors.is_empty() => {
-                return self.overlay = Some(Overlay::Errors)
-            }
-            KeyCode::Char('t') => {
-                self.theme.palette = self.theme.palette.next();
-                self.notify(format!("theme: {}", self.theme.palette.name()), Tone::Dim);
-                return;
-            }
-            KeyCode::Char('i') => return self.toggle_icons(),
-            KeyCode::Char('r') => return self.reload(),
-            KeyCode::Esc if self.view != View::Main => return self.open(View::Main),
-            _ => {}
-        }
-        self.quit_armed = false;
-        match self.view.clone() {
-            View::Main => self.on_main_key(key),
-            View::Details(vm) => self.on_details_key(&vm, key),
-            View::Doctor(_) => self.on_doctor_key(key),
-            View::Logs(vm) => self.on_logs_key(vm, key),
-        }
-    }
-
-    fn ask_quit(&mut self) {
-        if self.busy() && !self.quit_armed {
-            self.quit_armed = true;
-            self.notify(
-                "an action is running: press q again to quit; a vm add finishes when run again"
-                    .to_owned(),
-                Tone::Warn,
-            );
-            return;
-        }
-        self.quit = true;
-    }
-
-    fn move_cursor(cursor: &mut usize, count: usize, key: KeyCode) {
-        if count == 0 {
-            *cursor = 0;
-            return;
-        }
-        *cursor = match key {
-            KeyCode::Up | KeyCode::Char('k') => cursor.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => (*cursor + 1).min(count - 1),
-            KeyCode::Home => 0,
-            KeyCode::End => count - 1,
-            KeyCode::PageUp => cursor.saturating_sub(10),
-            KeyCode::PageDown => (*cursor + 10).min(count - 1),
-            _ => (*cursor).min(count - 1),
-        };
-    }
-
-    /// A menu item's letter, for the chosen VM, from the list or its
-    /// details: the same as choosing it in the menu.
-    fn shortcut(&mut self, entry: &Entry, letter: char) {
-        let menu = self.menu(entry);
-        if let Some(choice) = menu.choices.into_iter().find(|choice| choice.key == letter) {
+    /// A menu's letter for `entry`, from the list or its details: the same
+    /// as choosing it in the menu.
+    pub(super) fn shortcut(&mut self, entry: &Entry, letter: char) {
+        let (_, choices) = self.menu(entry);
+        if let Some(choice) = choices.into_iter().find(|choice| choice.key == letter) {
             self.pick(choice.pick);
         }
     }
 
-    fn on_main_key(&mut self, key: KeyEvent) {
-        let count = self.entries().len();
-        match key.code {
-            KeyCode::Enter => {
-                if let Some(entry) = self.selected() {
-                    self.dialog = Some(Dialog::Choice(self.menu(&entry)));
-                }
-            }
-            KeyCode::Char('d') => self.open(View::Doctor(None)),
-            KeyCode::Char('l') => self.open(View::Logs(None)),
-            // `j` and `k` move in a list; the menu's `k` is in the menu.
-            KeyCode::Char(letter) if letter != 'k' && letter != 'j' => {
-                if let Some(entry) = self.selected() {
-                    self.shortcut(&entry, letter);
-                }
-            }
-            code => {
-                Self::move_cursor(&mut self.cursor, count, code);
-                self.follow_selection();
+    /// A menu's letter for every marked VM: the settings form for them all,
+    /// or the action for each, asked once.
+    pub(super) fn for_marked(&mut self, letter: char) {
+        let marked = self.marked();
+        let mut actions = Vec::new();
+        let mut settings = Vec::new();
+        let mut skipped = Vec::new();
+        for entry in &marked {
+            let (_, choices) = self.menu(entry);
+            match choices.into_iter().find(|choice| choice.key == letter) {
+                Some(Choice {
+                    pick: Pick::Run(action),
+                    ..
+                }) => actions.push(action),
+                Some(Choice {
+                    pick: Pick::Settings(vms),
+                    ..
+                }) => settings.extend(vms),
+                _ => skipped.push(entry.name.clone()),
             }
         }
-    }
-
-    fn on_details_key(&mut self, vm: &str, key: KeyEvent) {
-        let managed = self.managed();
-        match key.code {
-            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
-                let Some(at) = managed.iter().position(|name| name == vm) else {
-                    return;
-                };
-                let next = match key.code {
-                    KeyCode::Left | KeyCode::Up => at.saturating_sub(1),
-                    _ => (at + 1).min(managed.len() - 1),
-                };
-                if let Some(name) = managed.get(next) {
-                    if let Some(cursor) =
-                        self.entries().iter().position(|entry| &entry.name == name)
-                    {
-                        self.cursor = cursor;
-                    }
-                    self.open(View::Details(name.clone()));
-                }
-            }
-            KeyCode::Enter => {
-                if let Some(entry) = self.entries().into_iter().find(|entry| entry.name == vm) {
-                    self.dialog = Some(Dialog::Choice(self.menu(&entry)));
-                }
-            }
-            KeyCode::Char(letter) if letter != 'v' => {
-                if let Some(entry) = self.entries().into_iter().find(|entry| entry.name == vm) {
-                    self.shortcut(&entry, letter);
-                }
-            }
-            _ => {}
+        if !settings.is_empty() {
+            return self.edit_settings(&settings);
         }
-    }
-
-    fn edit_settings(&mut self, vm: &str) {
-        let Some(settings) = self
-            .details
-            .get(vm)
-            .and_then(|details| details.settings.clone())
-        else {
-            self.notify(
-                format!("{vm}'s settings aren't read yet; try again in a moment"),
+        if actions.is_empty() {
+            return self.notify(
+                format!(
+                    "none of the {} marked VMs has that in its menu",
+                    marked.len()
+                ),
                 Tone::Warn,
             );
-            return;
+        }
+        let mut body = vec![format!(
+            "This runs {} commands, one after another, each with its own questions:",
+            actions.len()
+        )];
+        if !skipped.is_empty() {
+            body.push(format!(
+                "skipped, as their menus don't have it: {}",
+                skipped.join(", ")
+            ));
+        }
+        let list = actions
+            .iter()
+            .map(|action| action.command_line(&self.context))
+            .collect();
+        self.dialog = Some(Dialog::Confirm(Confirm::new(
+            format!("{} marked VMs", marked.len()),
+            body,
+            list,
+            OnYes::Run(actions),
+        )));
+    }
+
+    /// The settings form for `vms`: one VM's values to change, or for
+    /// several, empty fields that leave each its own.
+    pub(super) fn edit_settings(&mut self, vms: &[String]) {
+        let fields = match vms {
+            [vm] => {
+                let Some(settings) = self
+                    .details
+                    .get(vm)
+                    .and_then(|details| details.settings.clone())
+                else {
+                    return self.notify(
+                        format!("{vm}'s settings aren't read yet; try again in a moment"),
+                        Tone::Warn,
+                    );
+                };
+                vec![
+                    Field::new("priority", Some(settings.priority.to_string())),
+                    Field::new("min_ram", Some(byte_text(settings.min_ram))),
+                    Field::new("max_ram", Some(byte_text(settings.max_ram))),
+                    Field::new("free_ram", Some(byte_text(settings.free_ram))),
+                ]
+            }
+            _ => ["priority", "min_ram", "max_ram", "free_ram"]
+                .into_iter()
+                .map(|key| Field::new(key, None))
+                .collect(),
         };
-        let field = |key, value: String| Field {
-            key,
-            original: value.clone(),
-            value,
-        };
-        self.dialog = Some(Dialog::Form(FormDialog {
-            vm: vm.to_owned(),
-            fields: vec![
-                field("priority", settings.priority.to_string()),
-                field("min_ram", byte_text(settings.min_ram)),
-                field("max_ram", byte_text(settings.max_ram)),
-                field("free_ram", byte_text(settings.free_ram)),
-            ],
+        self.dialog = Some(Dialog::Form(Form {
+            vms: vms.to_vec(),
+            fields,
             cursor: 0,
         }));
     }
 
-    /// The doctor's findings in the order shown, with the VM each is about.
+    /// Open the command palette, with what can be done now.
+    pub(super) fn open_palette(&mut self) {
+        let mut items = Vec::new();
+        if let Some(entry) = self.selected() {
+            for choice in self.menu(&entry).1 {
+                items.push(Item {
+                    group: entry.name.clone(),
+                    label: choice.label,
+                    key: choice.key.to_string(),
+                    run: Run::Pick(choice.pick),
+                });
+            }
+        }
+        let layer = self.layer();
+        let mut seen: Vec<Cmd> = Vec::new();
+        for binding in keymap::bindings(layer) {
+            let skip = matches!(
+                binding.cmd,
+                Cmd::Move(_) | Cmd::Back | Cmd::Letter(_) | Cmd::Palette
+            ) || binding.scope == Scope::Lists;
+            if skip || seen.contains(&binding.cmd) {
+                continue;
+            }
+            seen.push(binding.cmd);
+            let group = match (binding.scope, binding.cmd) {
+                (_, Cmd::Sort(..)) => "Sort",
+                (_, Cmd::Linemode(_)) => "Columns",
+                (Scope::Views, _) => "Anywhere",
+                _ => "Here",
+            };
+            items.push(Item {
+                group: group.to_owned(),
+                label: capitalised(binding.desc),
+                key: binding.label(),
+                run: Run::Cmd(binding.cmd),
+            });
+        }
+        for palette in Palette::order(self.theme.light) {
+            items.push(Item {
+                group: "Theme".to_owned(),
+                label: format!("Theme: {}", palette.name()),
+                key: String::new(),
+                run: Run::Theme(palette),
+            });
+        }
+        self.palette = Some(CommandPalette::new(items, self.theme.palette));
+    }
+
+    /// The doctor's findings in the order shown, with the VM each is about,
+    /// as the filter and problems-only leave them.
     pub fn doctor_rows(&self) -> Vec<(Option<String>, &crate::doctor::Finding)> {
+        let filter = self.doctor.filter.as_deref().map(str::to_lowercase);
         self.doctor
+            .loaded
             .ok()
             .map(|sections| {
                 sections
@@ -1040,203 +1028,47 @@ impl App {
                             .iter()
                             .map(move |finding| (section.vm.clone(), finding))
                     })
+                    .filter(|(_, finding)| !self.doctor.problems_only || !finding.ok)
+                    .filter(|(vm, finding)| {
+                        filter.as_deref().is_none_or(|filter| {
+                            let text = format!(
+                                "{} {} {} {}",
+                                vm.as_deref().unwrap_or("host"),
+                                finding.check,
+                                finding.detail,
+                                finding.fix.as_deref().unwrap_or("")
+                            );
+                            text.to_lowercase().contains(filter)
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    fn on_doctor_key(&mut self, key: KeyEvent) {
-        let count = self.doctor_rows().len();
-        match key.code {
-            KeyCode::Enter => {
-                let action = self
-                    .doctor_rows()
-                    .get(self.doctor_cursor)
-                    .and_then(|(_, finding)| finding.fix.as_deref())
-                    .and_then(actions::from_fix);
-                match action {
-                    Some(action) => {
-                        let title = action.command_line(&self.context);
-                        self.dialog = Some(Dialog::Choice(ChoiceDialog {
-                            title: "Run the fix".to_owned(),
-                            text: vec![format!("This runs: {title}")],
-                            choices: vec![Choice {
-                                key: 'y',
-                                label: "Run it".to_owned(),
-                                detail: "its own questions come next".to_owned(),
-                                pick: Pick::Run(action),
-                            }],
-                            cursor: 0,
-                        }));
-                    }
-                    None => self.notify(
-                        "this fix is done by hand: it is shown beneath the problem".to_owned(),
-                        Tone::Dim,
-                    ),
-                }
-            }
-            code => Self::move_cursor(&mut self.doctor_cursor, count, code),
-        }
+    /// The journal's lines shown, oldest first.
+    pub fn log_lines(&self) -> Vec<&str> {
+        self.logs
+            .loaded
+            .ok()
+            .map(|text| text.lines().collect())
+            .unwrap_or_default()
     }
 
-    fn on_logs_key(&mut self, vm: Option<String>, key: KeyEvent) {
-        let lines = self.log.ok().map_or(0, |text| text.lines().count());
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.log_scroll = (self.log_scroll + 1).min(lines),
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.log_scroll = self.log_scroll.saturating_sub(1)
-            }
-            KeyCode::PageUp => self.log_scroll = (self.log_scroll + 15).min(lines),
-            KeyCode::PageDown => self.log_scroll = self.log_scroll.saturating_sub(15),
-            KeyCode::Home => self.log_scroll = lines,
-            KeyCode::End => self.log_scroll = 0,
-            KeyCode::Char('f') => {
-                let names = self.managed();
-                let next = match &vm {
-                    None => names.first().cloned(),
-                    Some(current) => names
-                        .iter()
-                        .position(|name| name == current)
-                        .and_then(|at| names.get(at + 1))
-                        .cloned(),
-                };
-                self.log = Loaded::NotYet;
-                self.open(View::Logs(next));
-            }
-            _ => {}
-        }
+    /// Whether a log line holds the text found.
+    pub fn found(&self, line: &str) -> bool {
+        self.logs.find.as_deref().is_some_and(|find| {
+            !find.is_empty() && line.to_lowercase().contains(&find.to_lowercase())
+        })
     }
+}
 
-    fn on_dialog_key(&mut self, key: KeyEvent) {
-        let Some(dialog) = self.dialog.as_mut() else {
-            return;
-        };
-        match dialog {
-            Dialog::Flow(flow) => {
-                if let Some(pending) = flow.pending.as_mut() {
-                    let answer = match (&pending.question, key.code) {
-                        (Question::Text(_), KeyCode::Enter) => {
-                            Some(Answer::Text(pending.input.clone()))
-                        }
-                        (Question::Text(_), KeyCode::Backspace) => {
-                            pending.input.pop();
-                            None
-                        }
-                        (Question::Text(_), KeyCode::Char(character)) => {
-                            pending.input.push(character);
-                            None
-                        }
-                        (_, KeyCode::Esc) => Some(Answer::Cancelled),
-                        (Question::Confirm(_) | Question::Review(_), KeyCode::Char('y' | 'Y')) => {
-                            Some(Answer::Yes)
-                        }
-                        (
-                            Question::Confirm(_) | Question::Review(_),
-                            KeyCode::Char('n' | 'N') | KeyCode::Enter,
-                        ) => Some(Answer::No),
-                        _ => None,
-                    };
-                    if let Some(answer) = answer {
-                        let shown = match &answer {
-                            Answer::Yes => "yes".to_owned(),
-                            Answer::No => "no".to_owned(),
-                            Answer::Text(text) => text.clone(),
-                            Answer::Cancelled => "(closed)".to_owned(),
-                        };
-                        if let Some(pending) = flow.pending.take() {
-                            flow.lines.push((
-                                format!("{} {shown}", pending.question.text()),
-                                Tone::Value,
-                            ));
-                            let _ = pending.reply.send(answer);
-                        }
-                    }
-                    return;
-                }
-                match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        flow.scroll = (flow.scroll + 1).min(flow.lines.len())
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        flow.scroll = flow.scroll.saturating_sub(1)
-                    }
-                    KeyCode::PageUp => flow.scroll = (flow.scroll + 10).min(flow.lines.len()),
-                    KeyCode::PageDown => flow.scroll = flow.scroll.saturating_sub(10),
-                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') if flow.done.is_some() => {
-                        self.dialog = None;
-                        // A doctor is checked again, to show what the fix did.
-                        if matches!(self.view, View::Doctor(_)) {
-                            let view = self.view.clone();
-                            self.open(view);
-                        }
-                    }
-                    KeyCode::Esc | KeyCode::Char('q') => {
-                        self.notify(
-                            "the action is still running; its dialog closes when it ends"
-                                .to_owned(),
-                            Tone::Warn,
-                        );
-                    }
-                    _ => {}
-                }
-            }
-            Dialog::Choice(choice) => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.dialog = None,
-                // Letters choose, so only arrows move.
-                KeyCode::Up => choice.cursor = choice.cursor.saturating_sub(1),
-                KeyCode::Down => {
-                    choice.cursor = (choice.cursor + 1).min(choice.choices.len().saturating_sub(1))
-                }
-                KeyCode::Enter => {
-                    if let Some(picked) = choice.choices.get(choice.cursor).cloned() {
-                        self.pick(picked.pick);
-                    }
-                }
-                KeyCode::Char(character) => {
-                    if let Some(picked) = choice
-                        .choices
-                        .iter()
-                        .find(|option| option.key == character)
-                        .cloned()
-                    {
-                        self.pick(picked.pick);
-                    }
-                }
-                _ => {}
-            },
-            Dialog::Form(form) => match key.code {
-                KeyCode::Esc => self.dialog = None,
-                KeyCode::Up | KeyCode::BackTab => form.cursor = form.cursor.saturating_sub(1),
-                KeyCode::Down | KeyCode::Tab => {
-                    form.cursor = (form.cursor + 1).min(form.fields.len().saturating_sub(1))
-                }
-                KeyCode::Backspace => {
-                    if let Some(field) = form.fields.get_mut(form.cursor) {
-                        field.value.pop();
-                    }
-                }
-                KeyCode::Char(character) if !character.is_control() => {
-                    if let Some(field) = form.fields.get_mut(form.cursor) {
-                        field.value.push(character);
-                    }
-                }
-                KeyCode::Enter => {
-                    let changes = form.changes();
-                    let vm = form.vm.clone();
-                    if changes.is_empty() {
-                        self.dialog = None;
-                        self.notify("nothing changed".to_owned(), Tone::Dim);
-                    } else {
-                        self.start(Action::Set {
-                            target: vm,
-                            changes,
-                        });
-                    }
-                }
-                _ => {}
-            },
-        }
-    }
+/// `text` with a capital first letter, for the palette.
+fn capitalised(text: &str) -> String {
+    let mut characters = text.chars();
+    characters.next().map_or(String::new(), |first| {
+        first.to_uppercase().chain(characters).collect()
+    })
 }
 
 /// A size as `set` takes it: whole GiB or MiB where it divides.
@@ -1249,24 +1081,6 @@ pub fn byte_text(bytes: u64) -> String {
         format!("{}MiB", bytes / MIB)
     } else {
         bytes.to_string()
-    }
-}
-
-/// A flow's line, toned by what it says.
-fn line_tone(line: &str) -> Tone {
-    if line.starts_with("problem:") || line.contains("failed") {
-        Tone::Bad
-    } else if line.starts_with("  fix:") || line.starts_with("to fix:") {
-        Tone::Warn
-    } else if line.starts_with("applied")
-        || line.starts_with("attested")
-        || line.starts_with("wrote")
-        || line.contains(" published")
-        || line.ends_with("started")
-    {
-        Tone::Good
-    } else {
-        Tone::Normal
     }
 }
 
@@ -1289,7 +1103,7 @@ pub fn install_command(os_id: Option<&str>) -> &'static str {
 pub(crate) mod tests {
     use super::*;
     use crate::reports::{Published, VmListSchema};
-    use crate::tui::theme::{Depth, Icons, Palette};
+    use crate::tui::theme::{Depth, Icons};
 
     pub(crate) fn listed(name: &str, management: Management) -> ListedVm {
         ListedVm {
@@ -1323,6 +1137,7 @@ pub(crate) mod tests {
         };
         let theme = Theme::new(Palette::Midnight, Depth::TrueColor, Icons { unicode: true });
         let mut app = App::new(context, theme, tx, ReaderControl::new());
+        app.hold_tasks = true;
         app.on_msg(Msg::Pool(Ok(crate::tui::pool::tests::snapshot(3))));
         app.on_msg(Msg::Inventory(Ok(VmListReport {
             schema: VmListSchema,
@@ -1335,10 +1150,6 @@ pub(crate) mod tests {
         })));
         app.inventory_read = Some(Instant::now());
         (app, rx)
-    }
-
-    fn press(app: &mut App, code: KeyCode) {
-        app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
     }
 
     #[test]
@@ -1362,203 +1173,25 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn enter_opens_the_menu_for_what_the_vm_is() {
+    fn the_list_filters_and_sorts_with_vms_without_the_figure_last() {
         let (mut app, _rx) = app();
-        press(&mut app, KeyCode::Enter);
-        let Some(Dialog::Choice(menu)) = &app.dialog else {
-            panic!("a menu");
-        };
-        let keys: String = menu.choices.iter().map(|choice| choice.key).collect();
-        assert_eq!(keys, "vsolackf");
-        press(&mut app, KeyCode::Char('v'));
-        assert_eq!(app.view, View::Details("vm0".to_owned()));
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(app.view, View::Main);
-
-        press(&mut app, KeyCode::End);
-        press(&mut app, KeyCode::Enter);
-        let Some(Dialog::Choice(menu)) = &app.dialog else {
-            panic!("a menu");
-        };
+        app.list.sort = SortBy::Plugged;
+        app.list.reverse = true;
+        let names: Vec<String> = app.visible().into_iter().map(|entry| entry.name).collect();
+        // vm0 has 1 GiB plugged as vm2 has; the long-named VM's device
+        // isn't read, so it goes after them, with the unmanaged VMs.
+        assert_eq!(&names[..2], ["vm0", "vm2"]);
+        assert_eq!(names.len(), 5);
+        app.list.sort = SortBy::Name;
+        app.list.reverse = false;
+        app.list.filter = Some("VM".to_owned());
+        let names: Vec<String> = app.visible().into_iter().map(|entry| entry.name).collect();
         assert_eq!(
-            menu.choices[0].pick,
-            Pick::Run(Action::Add("newvm".to_owned()))
+            names,
+            ["a-very-long-vm-name", "newvm", "oldvm", "vm0", "vm2"]
         );
-        assert!(menu
-            .text
-            .iter()
-            .any(|line| line.contains("apt install rampire-guest")));
-        press(&mut app, KeyCode::Esc);
-        assert!(app.dialog.is_none());
-
-        press(&mut app, KeyCode::Up);
-        press(&mut app, KeyCode::Enter);
-        let Some(Dialog::Choice(menu)) = &app.dialog else {
-            panic!("a menu");
-        };
-        assert_eq!(
-            menu.choices[0].pick,
-            Pick::Run(Action::Add("oldvm".to_owned()))
-        );
-    }
-
-    #[test]
-    fn the_menus_letters_work_from_the_list() {
-        let (mut app, _rx) = app();
-        press(&mut app, KeyCode::Char('o'));
-        assert_eq!(app.view, View::Doctor(Some("vm0".to_owned())));
-        press(&mut app, KeyCode::Esc);
-        press(&mut app, KeyCode::Char('d'));
-        assert_eq!(app.view, View::Doctor(None));
-        press(&mut app, KeyCode::Esc);
-        press(&mut app, KeyCode::Char('l'));
-        assert_eq!(app.view, View::Logs(None));
-        press(&mut app, KeyCode::Esc);
-        // No settings read yet: it says so rather than showing an empty form.
-        press(&mut app, KeyCode::Char('s'));
-        assert!(app.dialog.is_none());
-        app.on_msg(Msg::Details(
-            "vm0".to_owned(),
-            crate::tui::vm::tests::details(),
-        ));
-        press(&mut app, KeyCode::Char('s'));
-        assert!(matches!(app.dialog, Some(Dialog::Form(_))));
-        press(&mut app, KeyCode::Esc);
-        press(&mut app, KeyCode::Char('q'));
-        assert!(app.quit);
-    }
-
-    #[test]
-    fn the_palette_finds_commands_by_a_few_letters_and_runs_them() {
-        let (mut app, _rx) = app();
-        press(&mut app, KeyCode::Char(':'));
-        let palette = app.palette.as_ref().expect("the palette opens");
-        assert!(palette.matches().len() > 10);
-        for character in "doct".chars() {
-            press(&mut app, KeyCode::Char(character));
-        }
-        let first = app.palette.as_ref().unwrap().matches()[0].clone();
-        assert_eq!(first.label, "Doctor");
-        assert_eq!(first.group, "vm0");
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Enter);
-        assert!(app.palette.is_none());
-        assert_eq!(app.view, View::Doctor(None));
-
-        // Moving onto a theme previews it; Esc puts the old one back.
-        app.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
-        for character in "light".chars() {
-            press(&mut app, KeyCode::Char(character));
-        }
-        assert_eq!(app.theme.palette, crate::tui::theme::Palette::Light);
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(app.theme.palette, crate::tui::theme::Palette::Midnight);
-    }
-
-    #[test]
-    fn fuzzy_matching_prefers_letters_together_and_word_starts() {
-        assert!(fuzzy_score("dr", "Doctor").is_some());
-        assert!(fuzzy_score("xyz", "Doctor").is_none());
-        let together = fuzzy_score("log", "Logs").unwrap();
-        let apart = fuzzy_score("log", "Leave our garden").unwrap();
-        assert!(together > apart);
-    }
-
-    #[test]
-    fn notices_go_after_a_while_and_errors_stay_longest() {
-        let (mut app, _rx) = app();
-        app.notify("done", Tone::Good);
-        app.notify("broke", Tone::Bad);
-        assert_eq!(app.notices.messages.len(), 2);
-        for message in &mut app.notices.messages {
-            message.shown -= Duration::from_secs(5);
-        }
-        app.tick();
-        assert_eq!(app.notices.messages.len(), 1);
-        assert_eq!(app.notices.messages[0].content, "broke");
-    }
-
-    #[test]
-    fn ctrl_c_quits_and_q_asks_twice_while_an_action_runs() {
-        let (mut app, _rx) = app();
-        app.dialog = Some(Dialog::Flow(FlowDialog {
-            action: Action::Apply,
-            title: "rampire apply".to_owned(),
-            lines: vec![],
-            pending: None,
-            done: None,
-            scroll: 0,
-        }));
-        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert!(!app.quit);
-        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert!(app.quit);
-    }
-
-    #[test]
-    fn a_question_is_answered_from_the_dialog_and_the_answer_recorded() {
-        let (mut app, _rx) = app();
-        let (reply, answer) = std::sync::mpsc::channel();
-        app.dialog = Some(Dialog::Flow(FlowDialog {
-            action: Action::Apply,
-            title: "rampire apply".to_owned(),
-            lines: vec![],
-            pending: None,
-            done: None,
-            scroll: 0,
-        }));
-        app.on_msg(Msg::Flow(FlowEvent::Ask(
-            Question::Confirm("Apply this?".to_owned()),
-            reply,
-        )));
-        press(&mut app, KeyCode::Char('x'));
-        assert!(answer.try_recv().is_err());
-        press(&mut app, KeyCode::Char('y'));
-        assert_eq!(answer.recv().unwrap(), Answer::Yes);
-        let (reply, answer) = std::sync::mpsc::channel();
-        app.on_msg(Msg::Flow(FlowEvent::Ask(
-            Question::Text("Why?".to_owned()),
-            reply,
-        )));
-        for character in "ok now".chars() {
-            press(&mut app, KeyCode::Char(character));
-        }
-        press(&mut app, KeyCode::Backspace);
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(answer.recv().unwrap(), Answer::Text("ok no".to_owned()));
-        app.on_msg(Msg::Flow(FlowEvent::Done(Err("it broke".to_owned()))));
-        assert_eq!(app.errors.len(), 1);
-        let Some(Dialog::Flow(flow)) = &app.dialog else {
-            panic!("the dialog stays to show the error");
-        };
-        assert!(flow.lines.iter().any(|(line, _)| line == "Apply this? yes"));
-        press(&mut app, KeyCode::Enter);
-        assert!(app.dialog.is_none());
-        press(&mut app, KeyCode::Char('e'));
-        assert_eq!(app.overlay, Some(Overlay::Errors));
-    }
-
-    #[test]
-    fn the_settings_form_changes_only_what_was_edited() {
-        let form = FormDialog {
-            vm: "web".to_owned(),
-            fields: vec![
-                Field {
-                    key: "priority",
-                    value: "150".to_owned(),
-                    original: "100".to_owned(),
-                },
-                Field {
-                    key: "max_ram",
-                    value: "8GiB".to_owned(),
-                    original: "8GiB".to_owned(),
-                },
-            ],
-            cursor: 0,
-        };
-        assert_eq!(form.changes(), ["priority=150"]);
-        assert_eq!(byte_text(8 << 30), "8GiB");
-        assert_eq!(byte_text(512 << 20), "512MiB");
+        app.list.filter = Some("old".to_owned());
+        assert_eq!(app.visible().len(), 1);
     }
 
     #[test]
@@ -1572,5 +1205,7 @@ pub(crate) mod tests {
             "dnf install rampire-guest"
         );
         assert!(install_command(None).contains("apt"));
+        assert_eq!(byte_text(8 << 30), "8GiB");
+        assert_eq!(byte_text(512 << 20), "512MiB");
     }
 }

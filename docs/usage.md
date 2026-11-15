@@ -290,9 +290,12 @@ Its first screen is the dashboard. How to read it:
 
 The list has every VM on the host, managed or not. Choose one with the
 arrows and press **Enter** for its menu: its details, its settings, its
-doctor, adding it or removing it. **Esc** comes back to the list, **?**
-lists the keys and **q** leaves ([reference](reference.md#the-tui)). `sudo rampire top`
-shows the dashboard alone.
+doctor, adding it or removing it. **Tab** shows what is known about it,
+**/** finds a VM by name, and **w** shows what is running: what you
+start from a menu runs in the background while you carry on, and its
+questions come to you. **Esc** comes back to the list, **?** lists the
+keys and **q** leaves ([reference](reference.md#the-tui)). `sudo rampire
+top` shows the dashboard alone.
 
 You can open the same view from a Windows PC. See
 [Watching the pool](tools.md#watching-the-pool).

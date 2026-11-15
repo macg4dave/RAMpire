@@ -88,18 +88,39 @@ None needs a VM, a running service or a site's configuration. The host's
 ### The TUI and its tests
 
 The TUI is drawn with [Ratatui](https://ratatui.rs) 0.30 on its
-`crossterm` backend, both MIT-licensed crates used as dependencies (no
-code is copied into the repository). `rampire top` and `rampire watch`
-draw the TUI's dashboard and VM details alone, so there is one renderer.
+`crossterm` backend, both MIT-licensed crates used as dependencies.
+`rampire top` and `rampire watch` draw the TUI's dashboard and VM details
+alone, so there is one renderer.
+
+It is laid out as [Yazi](https://github.com/sxyazi/yazi)'s is, some of it
+with Yazi's code (MIT, [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)).
+The module list is in `tui/mod.rs`'s documentation; in short:
+
+- `tui/keymap.rs` is the one table of keys: each binding's layer, keys,
+  command, description and status-bar hint. Dispatch, the help, the
+  status bar, the which popup of a chord and the command palette all read
+  it, so a new key is one line there and a match arm in `tui/router.rs`.
+- `tui/router.rs` sends a key to the topmost layer (`App::layer`): a
+  text field first, then that layer's keys, then the keys of every list
+  and of anywhere; then does the command in that layer.
+- `tui/app.rs` holds the state and what is derived from it; `tui/views/`
+  draws it, the layers from the bottom up; `App::effects` carries what
+  only the screen's loop can do (copying, Ctrl+Z).
+- An action runs as a task (`tui/tasks.rs`), one at a time, its flow on
+  its own thread. The loop in `tui/mod.rs` sleeps until a message (a key
+  from the key thread, a reading, a task's line) or the time a notice
+  moves, and draws at most once a frame.
 
 A guided flow (`vm add`, `set`, `apply`, ...) talks to the person only
 through `rampire_ops::ui::Ui`: `ui::Terminal` for the commands, and the
-TUI's dialogs through a channel (`tui/jobs.rs`). Tests answer it with
-`ui::Transcript`.
+TUI's tasks through a channel (`tui/jobs.rs`). Tests answer it with
+`ui::Transcript`. TUI tests set `App::hold_tasks`, so a task is queued but
+its command never runs.
 
-Each screen is drawn in tests into a buffer at 80x24, 120x40 and 200x60,
-in every theme, at every colour depth and in both icon sets
-(`tui/screens.rs`), as part of the gate.
+Each screen and layer is drawn in tests into a buffer at 80x24, 120x40
+and 200x60, in every theme, at every colour depth and in both icon sets
+(`tui/views/mod.rs`), as part of the gate; keys are pressed through
+`App::on_key` as a person would (`tui/router.rs`).
 
 ### Third-party licenses
 

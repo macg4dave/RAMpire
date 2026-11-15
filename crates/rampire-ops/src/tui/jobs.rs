@@ -1,7 +1,11 @@
 //! The TUI's work off the screen's thread, so keys answer at once however
 //! slow libvirt or the journal is: a reader that refreshes the pool and the
-//! chosen VM, one-off loads (the VM list, the doctor, the journal), and the
-//! guided flows, whose questions come back to the screen as dialogs.
+//! chosen VM and watches for other people's changes, one-off loads (the VM
+//! list, the doctor, the journal), the keys, and the guided flows, each run
+//! as a task whose questions come back to the screen.
+//!
+//! A send fails only once the screen has closed, when nothing is left to
+//! tell; those failures are let go.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +14,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rampire_host::config::{HostConfig, HostSettings};
+use ratatui::crossterm::event::Event;
 
+use super::peers::{self, PeerChange};
 use super::vm::VmDetails;
 use crate::context::Context;
 use crate::doctor::Finding;
@@ -18,6 +24,9 @@ use crate::reports::{ControllerUnit, VmListReport};
 use crate::top::{PoolReader, PoolSnapshot};
 use crate::ui::Ui;
 use crate::watch::{VmReader, VmSnapshot};
+
+/// A task's number, from 1 in the order they were started.
+pub type TaskId = u64;
 
 /// Everything the background work tells the screen.
 pub enum Msg {
@@ -29,7 +38,13 @@ pub enum Msg {
     /// The host's findings and each managed VM's.
     Doctor(Result<Vec<DoctorSection>, String>),
     Log(Result<String, String>),
-    Flow(FlowEvent),
+    Task(TaskId, FlowEvent),
+    /// Changes other people made.
+    Peers(Vec<PeerChange>),
+    /// A key, a paste or a resize.
+    Term(Event),
+    /// The terminal can't be read any more.
+    Gone(String),
 }
 
 /// One part of the doctor screen: the host (`vm` is `None`) or one VM.
@@ -75,20 +90,25 @@ pub enum Answer {
     Cancelled,
 }
 
-/// A [`Ui`] whose answers come from the TUI's dialogs.
+/// A [`Ui`] whose answers come from the TUI, for one task.
 pub struct ChannelUi {
     tx: Sender<Msg>,
+    id: TaskId,
 }
 
 impl ChannelUi {
-    pub fn new(tx: Sender<Msg>) -> Self {
-        Self { tx }
+    pub fn new(tx: Sender<Msg>, id: TaskId) -> Self {
+        Self { tx, id }
+    }
+
+    fn send(&self, event: FlowEvent) {
+        let _ = self.tx.send(Msg::Task(self.id, event));
     }
 
     fn ask(&mut self, question: Question) -> Result<Answer, String> {
         let (reply, answer) = mpsc::channel();
         self.tx
-            .send(Msg::Flow(FlowEvent::Ask(question, reply)))
+            .send(Msg::Task(self.id, FlowEvent::Ask(question, reply)))
             .map_err(|_| "the TUI closed".to_owned())?;
         match answer.recv() {
             Ok(Answer::Cancelled) | Err(_) => {
@@ -101,11 +121,11 @@ impl ChannelUi {
 
 impl Ui for ChannelUi {
     fn say(&mut self, line: &str) {
-        let _ = self.tx.send(Msg::Flow(FlowEvent::Line(line.to_owned())));
+        self.send(FlowEvent::Line(line.to_owned()));
     }
 
     fn show(&mut self, text: &str) {
-        let _ = self.tx.send(Msg::Flow(FlowEvent::Shown(text.to_owned())));
+        self.send(FlowEvent::Shown(text.to_owned()));
     }
 
     fn confirm(&mut self, question: &str) -> Result<bool, String> {
@@ -124,16 +144,35 @@ impl Ui for ChannelUi {
     }
 }
 
-/// Run a flow on its own thread, its questions and lines sent to the
-/// screen, and its end as [`FlowEvent::Done`].
+/// Run task `id`'s flow on its own thread, its questions and lines sent to
+/// the screen, and its end as [`FlowEvent::Done`].
 pub fn spawn_flow(
     tx: Sender<Msg>,
+    id: TaskId,
     flow: impl FnOnce(&mut ChannelUi) -> Result<String, String> + Send + 'static,
 ) {
     std::thread::spawn(move || {
-        let mut ui = ChannelUi::new(tx.clone());
+        let mut ui = ChannelUi::new(tx, id);
         let result = flow(&mut ui);
-        let _ = tx.send(Msg::Flow(FlowEvent::Done(result)));
+        ui.send(FlowEvent::Done(result));
+    });
+}
+
+/// Read the keys on their own thread, so the screen sleeps until there is
+/// something to do. It ends when the terminal goes.
+pub fn spawn_keys(tx: Sender<Msg>) {
+    std::thread::spawn(move || loop {
+        match ratatui::crossterm::event::read() {
+            Ok(event) => {
+                if tx.send(Msg::Term(event)).is_err() {
+                    return;
+                }
+            }
+            Err(error) => {
+                let _ = tx.send(Msg::Gone(error.to_string()));
+                return;
+            }
+        }
     });
 }
 
@@ -228,19 +267,25 @@ impl Default for ReaderControl {
 /// controller's state and a VM's settings.
 const SLOW_EVERY: Duration = Duration::from_secs(5);
 
-/// Refresh the pool and the wanted VM every `interval` until stopped.
+/// Refresh the pool and the wanted VM every `interval`, and look for other
+/// people's changes with the slower facts, until stopped.
 pub fn spawn_reader(context: Context, control: ReaderControl, tx: Sender<Msg>, interval: Duration) {
     std::thread::spawn(move || {
         let cwd = Path::new("/");
         let mut pool: Option<PoolReader> = None;
         let mut vm: Option<VmReader> = None;
         let mut slow: Option<Instant> = None;
+        let mut watch = peers::Watch::new();
         while !control.stop.load(Ordering::Acquire) {
             let started = Instant::now();
             let reload = control.reload.swap(false, Ordering::AcqRel);
             let slow_due = reload || slow.is_none_or(|at| at.elapsed() >= SLOW_EVERY);
             if slow_due {
                 slow = Some(started);
+                let news = watch.poll();
+                if !news.is_empty() {
+                    let _ = tx.send(Msg::Peers(news));
+                }
                 let _ = tx.send(Msg::Controller(crate::systemd_unit::controller_state()));
                 match pool_command(&context) {
                     Ok(command) => {
@@ -359,7 +404,7 @@ mod tests {
     #[test]
     fn a_flows_questions_come_back_as_dialogs_and_their_answers_go_on() {
         let (tx, rx) = channel();
-        spawn_flow(tx, |ui| {
+        spawn_flow(tx, 1, |ui| {
             ui.say("checking");
             if !ui.confirm("Apply this?")? {
                 return Ok("nothing changed".to_owned());
@@ -370,16 +415,16 @@ mod tests {
         let mut said = Vec::new();
         loop {
             match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
-                Msg::Flow(FlowEvent::Line(line)) => said.push(line),
-                Msg::Flow(FlowEvent::Ask(Question::Confirm(question), reply)) => {
+                Msg::Task(1, FlowEvent::Line(line)) => said.push(line),
+                Msg::Task(1, FlowEvent::Ask(Question::Confirm(question), reply)) => {
                     said.push(question);
                     reply.send(Answer::Yes).unwrap();
                 }
-                Msg::Flow(FlowEvent::Ask(Question::Text(question), reply)) => {
+                Msg::Task(1, FlowEvent::Ask(Question::Text(question), reply)) => {
                     said.push(question);
                     reply.send(Answer::Text("6.12".to_owned())).unwrap();
                 }
-                Msg::Flow(FlowEvent::Done(result)) => {
+                Msg::Task(1, FlowEvent::Done(result)) => {
                     said.push(result.unwrap());
                     break;
                 }
@@ -400,13 +445,13 @@ mod tests {
     #[test]
     fn closing_a_question_stops_the_flow_with_nothing_more_changed() {
         let (tx, rx) = channel();
-        spawn_flow(tx, |ui| {
+        spawn_flow(tx, 1, |ui| {
             ui.confirm("Apply this?").map(|_| "applied".to_owned())
         });
         let error = loop {
             match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
-                Msg::Flow(FlowEvent::Ask(_, reply)) => reply.send(Answer::Cancelled).unwrap(),
-                Msg::Flow(FlowEvent::Done(result)) => break result.unwrap_err(),
+                Msg::Task(1, FlowEvent::Ask(_, reply)) => reply.send(Answer::Cancelled).unwrap(),
+                Msg::Task(1, FlowEvent::Done(result)) => break result.unwrap_err(),
                 _ => {}
             }
         };

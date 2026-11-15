@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use super::jobs::{self, ChannelUi, Msg, ReaderControl};
+use super::jobs::{self, ChannelUi, Msg, ReaderControl, TaskId};
 use crate::context::Context;
 use crate::flows::{apply, controller, lifecycle};
 use crate::ui::Ui;
@@ -77,13 +77,13 @@ impl Action {
         }
     }
 
-    /// Run it on its own thread. The reader reloads the configuration when
-    /// it ends, whatever it changed.
-    pub fn spawn(&self, context: &Context, control: &ReaderControl, tx: Sender<Msg>) {
+    /// Run it on its own thread as task `id`. The reader reloads the
+    /// configuration when it ends, whatever it changed.
+    pub fn spawn(&self, context: &Context, control: &ReaderControl, tx: Sender<Msg>, id: TaskId) {
         let action = self.clone();
         let context = context.clone();
         let reload = control.reload.clone();
-        jobs::spawn_flow(tx, move |ui| {
+        jobs::spawn_flow(tx, id, move |ui| {
             let result = action.run(&context, ui);
             reload.store(true, Ordering::Release);
             result

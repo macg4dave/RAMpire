@@ -60,8 +60,8 @@ Guest figures come from the controller's publication copies, so the view
 sends no guest-agent traffic. They are empty while the controller is
 stopped. `--interval-seconds N` sets the refresh period (default 1),
 `--events N` the number of events (default 8) and `--once` prints one
-plain snapshot. `q`, Esc or Ctrl+C leaves the last view on the screen as
-plain text.
+plain snapshot. Ctrl+Z goes back to the shell until `fg`. `q`, Esc or
+Ctrl+C leaves the last view on the screen as plain text.
 
 From any computer with an SSH client, the whole TUI:
 

@@ -66,8 +66,9 @@ ssh -t HOST sudo rampire     # from another computer
 ```
 
 Every VM on the host is listed. Choose the VM with the arrows, press
-**Enter** and choose **Add it** (`a`). It runs the same steps as the command, which you can also
-type yourself:
+**Enter** and choose **Add it** (`a`). It runs in the background, and
+each of its questions comes up for you to answer with `y` or `n`. It runs
+the same steps as the command, which you can also type yourself:
 
 ```bash
 rampire vm add webserver --fix-xml

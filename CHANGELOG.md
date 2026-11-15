@@ -16,6 +16,17 @@ again (decision D9).
   can run; the journal by VM. Every action shows the command that does
   the same and is logged to the journal (`event=operator_change`).
   `rampire top` and `rampire watch` draw its screens alone.
+  Actions run as background tasks, one at a time, their questions
+  brought forward (`w` lists them). One key table makes the keys, the
+  help you can type into, the status bar's hints and the command palette;
+  chords such as `g g` show what can follow. Tab shows a VM's facts, a
+  wide window previews the chosen VM, `/` filters the list and finds in
+  the logs, `,` sorts, `m` changes the last columns, Space marks VMs for
+  one action on several, and `y` copies through SSH with OSC 52. Other
+  people's changes show as they happen. The TUI asks the terminal for its
+  colours and background, draws each frame whole, only when something
+  changes, and Ctrl+Z suspends it. Its layout and parts of its code come
+  from Yazi (THIRD_PARTY_NOTICES.md).
 - `rampire vm list` and `rampire doctor VM`.
 - Each package installs `THIRD_PARTY_LICENSES` in its doc directory: the
   license and notices of every crate built into its binary
