@@ -149,6 +149,103 @@ pub struct ErrorEntry {
     pub error: String,
 }
 
+/// A short notice in the corner, gone after a while.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toast {
+    pub text: String,
+    pub tone: Tone,
+    pub shown: Instant,
+}
+
+impl Toast {
+    /// How long it stays: longer for what needs reading.
+    pub fn lasts(&self) -> Duration {
+        match self.tone {
+            Tone::Bad => Duration::from_secs(10),
+            Tone::Warn => Duration::from_secs(6),
+            _ => Duration::from_secs(4),
+        }
+    }
+}
+
+/// What a command palette item does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    Pick(Pick),
+    Theme(super::theme::Palette),
+    Icons,
+    Help,
+    Errors,
+    Reload,
+    Quit,
+}
+
+/// One command in the palette.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteItem {
+    /// The group it is listed under: the VM's name, View, Theme.
+    pub group: String,
+    pub label: String,
+    /// The key that does the same, if there is one.
+    pub key: String,
+    pub command: Command,
+}
+
+/// The command palette: type a few letters of anything the TUI can do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandPalette {
+    pub query: String,
+    pub cursor: usize,
+    pub items: Vec<PaletteItem>,
+    /// The theme before a theme was previewed, put back on Esc.
+    pub theme_before: super::theme::Palette,
+}
+
+impl CommandPalette {
+    /// The items the query matches, best first; all of them, in their
+    /// groups, before anything is typed.
+    pub fn matches(&self) -> Vec<&PaletteItem> {
+        if self.query.trim().is_empty() {
+            return self.items.iter().collect();
+        }
+        let mut scored: Vec<(i64, usize, &PaletteItem)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let text = format!("{} {}", item.group, item.label);
+                fuzzy_score(&self.query, &text).map(|score| (score, index, item))
+            })
+            .collect();
+        scored.sort_by_key(|(score, index, _)| (-score, *index));
+        scored.into_iter().map(|(_, _, item)| item).collect()
+    }
+}
+
+/// How well `query` matches `text`: its letters in order, case aside,
+/// scoring letters that follow each other or start a word higher. `None`
+/// when they aren't all there.
+pub fn fuzzy_score(query: &str, text: &str) -> Option<i64> {
+    let text: Vec<char> = text.to_lowercase().chars().collect();
+    let mut score = 0i64;
+    let mut at = 0usize;
+    let mut last: Option<usize> = None;
+    for wanted in query.to_lowercase().chars().filter(|c| !c.is_whitespace()) {
+        let found = (at..text.len()).find(|&index| text[index] == wanted)?;
+        score += 1;
+        if last.is_some_and(|last| last + 1 == found) {
+            score += 5;
+        }
+        if found == 0 || !text[found - 1].is_alphanumeric() {
+            score += 3;
+        }
+        last = Some(found);
+        at = found + 1;
+    }
+    // Shorter texts with the same letters come first.
+    Some(score * 100 - text.len() as i64)
+}
+
 /// One VM in the main list.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
@@ -188,7 +285,10 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub overlay: Option<Overlay>,
     pub errors: Vec<ErrorEntry>,
-    pub status: Option<(String, Tone)>,
+    /// Short notices in the corner, newest last.
+    pub toasts: Vec<Toast>,
+    /// The command palette, while it is open.
+    pub palette: Option<CommandPalette>,
     pub quit: bool,
     /// `q` was pressed while an action ran: a second `q` quits.
     quit_armed: bool,
@@ -218,7 +318,8 @@ impl App {
             dialog: None,
             overlay: None,
             errors: Vec::new(),
-            status: None,
+            toasts: Vec::new(),
+            palette: None,
             quit: false,
             quit_armed: false,
         }
@@ -288,6 +389,159 @@ impl App {
             .collect()
     }
 
+    /// Show a short notice in the corner. At most four are shown.
+    pub fn notify(&mut self, text: impl Into<String>, tone: Tone) {
+        self.toasts.push(Toast {
+            text: text.into(),
+            tone,
+            shown: Instant::now(),
+        });
+        if self.toasts.len() > 4 {
+            self.toasts.remove(0);
+        }
+    }
+
+    /// Open the command palette, with what can be done now.
+    pub fn open_palette(&mut self) {
+        let mut items = Vec::new();
+        if let Some(entry) = self.selected() {
+            for choice in self.menu(&entry).choices {
+                items.push(PaletteItem {
+                    group: entry.name.clone(),
+                    label: choice.label,
+                    key: choice.key.to_string(),
+                    command: Command::Pick(choice.pick),
+                });
+            }
+        }
+        let item = |group: &str, label: &str, key: &str, command| PaletteItem {
+            group: group.to_owned(),
+            label: label.to_owned(),
+            key: key.to_owned(),
+            command,
+        };
+        items.extend([
+            item(
+                "View",
+                "The VMs and the pool",
+                "Esc",
+                Command::Pick(Pick::Open(View::Main)),
+            ),
+            item(
+                "View",
+                "Doctor: the host and every VM",
+                "d",
+                Command::Pick(Pick::Open(View::Doctor(None))),
+            ),
+            item(
+                "View",
+                "Logs",
+                "l",
+                Command::Pick(Pick::Open(View::Logs(None))),
+            ),
+            item("View", "Read everything again", "r", Command::Reload),
+            item("View", "Keys", "?", Command::Help),
+        ]);
+        if !self.errors.is_empty() {
+            items.push(item("View", "Errors", "e", Command::Errors));
+        }
+        for palette in super::theme::Palette::ALL {
+            items.push(item(
+                "Theme",
+                &format!("Theme: {}", palette.name()),
+                "",
+                Command::Theme(palette),
+            ));
+        }
+        items.push(item("Theme", "Unicode or ASCII icons", "i", Command::Icons));
+        items.push(item("RAMpire", "Quit", "q", Command::Quit));
+        self.palette = Some(CommandPalette {
+            query: String::new(),
+            cursor: 0,
+            items,
+            theme_before: self.theme.palette,
+        });
+    }
+
+    /// Show the theme the palette's cursor is on, as a preview.
+    fn preview_theme(&mut self) {
+        let Some(palette) = &self.palette else {
+            return;
+        };
+        let chosen = palette
+            .matches()
+            .get(palette.cursor)
+            .and_then(|item| match item.command {
+                Command::Theme(theme) => Some(theme),
+                _ => None,
+            });
+        self.theme.palette = chosen.unwrap_or(palette.theme_before);
+    }
+
+    fn on_palette_key(&mut self, key: KeyEvent) {
+        let Some(palette) = self.palette.as_mut() else {
+            return;
+        };
+        let count = palette.matches().len();
+        match key.code {
+            KeyCode::Esc => {
+                self.theme.palette = palette.theme_before;
+                self.palette = None;
+                return;
+            }
+            KeyCode::Up => palette.cursor = palette.cursor.saturating_sub(1),
+            KeyCode::Down => palette.cursor = (palette.cursor + 1).min(count.saturating_sub(1)),
+            KeyCode::Backspace => {
+                palette.query.pop();
+                palette.cursor = 0;
+            }
+            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                palette.query.push(character);
+                palette.cursor = 0;
+            }
+            KeyCode::Enter => {
+                let chosen = palette
+                    .matches()
+                    .get(palette.cursor)
+                    .map(|item| item.command.clone());
+                let before = palette.theme_before;
+                self.palette = None;
+                self.theme.palette = before;
+                if let Some(command) = chosen {
+                    self.run_command(command);
+                }
+                return;
+            }
+            _ => {}
+        }
+        self.preview_theme();
+    }
+
+    fn run_command(&mut self, command: Command) {
+        match command {
+            Command::Pick(pick) => self.pick(pick),
+            Command::Theme(palette) => {
+                self.theme.palette = palette;
+                self.notify(format!("theme: {}", palette.name()), Tone::Dim);
+            }
+            Command::Icons => self.toggle_icons(),
+            Command::Help => self.overlay = Some(Overlay::Help),
+            Command::Errors => self.overlay = Some(Overlay::Errors),
+            Command::Reload => self.reload(),
+            Command::Quit => self.ask_quit(),
+        }
+    }
+
+    fn toggle_icons(&mut self) {
+        self.theme.icons.unicode = !self.theme.icons.unicode;
+        let set = if self.theme.icons.unicode {
+            "Unicode"
+        } else {
+            "ASCII"
+        };
+        self.notify(format!("icons: {set}"), Tone::Dim);
+    }
+
     /// A flow is running in the dialog.
     pub fn busy(&self) -> bool {
         matches!(&self.dialog, Some(Dialog::Flow(flow)) if flow.done.is_none())
@@ -296,6 +550,8 @@ impl App {
     /// Called every turn of the screen's loop: reads the host's VMs again
     /// when they are old.
     pub fn tick(&mut self) {
+        self.toasts
+            .retain(|toast| toast.shown.elapsed() < toast.lasts());
         let stale = self
             .inventory_read
             .is_none_or(|read| read.elapsed() >= INVENTORY_EVERY);
@@ -325,7 +581,7 @@ impl App {
             Msg::Controller(unit) => self.controller = Some(unit),
             // A failed re-read keeps the list it had.
             Msg::Inventory(Err(error)) if self.inventory.ok().is_some() => {
-                self.status = Some((format!("reading the VMs failed: {error}"), Tone::Warn));
+                self.notify(format!("reading the VMs failed: {error}"), Tone::Warn);
             }
             Msg::Inventory(report) => self.inventory = Loaded::Done(report),
             Msg::Doctor(sections) => self.doctor = Loaded::Done(sections),
@@ -383,19 +639,21 @@ impl App {
             }
             FlowEvent::Done(result) => {
                 let title = flow.title.clone();
-                match &result {
-                    Ok(_) => self.status = Some((format!("ran: {title}"), Tone::Good)),
+                // The dialog is borrowed, so the notice is made after it.
+                let notice = match &result {
+                    Ok(_) => (format!("ran: {title}"), Tone::Good),
                     Err(error) => {
-                        self.status = Some((format!("failed: {title}"), Tone::Bad));
                         self.errors.push(ErrorEntry {
                             time: crate::dashboard::clock(),
-                            what: title,
+                            what: title.clone(),
                             error: error.clone(),
                         });
+                        (format!("failed: {title}"), Tone::Bad)
                     }
-                }
+                };
                 flow.pending = None;
                 flow.done = Some(result);
+                self.notify(notice.0, notice.1);
                 // What the action changed shows on the next reads.
                 self.load_inventory();
                 self.doctor = Loaded::NotYet;
@@ -663,8 +921,16 @@ impl App {
             }
             return;
         }
+        if self.palette.is_some() {
+            return self.on_palette_key(key);
+        }
         if self.dialog.is_some() {
             return self.on_dialog_key(key);
+        }
+        let ctrl_p =
+            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p');
+        if ctrl_p || key.code == KeyCode::Char(':') {
+            return self.open_palette();
         }
         match key.code {
             KeyCode::Char('q') => return self.ask_quit(),
@@ -674,19 +940,10 @@ impl App {
             }
             KeyCode::Char('t') => {
                 self.theme.palette = self.theme.palette.next();
-                self.status = Some((format!("theme: {}", self.theme.palette.name()), Tone::Dim));
+                self.notify(format!("theme: {}", self.theme.palette.name()), Tone::Dim);
                 return;
             }
-            KeyCode::Char('i') => {
-                self.theme.icons.unicode = !self.theme.icons.unicode;
-                let set = if self.theme.icons.unicode {
-                    "Unicode"
-                } else {
-                    "ASCII"
-                };
-                self.status = Some((format!("icons: {set}"), Tone::Dim));
-                return;
-            }
+            KeyCode::Char('i') => return self.toggle_icons(),
             KeyCode::Char('r') => return self.reload(),
             KeyCode::Esc if self.view != View::Main => return self.open(View::Main),
             _ => {}
@@ -703,11 +960,11 @@ impl App {
     fn ask_quit(&mut self) {
         if self.busy() && !self.quit_armed {
             self.quit_armed = true;
-            self.status = Some((
+            self.notify(
                 "an action is running: press q again to quit; a vm add finishes when run again"
                     .to_owned(),
                 Tone::Warn,
-            ));
+            );
             return;
         }
         self.quit = true;
@@ -801,10 +1058,10 @@ impl App {
             .get(vm)
             .and_then(|details| details.settings.clone())
         else {
-            self.status = Some((
+            self.notify(
                 format!("{vm}'s settings aren't read yet; try again in a moment"),
                 Tone::Warn,
-            ));
+            );
             return;
         };
         let field = |key, value: String| Field {
@@ -866,12 +1123,10 @@ impl App {
                             cursor: 0,
                         }));
                     }
-                    None => {
-                        self.status = Some((
-                            "this fix is done by hand: it is shown beneath the problem".to_owned(),
-                            Tone::Dim,
-                        ))
-                    }
+                    None => self.notify(
+                        "this fix is done by hand: it is shown beneath the problem".to_owned(),
+                        Tone::Dim,
+                    ),
                 }
             }
             code => Self::move_cursor(&mut self.doctor_cursor, count, code),
@@ -970,11 +1225,11 @@ impl App {
                         }
                     }
                     KeyCode::Esc | KeyCode::Char('q') => {
-                        self.status = Some((
+                        self.notify(
                             "the action is still running; its dialog closes when it ends"
                                 .to_owned(),
                             Tone::Warn,
-                        ));
+                        );
                     }
                     _ => {}
                 }
@@ -1024,7 +1279,7 @@ impl App {
                     let vm = form.vm.clone();
                     if changes.is_empty() {
                         self.dialog = None;
-                        self.status = Some(("nothing changed".to_owned(), Tone::Dim));
+                        self.notify("nothing changed".to_owned(), Tone::Dim);
                     } else {
                         self.start(Action::Set {
                             target: vm,
@@ -1225,6 +1480,55 @@ pub(crate) mod tests {
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Char('q'));
         assert!(app.quit);
+    }
+
+    #[test]
+    fn the_palette_finds_commands_by_a_few_letters_and_runs_them() {
+        let (mut app, _rx) = app();
+        press(&mut app, KeyCode::Char(':'));
+        let palette = app.palette.as_ref().expect("the palette opens");
+        assert!(palette.matches().len() > 10);
+        for character in "doct".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+        let first = app.palette.as_ref().unwrap().matches()[0].clone();
+        assert_eq!(first.label, "Doctor");
+        assert_eq!(first.group, "vm0");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.palette.is_none());
+        assert_eq!(app.view, View::Doctor(None));
+
+        // Moving onto a theme previews it; Esc puts the old one back.
+        app.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        for character in "light".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+        assert_eq!(app.theme.palette, crate::tui::theme::Palette::Light);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.theme.palette, crate::tui::theme::Palette::Midnight);
+    }
+
+    #[test]
+    fn fuzzy_matching_prefers_letters_together_and_word_starts() {
+        assert!(fuzzy_score("dr", "Doctor").is_some());
+        assert!(fuzzy_score("xyz", "Doctor").is_none());
+        let together = fuzzy_score("log", "Logs").unwrap();
+        let apart = fuzzy_score("log", "Leave our garden").unwrap();
+        assert!(together > apart);
+    }
+
+    #[test]
+    fn toasts_go_after_a_while_and_errors_stay_longest() {
+        let (mut app, _rx) = app();
+        app.notify("done", Tone::Good);
+        app.notify("broke", Tone::Bad);
+        assert_eq!(app.toasts.len(), 2);
+        app.toasts[0].shown -= Duration::from_secs(5);
+        app.toasts[1].shown -= Duration::from_secs(5);
+        app.tick();
+        assert_eq!(app.toasts.len(), 1);
+        assert_eq!(app.toasts[0].text, "broke");
     }
 
     #[test]

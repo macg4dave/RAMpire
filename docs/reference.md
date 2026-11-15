@@ -41,10 +41,12 @@ fits that VM:
 | Half-added | `a` finish adding it; `o` its doctor; `f` forget it |
 
 A menu's letters also work from the list and from a VM's details,
-without opening the menu.
+without opening the menu. What an action did shows briefly in the top
+right corner; an error stays longer, and in the errors list (`e`).
 
 | Key | Does |
 |---|---|
+| Ctrl+P or `:` | The command palette: type a few letters of anything the TUI can do, for the chosen VM or anywhere; a theme shows as the cursor reaches it |
 | arrows, `j` `k`, Home, End, PgUp, PgDn | Choose a VM, or move |
 | Enter | The chosen VM's menu, or run what is chosen |
 | `d` | The doctor for the host and every VM; Enter runs a fix that is a `rampire` command |

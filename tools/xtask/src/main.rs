@@ -1,4 +1,5 @@
 mod build_identity;
+mod licenses;
 mod local;
 mod package;
 
@@ -10,6 +11,7 @@ const HELP: &str = r#"Repository build tooling
 The gate and the packages: tools/build.sh runs these in the build
 container.
   cargo xtask gate <format|build|test|lint|checks|local>
+  cargo xtask licenses DIRECTORY   the third-party notices each package installs
 "#;
 
 fn main() -> ExitCode {
@@ -32,6 +34,10 @@ fn execute(arguments: &[String]) -> Result<(), String> {
         }
         Some("gate") => gate(&arguments[1..], &repo),
         Some("package") => package::run(&package::parse(&arguments[1..])?, &repo),
+        Some("licenses") => match &arguments[1..] {
+            [directory] => licenses::write(&repo, Path::new(directory)),
+            _ => Err("licenses requires DIRECTORY".to_owned()),
+        },
         Some(command) => Err(format!("unknown command: {command}\n\n{HELP}")),
     }
 }

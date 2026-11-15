@@ -17,6 +17,9 @@ again (decision D9).
   the same and is logged to the journal (`event=operator_change`).
   `rampire top` and `rampire watch` draw its screens alone.
 - `rampire vm list` and `rampire doctor VM`.
+- Each package installs `THIRD_PARTY_LICENSES` in its doc directory: the
+  license and notices of every crate built into its binary
+  ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 - Man pages, `man rampire`, `man rampire-COMMAND` and `man rampire.toml`,
   and `rampire-guest(8)` and `rampire-watch-ram(1)` in the guest package,
   made from the same definitions as `--help`; shell completion for bash,

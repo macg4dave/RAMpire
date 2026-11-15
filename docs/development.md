@@ -101,6 +101,14 @@ Each screen is drawn in tests into a buffer at 80x24, 120x40 and 200x60,
 in every theme, at every colour depth and in both icon sets
 (`tui/screens.rs`), as part of the gate.
 
+### Third-party licenses
+
+`cargo xtask licenses DIR`, run by `cargo xtask package`, writes the
+license and notice files of every crate each binary is built from, which
+the packages install as `THIRD_PARTY_LICENSES`. A crate with no license
+file stops the build. Adding a dependency needs nothing more; copying
+code does: [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
 ### Man pages and completions
 
 `packaging/docs.sh`, run by the package build, makes them from the

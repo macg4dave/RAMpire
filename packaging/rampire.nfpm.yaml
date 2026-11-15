@@ -53,6 +53,10 @@ contents:
   - src: "./LICENSE"
     dst: /usr/share/doc/rampire/LICENSE
     file_info: { mode: 0644 }
+  # Every third-party crate's notice, written by cargo xtask licenses.
+  - src: "./target/packaging/licenses/rampire.THIRD_PARTY_LICENSES"
+    dst: /usr/share/doc/rampire/THIRD_PARTY_LICENSES
+    file_info: { mode: 0644 }
   # Written by packaging/docs.sh from the binary's command definitions.
   - src: "./target/packaging/docs/man8/*.8.gz"
     dst: /usr/share/man/man8/

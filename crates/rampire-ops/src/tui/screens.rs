@@ -61,6 +61,127 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &App) {
         Some(Overlay::Errors) => errors(body, buf, app),
         None => {}
     }
+    if let Some(palette) = &app.palette {
+        command_palette(body, buf, theme, palette);
+    }
+    toasts(body, buf, theme, &app.toasts);
+}
+
+/// The command palette: a search box near the top, and what matches it,
+/// grouped, each with its key.
+fn command_palette(
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    palette: &super::app::CommandPalette,
+) {
+    let matches = palette.matches();
+    let width = area.width.saturating_sub(8).min(72);
+    let height = (matches.len() as u16 + 5)
+        .min(area.height.saturating_sub(2))
+        .max(6);
+    let [rect] = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(area);
+    let rect = Rect {
+        y: area.y + 1,
+        height,
+        ..rect
+    };
+    Clear.render(rect, buf);
+    let block = raised_panel(
+        theme,
+        Icon::Pointer,
+        "COMMANDS",
+        "type to find, Enter runs, Esc closes",
+    );
+    let inner = block.inner(rect);
+    block.render(rect, buf);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(format!("{} ", theme.icon(Icon::Pointer)), theme.accent()),
+            Span::styled(palette.query.clone(), theme.value()),
+            Span::styled("_", theme.accent()),
+        ]),
+        Line::default(),
+    ];
+    let rows = inner.height.saturating_sub(2) as usize;
+    let start = palette.cursor.saturating_sub(rows.saturating_sub(1));
+    let mut group = String::new();
+    let label_width = inner.width.saturating_sub(10) as usize;
+    for (index, item) in matches.iter().enumerate().skip(start).take(rows) {
+        let chosen = index == palette.cursor;
+        let style = if chosen {
+            theme.selected()
+        } else {
+            theme.text()
+        };
+        let mut spans = vec![Span::styled(
+            if item.group != group {
+                group.clone_from(&item.group);
+                format!(" {:<10}", widgets::fit(&item.group, 10))
+            } else {
+                " ".repeat(11)
+            },
+            theme.dim(),
+        )];
+        let label = widgets::fit(&item.label, label_width.saturating_sub(16));
+        spans.push(Span::styled(
+            format!(" {label:<width$} ", width = label_width.saturating_sub(16)),
+            style,
+        ));
+        if !item.key.is_empty() {
+            spans.push(Span::styled(format!(" {} ", item.key), theme.key()));
+        }
+        lines.push(Line::from(spans));
+    }
+    if matches.is_empty() {
+        lines.push(widgets::line(theme, "  nothing matches", Tone::Dim));
+    }
+    Paragraph::new(lines)
+        .style(theme.raised())
+        .render(inner, buf);
+}
+
+/// The notices in the top right corner, newest at the bottom.
+fn toasts(area: Rect, buf: &mut Buffer, theme: &Theme, toasts: &[super::app::Toast]) {
+    let mut y = area.y + 1;
+    for toast in toasts {
+        let icon = match toast.tone {
+            Tone::Bad | Tone::Warn => Icon::Problem,
+            Tone::Good => Icon::Ok,
+            _ => Icon::Running,
+        };
+        let text = widgets::fit(
+            &toast.text,
+            (area.width as usize).saturating_sub(12).min(56),
+        );
+        let width = (Span::raw(text.as_str()).width() as u16 + 6).min(area.width);
+        if y + 3 > area.bottom() {
+            break;
+        }
+        let rect = Rect {
+            x: area.right().saturating_sub(width + 1),
+            y,
+            width,
+            height: 3,
+        };
+        Clear.render(rect, buf);
+        let block = ratatui::widgets::Block::new()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_set(theme.border_set())
+            .border_style(theme.tone(toast.tone))
+            .style(theme.raised());
+        let inner = block.inner(rect);
+        block.render(rect, buf);
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {} ", theme.icon(icon)), theme.tone(toast.tone)),
+            Span::styled(text, theme.value()),
+        ]))
+        .style(theme.raised())
+        .render(inner, buf);
+        y += 3;
+    }
 }
 
 fn header_bar(area: Rect, buf: &mut Buffer, app: &App) {
@@ -157,13 +278,9 @@ fn status_bar(area: Rect, buf: &mut Buffer, app: &App) {
             spans.push(Span::styled(format!(" {label}  "), theme.bar()));
         }
     }
-    if let Some((text, tone)) = &app.status {
-        spans.push(Span::styled("  |  ", theme.bar()));
-        let style = match tone {
-            Tone::Bad | Tone::Warn => theme.bar().add_modifier(ratatui::style::Modifier::BOLD),
-            _ => theme.bar(),
-        };
-        spans.push(Span::styled(text.clone(), style));
+    if app.dialog.is_none() && app.palette.is_none() {
+        spans.push(Span::styled(" Ctrl+P ", theme.key()));
+        spans.push(Span::styled(" commands  ", theme.bar()));
     }
     Paragraph::new(Line::from(spans))
         .style(theme.bar())
@@ -696,7 +813,7 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
                 (Some(pending), _) => {
                     let prompt = match &pending.question {
                         Question::Confirm(text) | Question::Review(text) => format!("{text} [y/N]"),
-                        Question::Text(text) => format!("{text} {}", pending.input),
+                        Question::Text(text) => format!("{text} {}_", pending.input),
                     };
                     lines.push(Line::from(widgets::marked(
                         theme,
@@ -704,6 +821,16 @@ fn dialog_box(area: Rect, buf: &mut Buffer, theme: &Theme, dialog: &Dialog) {
                         prompt,
                         Tone::Accent,
                     )));
+                    // A yes-or-no question as buttons: No is the default.
+                    if !matches!(pending.question, Question::Text(_)) {
+                        lines.push(Line::default());
+                        lines.push(Line::from(vec![
+                            Span::styled("   ", theme.raised()),
+                            Span::styled("  n  No  ", theme.selected()),
+                            Span::styled("   ", theme.raised()),
+                            Span::styled("  y  Yes  ", theme.chip()),
+                        ]));
+                    }
                 }
                 (None, Some(Ok(result))) => lines.push(Line::from(widgets::marked(
                     theme,
@@ -889,12 +1016,16 @@ fn hard_wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
 
 fn help(area: Rect, buf: &mut Buffer, app: &App) {
     let theme = &app.theme;
-    let rect = centred(area, 76, 22);
+    let rect = centred(area, 76, 23);
     Clear.render(rect, buf);
     let block = raised_panel(theme, Icon::Settings, "KEYS", "Esc closes");
     let inner = block.inner(rect);
     block.render(rect, buf);
-    let rows: [(&str, &str); 18] = [
+    let rows: [(&str, &str); 19] = [
+        (
+            "Ctrl+P, :",
+            "the command palette: find anything by a few letters",
+        ),
         ("arrows, j k", "choose a VM; Home, End, PgUp, PgDn"),
         ("Enter", "what can be done with the chosen VM"),
         ("v", "its details, live"),
@@ -1141,6 +1272,22 @@ mod tests {
             rows.iter().map(|row| row.to_string()).collect::<Vec<_>>(),
             ["one two ", "three"]
         );
+    }
+
+    #[test]
+    fn the_palette_and_toasts_draw_over_the_screen() {
+        let mut app = app();
+        app.open_palette();
+        app.notify("ran: rampire set vm0 priority=110", Tone::Good);
+        for (width, height) in SIZES {
+            let text = text(&app, width, height);
+            assert!(text.contains("COMMANDS"), "{text}");
+            assert!(text.contains("Details, live"), "{text}");
+            assert!(
+                text.contains("ran: rampire set"),
+                "{width}x{height}\n{text}"
+            );
+        }
     }
 
     #[test]

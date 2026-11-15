@@ -114,6 +114,7 @@ pub fn run(action: &Action, repo: &Path) -> Result<(), String> {
         )?;
     }
     clear_old_packages(&repo.join(output))?;
+    crate::licenses::write(repo, &repo.join("target/packaging/licenses"))?;
     run_status(
         Command::new("bash")
             .arg("packaging/build.sh")

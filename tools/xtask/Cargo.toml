@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 rampire-ops = { path = "../../crates/rampire-ops" }
+serde_json = "1.0"
