@@ -29,6 +29,15 @@ sed 's#/usr/local/libexec/rampire-guest#/usr/libexec/rampire-guest#' \
   guest-linux/systemd/rampire-guest.service > target/packaging/rampire-guest.service
 grep -q '^ExecStart=/usr/libexec/rampire-guest ' target/packaging/rampire-guest.service
 cp target/packaging/rampire-guest.service "$stage/rampire-guest.service"
+# What software centres show and the desktop launcher, checked before they
+# are packaged: a broken file shows nothing in GNOME Software.
+desktop=packaging/io.github.macg4dave.rampire
+for tool in appstreamcli desktop-file-validate xmllint; do
+  command -v "$tool" >/dev/null || { echo "$tool is required (tools/container/Containerfile has it)" >&2; exit 1; }
+done
+appstreamcli validate --no-net --pedantic "$desktop.metainfo.xml"
+desktop-file-validate "$desktop.desktop"
+xmllint --noout "$desktop.policy"
 # Man pages and completions, from the binaries just built.
 bash packaging/docs.sh target/packaging/docs
 

@@ -81,8 +81,9 @@ the pool alone.
 ## Building
 
 ```bash
-tools/build.sh            # the gate, in the build container
-tools/build.sh package    # the packages, into dist/
+tools/build.sh            # the gate, then the packages into dist/, in the build container
+tools/build.sh check      # the gate alone
+tools/build.sh package    # the packages alone, into dist/
 tools/build.sh install    # build them and install the host package here
 ```
 

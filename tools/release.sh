@@ -7,7 +7,8 @@
 #
 # prepare  sets every crate to VERSION, turns CHANGELOG.md's "## Unreleased"
 #          section into VERSION's entry, dated today and named NAME if
-#          given (for example "Linux only"), writes a new minor release's
+#          given (for example "Linux only"), adds the release to the
+#          software-centre metadata, writes a new minor release's
 #          protocol fixtures, and commits "Release VERSION". Nothing leaves
 #          this machine.
 # publish  releases the commit checked out: the clean head of main, with
@@ -185,6 +186,25 @@ prepare() {
   ' CHANGELOG.md > CHANGELOG.md.new
   mv CHANGELOG.md.new CHANGELOG.md
 
+  # Software centres (GNOME Software) show the newest release from the
+  # metainfo, with a link to its changelog entry.
+  local metainfo=packaging/io.github.macg4dave.rampire.metainfo.xml repository
+  repository=$(github_repository)
+  echo >&2 "==> $metainfo: release $version"
+  awk -v version="$version" -v today="$today" -v repository="$repository" '
+    !done && /^  <releases>$/ {
+      print
+      print "    <release version=\"" version "\" date=\"" today "\">"
+      print "      <url type=\"details\">https://github.com/" repository "/blob/v" version "/CHANGELOG.md</url>"
+      print "    </release>"
+      done = 1
+      next
+    }
+    { print }
+    END { if (!done) exit 1 }
+  ' "$metainfo" > "$metainfo.new" || die "$metainfo has no <releases>"
+  mv "$metainfo.new" "$metainfo"
+
   # A controller serves guests of its own minor release and the one
   # before, each checked against the documents that release kept.
   local minor=${version%.*}
@@ -193,7 +213,7 @@ prepare() {
     [[ -d fixtures/protocol/$minor ]] || die "no fixtures/protocol/$minor was written"
   fi
 
-  git add Cargo.lock CHANGELOG.md fixtures/protocol
+  git add Cargo.lock CHANGELOG.md fixtures/protocol "$metainfo"
   for member in $(members); do git add "$member/Cargo.toml"; done
   git commit -q -m "Release $version"
   echo >&2 "==> committed: $(git log -1 --format='%h %s')"

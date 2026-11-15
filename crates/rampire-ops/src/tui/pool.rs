@@ -365,7 +365,13 @@ fn history_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSna
 }
 
 pub(crate) fn events_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
-    let block = panel(theme, Icon::Problem, "EVENTS", "");
+    // A warning only when the journal couldn't be read.
+    let icon = if snapshot.events.is_err() {
+        Icon::Problem
+    } else {
+        Icon::Vm
+    };
+    let block = panel(theme, icon, "EVENTS", "");
     let inner = block.inner(area);
     block.render(area, buf);
     let lines: Vec<Line> = match &snapshot.events {

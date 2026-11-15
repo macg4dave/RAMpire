@@ -146,6 +146,26 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     // `apply` checks every VM: one that fails would stop it at the end.
     other_vms_pass(context, &libvirt, ui, name)?;
 
+    // rampire-guest installs with dpkg or rpm, through a login or on the
+    // disk: a system without them (Home Assistant OS, an appliance with a
+    // read-only root) is told so before anything is changed.
+    if !options.no_guest_install && crate::guest::offline_available() {
+        ui.say(&format!("reading {name}'s disk to see what system it runs"));
+        match crate::guest::inspect_disk(name) {
+            Ok(system) if !system.takes_packages() => {
+                let product = system
+                    .product
+                    .unwrap_or_else(|| "a system RAMpire doesn't recognise".to_owned());
+                return Err(format!(
+                    "{name} runs {product}, which has no dnf or apt, so rampire-guest can't be installed in it; nothing was changed. RAMpire manages Linux VMs that install packages with dnf or apt"
+                ));
+            }
+            Ok(_) => {}
+            // Not read: the install says what is wrong, if anything is.
+            Err(error) => ui.say(&format!("couldn't read {name}'s disk ({error}); going on")),
+        }
+    }
+
     let running = libvirt.state(name)? == "running";
     let changes = inspection.fixable();
     // Every change but saving the requested size takes effect when the VM
@@ -236,95 +256,106 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
             &[("backup", &backup.display().to_string())],
         );
     }
-    // The guest package: a VM that is off gets it on its disk before it
-    // first starts; a running one through a login, else the same way with
-    // it shut down for a moment. An install on the disk runs at the boot.
-    let offline = |running: bool, ui: &mut dyn Ui| -> Result<crate::guest::Installed, String> {
-        ui.say(&format!(
-            "putting rampire-guest on {name}'s disk; it installs as {name} starts"
-        ));
-        let kernel = crate::guest::install_offline(&libvirt, name, running)?;
-        libvirt.virsh(&["start", name])?;
-        ui.say(&format!("{name} started"));
-        Ok(crate::guest::Installed {
-            kernel,
-            build: String::new(),
-            restart_needed: false,
-        })
-    };
-    let mut installed = None;
-    if !running && !options.no_guest_install && crate::guest::offline_available() {
-        installed = Some(offline(false, ui)?);
-    } else if !running {
-        ui.say(&format!("starting {name}"));
-        libvirt.virsh(&["start", name])?;
-        ui.say(&format!("{name} started"));
-    }
-    if !options.no_guest_install && installed.is_none() {
-        ui.say(&format!(
+    // What follows can fail with the definition changed: the error then
+    // says how to go on or go back.
+    #[allow(clippy::redundant_closure_call)]
+    let finished = (|| -> Result<Added, String> {
+        // The guest package: a VM that is off gets it on its disk before it
+        // first starts; a running one through a login, else the same way with
+        // it shut down for a moment. An install on the disk runs at the boot.
+        let offline = |running: bool, ui: &mut dyn Ui| -> Result<crate::guest::Installed, String> {
+            ui.say(&format!(
+                "putting rampire-guest on {name}'s disk; it installs as {name} starts"
+            ));
+            let kernel = crate::guest::install_offline(&libvirt, name, running)?;
+            libvirt.virsh(&["start", name])?;
+            ui.say(&format!("{name} started"));
+            Ok(crate::guest::Installed {
+                kernel,
+                build: String::new(),
+                restart_needed: false,
+            })
+        };
+        let mut installed = None;
+        if !running && !options.no_guest_install && crate::guest::offline_available() {
+            installed = Some(offline(false, ui)?);
+        } else if !running {
+            ui.say(&format!("starting {name}"));
+            libvirt.virsh(&["start", name])?;
+            ui.say(&format!("{name} started"));
+        }
+        if !options.no_guest_install && installed.is_none() {
+            ui.say(&format!(
             "logging in to {name} to install rampire-guest; this waits up to 3 minutes for it to boot"
         ));
-        let logged_in = crate::guest::Guest::reach(
-            &libvirt,
-            name,
-            options.guest_login.as_deref(),
-            Duration::from_secs(180),
-        )
-        .and_then(|guest| {
-            ui.say(&format!(
-                "installing rampire-guest in {name} {}",
-                guest.way()
-            ));
-            guest.install()
-        });
-        installed = Some(match logged_in {
-            Ok(done) => {
+            let logged_in = crate::guest::Guest::reach(
+                &libvirt,
+                name,
+                options.guest_login.as_deref(),
+                Duration::from_secs(180),
+            )
+            .and_then(|guest| {
                 ui.say(&format!(
-                    "{name} has rampire-guest {}, on Linux {}",
-                    done.build, done.kernel
+                    "installing rampire-guest in {name} {}",
+                    guest.way()
                 ));
-                done
-            }
-            Err(why) => {
-                ui.say(&why);
-                // Shut down and started again: its new definition is in.
-                restart = false;
-                offline(true, ui)?
-            }
-        });
-    }
-    if restart
-        || installed
-            .as_ref()
-            .is_some_and(|installed| installed.restart_needed)
-    {
-        ui.say(&format!("shutting {name} down and starting it again"));
-        crate::attest::cold_restart(name, &libvirt, Duration::from_secs(300))?;
-        ui.say(&format!("{name} restarted"));
-    }
+                guest.install()
+            });
+            installed = Some(match logged_in {
+                Ok(done) => {
+                    ui.say(&format!(
+                        "{name} has rampire-guest {}, on Linux {}",
+                        done.build, done.kernel
+                    ));
+                    done
+                }
+                Err(why) => {
+                    ui.say(&why);
+                    // Shut down and started again: its new definition is in.
+                    restart = false;
+                    offline(true, ui)?
+                }
+            });
+        }
+        if restart
+            || installed
+                .as_ref()
+                .is_some_and(|installed| installed.restart_needed)
+        {
+            ui.say(&format!("shutting {name} down and starting it again"));
+            crate::attest::cold_restart(name, &libvirt, Duration::from_secs(300))?;
+            ui.say(&format!("{name} restarted"));
+        }
 
-    if resuming {
-        // Written by the earlier run; kept as it is.
-    } else {
-        let review = if new_review {
-            let kernel = match &installed {
-                Some(installed) => (installed.kernel.clone(), AnswerSource::Detected),
-                None => kernel_release(ui, &libvirt, options, Duration::from_secs(90))?,
-            };
-            Some((answers, kernel))
+        if resuming {
+            // Written by the earlier run; kept as it is.
         } else {
-            None
-        };
-        let chosen = settings.ok_or("no settings were chosen")?;
-        write_vm_settings(ui, &directory, &after, &alias, options, &chosen, review)?;
+            let review = if new_review {
+                let kernel = match &installed {
+                    Some(installed) => (installed.kernel.clone(), AnswerSource::Detected),
+                    None => kernel_release(ui, &libvirt, options, Duration::from_secs(90))?,
+                };
+                Some((answers, kernel))
+            } else {
+                None
+            };
+            let chosen = settings.ok_or("no settings were chosen")?;
+            write_vm_settings(ui, &directory, &after, &alias, options, &chosen, review)?;
+        }
+        if !resuming {
+            crate::audit::record(context, "vm_add", Some(name), &[]);
+        }
+        let changed = super::apply::apply_agreed(context, ui)?;
+        // An install at boot may boot the VM once more.
+        guest_reports_in(context, ui, name, Duration::from_secs(300));
+        Ok(Added::Yes { changed })
+    })();
+    match finished {
+        Err(error) if fixed.is_some() => Err(format!(
+            "{error}\n{name}'s definition was changed before this: rampire vm add {name} tries again, and rampire vm remove {name} puts the old one back"
+        )),
+        finished => finished,
     }
-    if !resuming {
-        crate::audit::record(context, "vm_add", Some(name), &[]);
-    }
-    let changed = super::apply::apply_agreed(context, ui)?;
-    // An install at boot may boot the VM once more.
-    guest_reports_in(context, ui, name, Duration::from_secs(300));
-    Ok(Added::Yes { changed })
 }
 
 /// The new VM's sizes: suggested from its definition, as given otherwise.

@@ -180,7 +180,7 @@ Found a bug? Have an idea? Want to help test another distribution?
 
 - [Open an issue](https://github.com/macg4dave/RAMpire/issues) with your host distribution, QEMU/libvirt versions, what you expected and what happened.
 - [Read the development guide](docs/development.md) if you want to build or modify the code.
-- Run `tools/build.sh` before proposing code changes; it runs the project's formatting, build, test and lint checks in a container, so all you need is Docker or Podman.
+- Run `tools/build.sh` before proposing code changes; it runs the project's formatting, build, test and lint checks in a container, then builds the packages into `dist/`, so all you need is Docker or Podman. `tools/build.sh check` runs the checks alone.
 
 Please avoid posting credentials, private VM data or unredacted logs in public issues.
 

@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What GNOME Software, KDE Discover and other software centres show for
+     the host package: its name, icon, description and releases. Installed
+     as /usr/share/metainfo/io.github.macg4dave.rampire.metainfo.xml by both
+     packagings (rampire.nfpm.yaml, rampire.spec.in). Check it with
+     appstreamcli validate. -->
+<component type="desktop-application">
+  <id>io.github.macg4dave.rampire</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>RAMpire</name>
+  <summary>Share one pool of memory between the VMs on a KVM host</summary>
+  <developer id="io.github.macg4dave">
+    <name>macg4dave</name>
+  </developer>
+
+  <description>
+    <p>
+      Give every virtual machine the memory it needs, when it needs it,
+      instead of the most it might ever need. RAMpire grows a Linux VM's
+      memory while it is busy and takes the spare back when it is idle, so
+      the RAM you own goes where the work is.
+    </p>
+    <p>
+      A small service in each guest watches its memory and asks for more
+      or gives some back. The controller on the host decides, within one
+      shared pool, the limits you set for each VM and a reserve the host
+      always keeps, and resizes the VM live with virtio-mem.
+    </p>
+    <ul>
+      <li>One shared pool instead of every VM holding its maximum</li>
+      <li>A host reserve, and a minimum and maximum for each VM</li>
+      <li>Priorities that decide who is served first when memory is short</li>
+      <li>A full-screen view of the pool and every VM, updated live</li>
+      <li>Adding a VM in one step: its definition fixed and its guest service installed</li>
+      <li>Checks that say what is wrong and how to fix it, and rollback of any change</li>
+    </ul>
+    <p>
+      Open RAMpire to set the host up and add your first VM. It asks for
+      your password, since it manages the host's VMs.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.macg4dave.rampire.desktop</launchable>
+  <icon type="stock">io.github.macg4dave.rampire</icon>
+
+  <categories>
+    <category>System</category>
+    <category>Monitor</category>
+  </categories>
+  <keywords>
+    <keyword>memory</keyword>
+    <keyword>RAM</keyword>
+    <keyword>KVM</keyword>
+    <keyword>libvirt</keyword>
+    <keyword>virtio-mem</keyword>
+    <keyword>virtual machine</keyword>
+  </keywords>
+
+  <url type="homepage">https://github.com/macg4dave/RAMpire</url>
+  <url type="bugtracker">https://github.com/macg4dave/RAMpire/issues</url>
+  <url type="help">https://github.com/macg4dave/RAMpire/blob/main/docs/quick-start.md</url>
+  <url type="vcs-browser">https://github.com/macg4dave/RAMpire</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>How RAMpire moves memory between VMs</caption>
+      <image>https://raw.githubusercontent.com/macg4dave/RAMpire/main/docs/Mascot/info_diag.png</image>
+    </screenshot>
+  </screenshots>
+
+  <provides>
+    <binary>rampire</binary>
+  </provides>
+  <recommends>
+    <control>keyboard</control>
+  </recommends>
+  <supports>
+    <control>console</control>
+  </supports>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.5.0" date="2026-11-15">
+      <description>
+        <p>
+          The first release: the controller for a Linux KVM host and the
+          Linux guest service, as packages for x86-64.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>

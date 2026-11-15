@@ -30,8 +30,9 @@ Every change passes the gate before review. One command runs it from any
 workstation with Docker or Podman, Windows and macOS included:
 
 ```bash
-tools/build.sh                       # the gate
-tools/build.sh package --static      # the packages, into dist/
+tools/build.sh                       # the gate, then the packages into dist/
+tools/build.sh check                 # the gate alone
+tools/build.sh package --static      # the packages alone, into dist/
 tools/build.sh install-check         # install dist/ on clean Debian 13, Rocky 10 and Fedora 45
 ```
 
@@ -41,6 +42,12 @@ release build, all tests and Clippy with warnings denied for every
 Linux-buildable crate, and `bash -n` on every shell script. On a Windows
 workstation with Rust it also runs the Windows guest's tests and Clippy
 natively.
+
+If Podman says `default OCI runtime "crun" not found` although crun is
+installed, its rootless database still names another user ID's
+`/run/user/UID` (a home folder copied from another machine). Move
+`~/.local/share/containers/storage/db.sql` aside; Podman writes a new one.
+`podman --log-level=debug info` shows the folder it can't create.
 
 The build container is
 [tools/container/Containerfile](../tools/container/Containerfile): Rust,

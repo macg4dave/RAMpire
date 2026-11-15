@@ -464,9 +464,7 @@ pub fn render_task(
     match (&task.pending, &task.state) {
         (Some(pending), _) => {
             let question = match pending.question {
-                Question::Confirm(_) | Question::Review(_) => {
-                    format!("{} [y/N]", pending.question.text())
-                }
+                Question::Confirm(_) | Question::Review(_) => pending.question.text().to_owned(),
                 Question::Text(_) | Question::Edit(..) => pending.question.text().to_owned(),
             };
             lines.push(Line::from(widgets::marked(

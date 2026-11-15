@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Build and test RAMpire the same way on any workstation.
 #
-#   tools/build.sh [--container | --host HOST | --local] [XTASK ARGUMENTS...]
+#   tools/build.sh [--container | --host HOST | --local] [check | XTASK ARGUMENTS...]
 #   tools/build.sh install-check [DIRECTORY]
 #   tools/build.sh install
 #
-# With no arguments it runs the gate: a whitespace check here, then format,
-# release build, tests, Clippy and shell syntax for every Linux-buildable
-# crate (cargo xtask gate checks). Anything else is passed to cargo xtask,
+# With no arguments it runs the gate, then builds the packages into dist/:
+# the gate is a whitespace check here, then format, release build, tests,
+# Clippy and shell syntax for every Linux-buildable crate (cargo xtask gate
+# checks); the packages are cargo xtask package, by the same builder.
+# `check` runs the gate alone. Anything else is passed to cargo xtask,
 # for example `tools/build.sh package --static`, and a package's output
 # directory (dist/ unless --output says otherwise) is copied back here.
 # `tools/build.sh fixtures` writes this release's protocol fixtures
@@ -85,15 +87,21 @@ if [[ ${1:-} == install-check ]]; then
   if command -v cygpath >/dev/null; then packages=$(cygpath -m "$packages"); fi
   export MSYS_NO_PATHCONV=1
   failed=0
-  for image in ${RAMPIRE_INSTALL_IMAGES:-debian:trixie rockylinux/rockylinux:10 fedora:45}; do
+  # Images by their full names: podman won't pick a registry for a short
+  # one without a terminal to ask on.
+  images="docker.io/library/debian:trixie docker.io/rockylinux/rockylinux:10"
+  images+=" registry.fedoraproject.org/fedora:45"
+  for image in ${RAMPIRE_INSTALL_IMAGES:-$images}; do
     echo >&2 "==> installing the packages on $image"
-    if "$engine" run --rm -v "$packages:/dist:ro" "$image" bash -c '
+    # z labels the packages for containers on an SELinux host, which
+    # can't read them otherwise; elsewhere it does nothing.
+    if "$engine" run --rm -v "$packages:/dist:ro,z" "$image" bash -c '
       set -eu
       if command -v apt-get >/dev/null; then
-        apt-get update -qq >/dev/null
-        apt-get install -y -qq /dist/rampire_*_amd64.deb /dist/rampire-guest_*_amd64.deb >/tmp/install.log 2>&1           || { tail -20 /tmp/install.log; exit 1; }
+        apt-get -o Acquire::Retries=5 update -qq >/dev/null
+        apt-get -o Acquire::Retries=5 install -y -qq /dist/rampire_*_amd64.deb /dist/rampire-guest_*_amd64.deb >/tmp/install.log 2>&1           || { grep -E "^(dpkg|E|error|Error)[: ]|warning: |scriptlet" /tmp/install.log | head -40; echo ...; tail -20 /tmp/install.log; exit 1; }
       else
-        dnf install -y -q /dist/rampire-[0-9]*.x86_64.rpm /dist/rampire-guest-[0-9]*.x86_64.rpm >/tmp/install.log 2>&1           || { tail -20 /tmp/install.log; exit 1; }
+        dnf install -y -q --setopt=retries=10 /dist/rampire-[0-9]*.x86_64.rpm /dist/rampire-guest-[0-9]*.x86_64.rpm >/tmp/install.log 2>&1           || { grep -E "^(dpkg|E|error|Error)[: ]|warning: |scriptlet" /tmp/install.log | head -40; echo ...; tail -20 /tmp/install.log; exit 1; }
       fi
       echo "host:  $(rampire --version)"
       echo "guest: $(/usr/libexec/rampire-guest version)"
@@ -112,7 +120,14 @@ if [[ ${1:-} == install-check ]]; then
 fi
 
 gate=0
+# The packages are built once the gate passes: with no arguments.
+then_package=0
 if (( $# == 0 )); then
+  then_package=1
+  set -- check
+fi
+if [[ $1 == check ]]; then
+  (( $# == 1 )) || { echo 'check takes no arguments' >&2; exit 1; }
   gate=1
   set -- gate checks
 fi
@@ -142,11 +157,15 @@ if [[ $1 == fixtures ]]; then
   output=fixtures/protocol
 fi
 
+# Temporary files and folders, removed however the script ends.
+temporary=()
+trap 'rm -rf "${temporary[@]}"' EXIT
+
 if (( gate )); then
   # Snapshot the working tree as a Git tree object without touching the
   # user's index: a temporary index takes every non-ignored file.
   index=$(mktemp)
-  trap 'rm -f "$index"' EXIT
+  temporary+=("$index")
   rm -f "$index"
   GIT_INDEX_FILE=$index git -c core.safecrlf=false add -A
   tree=$(GIT_INDEX_FILE=$index git write-tree)
@@ -160,6 +179,23 @@ fi
 clear_output() {
   [[ -d $output ]] || return 0
   find "$output" -maxdepth 1 -type f \( -name SHA256SUMS -o     \( -name 'rampire*' \( -name '*.rpm' -o -name '*.deb' -o -name '*.tar.gz' \) \) \) -delete
+}
+
+# Take a tar of the output directory on stdin into a folder of its own,
+# then, once it has all arrived, put it in place of what an earlier build
+# left: a build that fails or is stopped leaves the earlier packages.
+# It runs on the right of a pipe, so its folder, $received, is made first.
+received=
+if [[ -n $output ]]; then
+  received=$(mktemp -d)
+  temporary+=("$received")
+fi
+receive_output() {
+  tar -x -f - -C "$received"
+  [[ -d $received/$output ]] || { echo "the build sent no $output/" >&2; return 1; }
+  clear_output
+  mkdir -p "$output"
+  cp -a "$received/$output/." "$output/"
 }
 
 # The files sent to a builder, as a tar stream on stdout.
@@ -203,7 +239,7 @@ case $builder in
         cargo run --quiet --locked -p xtask -- "$@"
         if [ -n "$RAMPIRE_BUILD_OUTPUT" ]; then tar -c -f - "$RAMPIRE_BUILD_OUTPUT" >&3; fi
       ' bash "$@" |
-      if [[ -n $output ]]; then clear_output; tar -x -f -; else cat; fi
+      if [[ -n $output ]]; then receive_output; else cat; fi
     ;;
   host)
     remote_dir=${RAMPIRE_BUILD_DIR:-}
@@ -232,8 +268,7 @@ case $builder in
       . \"\$HOME/.cargo/env\" 2>/dev/null || true
       cargo run --quiet --locked -p xtask --$quoted"
     if [[ -n $output ]]; then
-      clear_output
-      "$ssh" -o BatchMode=yes "$host" "tar -c -C '$remote_dir/src' -f - '$output'" | tar -x -f -
+      "$ssh" -o BatchMode=yes "$host" "tar -c -C '$remote_dir/src' -f - '$output'" | receive_output
     fi
     ;;
 esac
@@ -293,4 +328,16 @@ if (( gate )); then
       ;;
   esac
   echo >&2 "==> gate passed for tree ${tree:0:12}"
+fi
+if (( then_package )); then
+  # The same builder, run again for the packages; it reuses the gate's
+  # release build.
+  case $builder in
+    container) again=(--container) ;;
+    local) again=(--local) ;;
+    host) again=(--host "$host") ;;
+  esac
+  rm -rf -- "${temporary[@]}"
+  temporary=()
+  exec "$0" "${again[@]}" package
 fi

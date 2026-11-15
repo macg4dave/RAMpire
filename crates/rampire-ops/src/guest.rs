@@ -365,6 +365,56 @@ fi
 /// here), put the packages on its disk and an install that runs at its
 /// next boot. The VM is left shut off for the caller to start. Returns
 /// its newest installed kernel.
+/// What a VM's disk says about the system on it, read with
+/// virt-inspector: its name, and the package format its package manager
+/// installs, `rpm` or `deb`, when it has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskSystem {
+    pub product: Option<String>,
+    pub package_format: Option<String>,
+}
+
+impl DiskSystem {
+    /// rampire-guest installs as an RPM or a .deb, however it gets there.
+    pub fn takes_packages(&self) -> bool {
+        matches!(self.package_format.as_deref(), Some("rpm" | "deb"))
+    }
+
+    fn from_inspector(xml: &str) -> Self {
+        let first = |tag: &str| {
+            let open = format!("<{tag}>");
+            let start = xml.find(&open)? + open.len();
+            let end = xml[start..].find(&format!("</{tag}>"))? + start;
+            Some(xml[start..end].trim().to_owned()).filter(|text| !text.is_empty())
+        };
+        Self {
+            product: first("product_name"),
+            package_format: first("package_format").filter(|format| format != "unknown"),
+        }
+    }
+}
+
+/// Read the system on `vm`'s disk, read-only. libguestfs runs QEMU
+/// itself (its direct backend) and reads a snapshot of the disk, so a
+/// running VM can be read too: libvirt's own backend can't take a running
+/// VM's locked disk.
+pub fn inspect_disk(vm: &str) -> Result<DiskSystem, String> {
+    let output = Command::new("virt-inspector")
+        .env("LIBGUESTFS_BACKEND", "direct")
+        .args(["-d", vm, "--no-applications", "--no-icon"])
+        .output()
+        .map_err(|error| format!("run virt-inspector: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "virt-inspector: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(DiskSystem::from_inspector(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
 pub fn install_offline(libvirt: &Libvirt, vm: &str, running: bool) -> Result<String, String> {
     if !offline_available() {
         return Err(
@@ -383,6 +433,22 @@ pub fn install_offline(libvirt: &Libvirt, vm: &str, running: bool) -> Result<Str
     if running {
         crate::attest::shut_down(vm, libvirt, Duration::from_secs(300))?;
     }
+    let installed = put_on_disk(vm);
+    // A VM shut down for the install is started again whatever happened,
+    // so a failed install doesn't leave it off.
+    if let (true, Err(failed)) = (running, &installed) {
+        if let Err(error) = libvirt.virsh(&["start", vm]) {
+            return Err(format!(
+                "{failed}; and {vm}, shut down for the install, didn't start again: {error}"
+            ));
+        }
+    }
+    installed
+}
+
+/// The guest packages and the first-boot script that installs them, put on
+/// the shut-down `vm`'s disk; its newest kernel release.
+fn put_on_disk(vm: &str) -> Result<String, String> {
     let modules = tool("virt-ls", &["-d", vm, "/lib/modules"])?;
     let kernel = newest(
         modules
@@ -632,5 +698,21 @@ mod tests {
             let encoded = crate::tui::term::base64(text.as_bytes());
             assert_eq!(base64_decode(&encoded), text.as_bytes(), "{encoded}");
         }
+    }
+
+    #[test]
+    fn a_disk_without_rpm_or_deb_takes_no_packages() {
+        let haos = "<operatingsystems><operatingsystem><root>/dev/sda8</root>\
+            <name>linux</name><product_name>Home Assistant OS 18.4</product_name>\
+            <package_format>unknown</package_format></operatingsystem></operatingsystems>";
+        let system = DiskSystem::from_inspector(haos);
+        assert_eq!(system.product.as_deref(), Some("Home Assistant OS 18.4"));
+        assert_eq!(system.package_format, None);
+        assert!(!system.takes_packages());
+        let debian = "<operatingsystem><distro>debian</distro>\
+            <product_name>Debian GNU/Linux 13</product_name>\
+            <package_format>deb</package_format><package_management>apt</package_management>";
+        assert!(DiskSystem::from_inspector(debian).takes_packages());
+        assert_eq!(DiskSystem::from_inspector("").product, None);
     }
 }

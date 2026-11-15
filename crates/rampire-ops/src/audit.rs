@@ -12,12 +12,37 @@ use crate::process;
 /// `rampire logs` and `journalctl -t rampire` show both.
 pub const IDENTIFIER: &str = "rampire";
 
-/// The person behind the command: the one who ran sudo, else the account.
+/// The person behind the command: the one who ran sudo, or pkexec (as the
+/// desktop launcher does), else the account.
 pub fn person() -> String {
-    ["SUDO_USER", "USER", "LOGNAME"]
-        .iter()
-        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+    let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    var("SUDO_USER")
+        .or_else(|| var("PKEXEC_UID").and_then(|uid| user_name(&uid)))
+        .or_else(|| var("USER"))
+        .or_else(|| var("LOGNAME"))
         .unwrap_or_else(|| "root".to_owned())
+}
+
+/// The account name of user ID `uid`, from the system's user database
+/// (local or a directory service); the ID itself when it has none.
+fn user_name(uid: &str) -> Option<String> {
+    if uid.is_empty() || !uid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let entry = process::bounded_text(
+        "getent",
+        &[process::os("passwd"), process::os(uid)],
+        Path::new("/"),
+        Duration::from_secs(5),
+    )
+    .ok();
+    Some(
+        entry
+            .as_deref()
+            .and_then(|line| line.split(':').next())
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| uid.to_owned(), str::to_owned),
+    )
 }
 
 /// The journal line for a change: `action` on `vm` (or the host), with
@@ -112,5 +137,12 @@ mod tests {
             crate::journal::field(&text, "reason"),
             Some("checked the guest by hand")
         );
+    }
+
+    #[test]
+    fn a_pkexec_user_id_is_named() {
+        assert_eq!(super::user_name("0").as_deref(), Some("root"));
+        assert_eq!(super::user_name("root"), None, "only a number is looked up");
+        assert_eq!(super::user_name(""), None);
     }
 }

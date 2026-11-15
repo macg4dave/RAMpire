@@ -40,6 +40,8 @@ scripts:
 recommends:
   - qemu-guest-agent
 # The unit opens the control channel with OpenFile=, new in systemd 253.
+rpm:
+  summary: The guest side of RAMpire
 overrides:
   rpm:
     depends:

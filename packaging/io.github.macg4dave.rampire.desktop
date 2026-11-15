@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=RAMpire
+GenericName=VM Memory Manager
+Comment=Share one pool of memory between the VMs on this host
+# The TUI manages the host's VMs, so it runs as root: pkexec asks for the
+# password (the io.github.macg4dave.rampire.tui polkit action).
+Exec=pkexec /usr/bin/rampire
+TryExec=/usr/bin/rampire
+Terminal=true
+Icon=io.github.macg4dave.rampire
+Categories=System;Monitor;
+Keywords=memory;RAM;KVM;libvirt;virtio-mem;VM;virtual machine;
+StartupNotify=false

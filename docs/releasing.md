@@ -117,3 +117,31 @@ These pieces exist but nothing publishes them yet
 
 Until then hosts install the release's package files directly
 ([quick start](quick-start.md#1-install)).
+
+## Software centres
+
+The host package carries what GNOME Software and other software centres
+show: `packaging/io.github.macg4dave.rampire.metainfo.xml` (name,
+summary, description, links, releases), the icon from the mascot in
+`packaging/icons/hicolor/`, and a desktop launcher that opens the TUI
+through `pkexec` (`packaging/io.github.macg4dave.rampire.desktop` and
+`.policy`). `packaging/build.sh` and the spec's `%check` validate them.
+`tools/release.sh prepare` adds each release to the metainfo.
+
+Opening a downloaded `.rpm` in GNOME Software shows RAMpire with its icon
+and description, installs it, and opening a newer one upgrades it.
+Software offers updates by itself only from a repository: when COPR
+publishes the RPMs, turn on **Generate AppStream metadata** in the COPR
+project's settings, so Software lists RAMpire with its icon and its
+updates.
+
+The icons are made from `docs/Mascot/Hero_Logo_Rampire.png`; after
+changing the logo, make them again with ImageMagick:
+
+```bash
+for n in 64 128 256 512; do
+  magick docs/Mascot/Hero_Logo_Rampire.png -trim +repage -background none \
+    -gravity center -extent '%[fx:max(w,h)]x%[fx:max(w,h)]' -resize ${n}x$n \
+    -strip PNG32:packaging/icons/hicolor/${n}x$n/apps/io.github.macg4dave.rampire.png
+done
+```

@@ -58,6 +58,29 @@ contents:
   - src: "./target/packaging/guest/rampire-guest.rpm"
     dst: /usr/share/rampire/guest/rampire-guest.rpm
     file_info: { mode: 0644 }
+  # What software centres such as GNOME Software show, and the launcher
+  # that opens the TUI from the desktop (as root, through pkexec).
+  - src: "./packaging/io.github.macg4dave.rampire.metainfo.xml"
+    dst: /usr/share/metainfo/io.github.macg4dave.rampire.metainfo.xml
+    file_info: { mode: 0644 }
+  - src: "./packaging/io.github.macg4dave.rampire.desktop"
+    dst: /usr/share/applications/io.github.macg4dave.rampire.desktop
+    file_info: { mode: 0644 }
+  - src: "./packaging/io.github.macg4dave.rampire.policy"
+    dst: /usr/share/polkit-1/actions/io.github.macg4dave.rampire.policy
+    file_info: { mode: 0644 }
+  - src: "./packaging/icons/hicolor/64x64/apps/io.github.macg4dave.rampire.png"
+    dst: /usr/share/icons/hicolor/64x64/apps/io.github.macg4dave.rampire.png
+    file_info: { mode: 0644 }
+  - src: "./packaging/icons/hicolor/128x128/apps/io.github.macg4dave.rampire.png"
+    dst: /usr/share/icons/hicolor/128x128/apps/io.github.macg4dave.rampire.png
+    file_info: { mode: 0644 }
+  - src: "./packaging/icons/hicolor/256x256/apps/io.github.macg4dave.rampire.png"
+    dst: /usr/share/icons/hicolor/256x256/apps/io.github.macg4dave.rampire.png
+    file_info: { mode: 0644 }
+  - src: "./packaging/icons/hicolor/512x512/apps/io.github.macg4dave.rampire.png"
+    dst: /usr/share/icons/hicolor/512x512/apps/io.github.macg4dave.rampire.png
+    file_info: { mode: 0644 }
   - src: "./LICENSE"
     dst: /usr/share/doc/rampire/LICENSE
     file_info: { mode: 0644 }
@@ -85,6 +108,8 @@ scripts:
   postinstall: "./packaging/scripts/host-postinstall.sh"
   preremove: "./packaging/scripts/host-preremove.sh"
   postremove: "./packaging/scripts/host-postremove.sh"
+rpm:
+  summary: Shares a pool of RAM between the VMs on a KVM host
 overrides:
   rpm:
     depends:

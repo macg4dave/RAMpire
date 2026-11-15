@@ -33,6 +33,11 @@ sha256sum -c --ignore-missing SHA256SUMS
 apt install "./rampire_${version}_amd64.deb"
 ```
 
+On a desktop, you can instead open the `.rpm` in GNOME Software, which
+shows RAMpire with its icon and description and installs it; opening a
+newer one upgrades it. **RAMpire** is then in the applications: it opens
+the TUI in a terminal after asking for your password.
+
 The package manager brings in what the host package needs, and libvirt's
 disk tools as a recommendation (`guestfs-tools`; on Debian
 `libguestfs-tools`). You need only the host package: it carries the

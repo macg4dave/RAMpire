@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Opening RAMpire from the desktop: pkexec runs the TUI as root after an
+     administrator's password, kept for a few minutes. The desktop entry,
+     io.github.macg4dave.rampire.desktop, runs pkexec /usr/bin/rampire. -->
+<policyconfig>
+  <vendor>RAMpire</vendor>
+  <vendor_url>https://github.com/macg4dave/RAMpire</vendor_url>
+  <icon_name>io.github.macg4dave.rampire</icon_name>
+  <action id="io.github.macg4dave.rampire.tui">
+    <description>Open RAMpire</description>
+    <message>Authentication is required to manage this host's VM memory with RAMpire</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/rampire</annotate>
+  </action>
+</policyconfig>

@@ -482,9 +482,9 @@ mod tests {
         for (width, height) in SIZES {
             let text = text(&app, width, height);
             assert!(text.contains("rampire vm add newvm"), "{text}");
-            assert!(text.contains("like this? [y/N]"), "{text}");
+            assert!(text.contains("like this?"), "{text}");
             assert!(
-                text.contains("y  Yes") && text.contains("1 asks (w)"),
+                text.contains("Yes (y)") && text.contains("1 asks (w)"),
                 "{text}"
             );
         }
@@ -560,7 +560,7 @@ mod tests {
         ));
         for (width, height) in SIZES {
             let text = text(&app, width, height);
-            assert!(text.contains("restart rampire.service? [y/N]"), "{text}");
+            assert!(text.contains("restart rampire.service?"), "{text}");
         }
     }
 

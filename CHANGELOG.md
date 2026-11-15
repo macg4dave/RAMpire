@@ -32,6 +32,25 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 - The TUI's events panel and its notices of other people's changes work
   again: an event line that starts with `event=` was missed, and
   journalctl's "nothing matched" was taken for a failure.
+- A yes-or-no question in the TUI marks the chosen button with arrows as
+  well as its colour, leaves the other plain, and says what Enter
+  answers, so No marked first can't be taken for Yes.
+- `vm add` reads the VM's disk first and refuses, before changing
+  anything, a VM whose system has no dnf or apt (Home Assistant OS, for
+  one), where rampire-guest can't be installed. A VM shut down to put the
+  guest package on its disk is started again if that fails, and an add
+  that fails after changing the definition says how to retry or go back.
+- The TUI's events panel shows a warning icon only when the journal
+  can't be read.
+- The host package shows in GNOME Software and other software centres
+  with RAMpire's icon, summary, description and links, and installs from
+  there; opening a newer `.rpm` upgrades it. **RAMpire** is in the
+  desktop's applications too, and opens the TUI in a terminal after
+  asking for your password (pkexec); the journal names you as the person.
+- `tools/build.sh` with no arguments runs the gate and then builds the
+  packages into `dist/`; `tools/build.sh check` runs the gate alone. A
+  build that fails or is stopped leaves the earlier packages in `dist/`,
+  and `install-check` works with Podman on SELinux hosts.
 - The TUI's VM list asks an unmanaged VM's guest agent for RAMpire's
   files at most every 5 minutes (and again when the VM restarts, or on
   `r`), instead of every 30 seconds, so libvirt's log isn't filled with

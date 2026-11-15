@@ -222,26 +222,35 @@ pub fn wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     rows
 }
 
-/// A yes-or-no question's buttons, each centred in its half of `width`, as
-/// Yazi lays them out; the chosen one stands out.
+/// A yes-or-no question's buttons, No then Yes, and what Enter answers.
+/// The chosen one is marked with arrows as well as its colour, so it shows
+/// in every theme and without colour; the other has no background, so the
+/// two can't be taken for each other.
 pub fn buttons(theme: &Theme, width: u16, yes: bool) -> Line<'static> {
-    let half = usize::from(width / 2);
-    let button = |label: &str, chosen: bool| {
-        let text = format!("  {label}  ");
-        let pad = half.saturating_sub(text.chars().count());
-        let style = if chosen {
-            theme.selected()
-        } else {
-            theme.chip()
-        };
-        vec![
-            Span::styled(" ".repeat(pad / 2), theme.raised()),
-            Span::styled(text, style),
-            Span::styled(" ".repeat(pad - pad / 2), theme.raised()),
-        ]
+    let (left, right) = if theme.icons.unicode {
+        ("▶", "◀")
+    } else {
+        (">", "<")
     };
-    let mut spans = button("n  No", !yes);
-    spans.extend(button("y  Yes", yes));
+    let button = |label: &str, chosen: bool| {
+        if chosen {
+            Span::styled(format!(" {left} {label} {right} "), theme.selected())
+        } else {
+            Span::styled(format!("   {label}   "), theme.text())
+        }
+    };
+    let chosen = if yes { "Yes" } else { "No" };
+    let mut spans = vec![
+        Span::styled("  ", theme.raised()),
+        button("No (n)", !yes),
+        Span::styled("   ", theme.raised()),
+        button("Yes (y)", yes),
+    ];
+    let hint = format!("   Enter answers {chosen}; arrows change it");
+    let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+    if used + hint.chars().count() <= usize::from(width) {
+        spans.push(Span::styled(hint, theme.dim()));
+    }
     Line::from(spans)
 }
 
@@ -298,12 +307,22 @@ mod tests {
     }
 
     #[test]
-    fn each_button_is_centred_in_its_half() {
+    fn the_chosen_button_is_marked_and_enter_says_what_it_answers() {
         let theme = Theme::new(Palette::Midnight, Depth::None, Icons { unicode: true });
-        let line = buttons(&theme, 40, false).to_string();
-        assert_eq!(line.chars().count(), 40);
-        let no = line.find("n  No").unwrap();
-        let yes = line.find("y  Yes").unwrap();
-        assert!(no < 20 && yes >= 20, "{line}");
+        let no = buttons(&theme, 80, false).to_string();
+        assert!(no.contains("▶ No (n) ◀"), "{no}");
+        assert!(no.contains("   Yes (y)   "), "{no}");
+        assert!(no.contains("Enter answers No"), "{no}");
+        let yes = buttons(&theme, 80, true).to_string();
+        assert!(
+            yes.contains("▶ Yes (y) ◀") && yes.contains("Enter answers Yes"),
+            "{yes}"
+        );
+        // Narrow, the buttons stay and the hint goes.
+        let narrow = buttons(&theme, 30, false).to_string();
+        assert!(
+            narrow.contains("▶ No (n) ◀") && !narrow.contains("Enter"),
+            "{narrow}"
+        );
     }
 }
