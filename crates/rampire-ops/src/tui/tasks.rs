@@ -16,7 +16,7 @@ use ratatui::widgets::{Clear, Paragraph, Widget};
 
 use super::actions::Action;
 use super::input::{History, Input};
-use super::jobs::{Answer, Question, TaskId};
+use super::jobs::{Answer, Ended, Question, TaskId};
 use super::scroll::{Pager, Scroll};
 use super::theme::{Icon, Theme};
 use super::widgets::{self, raised_panel};
@@ -29,6 +29,9 @@ pub enum State {
     Waiting,
     Running,
     Done(String),
+    /// It ended without doing what it was for, changing nothing, such as
+    /// when No was answered.
+    NotDone(String),
     Failed(String),
     /// Taken off the queue before it ran.
     Cancelled,
@@ -36,7 +39,10 @@ pub enum State {
 
 impl State {
     pub fn finished(&self) -> bool {
-        matches!(self, Self::Done(_) | Self::Failed(_) | Self::Cancelled)
+        matches!(
+            self,
+            Self::Done(_) | Self::NotDone(_) | Self::Failed(_) | Self::Cancelled
+        )
     }
 }
 
@@ -75,10 +81,14 @@ impl Task {
         self.lines.push((line, tone));
     }
 
-    /// A change it showed, such as a diff: additions good, removals bad.
+    /// A change it showed, such as a diff: additions good, removals bad,
+    /// and a line starting `!` a warning.
     pub fn show(&mut self, text: &str) {
         for line in text.replace('\t', "    ").lines() {
-            let tone = if line.starts_with('+') && !line.starts_with("+++") {
+            let tone = if line.trim_start().starts_with("! ") {
+                // A warning in what a flow will do.
+                Tone::Warn
+            } else if line.starts_with('+') && !line.starts_with("+++") {
                 Tone::Good
             } else if line.starts_with('-') && !line.starts_with("---") {
                 Tone::Bad
@@ -109,6 +119,7 @@ impl Task {
             (State::Running, None) => (format!("Running for {seconds}s"), Tone::Info),
             (State::Waiting, _) => ("Waiting for the task before it".to_owned(), Tone::Dim),
             (State::Done(result), _) => (format!("Done in {seconds}s: {result}"), Tone::Good),
+            (State::NotDone(result), _) => (format!("Not done: {result}"), Tone::Warn),
             (State::Failed(error), _) => (
                 format!("Failed after {seconds}s: {error} (Enter for its output)"),
                 Tone::Bad,
@@ -204,7 +215,7 @@ impl Tasks {
     }
 
     /// Task `id` ended with `result`.
-    pub fn finish(&mut self, id: TaskId, result: Result<String, String>, now: Instant) {
+    pub fn finish(&mut self, id: TaskId, result: Result<Ended, String>, now: Instant) {
         let Some(task) = self.get_mut(id) else {
             return;
         };
@@ -212,7 +223,8 @@ impl Tasks {
         task.ended = Some(now);
         let failed = result.is_err();
         task.state = match result {
-            Ok(done) => State::Done(done),
+            Ok(Ended::Done(done)) => State::Done(done),
+            Ok(Ended::NotDone(text)) => State::NotDone(text),
             Err(error) => State::Failed(error),
         };
         self.batch.finished += 1;
@@ -375,6 +387,7 @@ pub fn render_list(area: Rect, buf: &mut Buffer, theme: &Theme, tasks: &Tasks, n
         let (status, tone) = task.status(now);
         let icon = match task.state {
             State::Done(_) => Icon::Ok,
+            State::NotDone(_) => Icon::Stopped,
             State::Failed(_) => Icon::Problem,
             State::Waiting | State::Cancelled => Icon::Stopped,
             State::Running => Icon::Running,
@@ -454,7 +467,7 @@ pub fn render_task(
                 Question::Confirm(_) | Question::Review(_) => {
                     format!("{} [y/N]", pending.question.text())
                 }
-                Question::Text(_) => pending.question.text().to_owned(),
+                Question::Text(_) | Question::Edit(..) => pending.question.text().to_owned(),
             };
             lines.push(Line::from(widgets::marked(
                 theme,
@@ -468,6 +481,12 @@ pub fn render_task(
             Icon::Ok,
             result.clone(),
             Tone::Good,
+        ))),
+        (None, State::NotDone(result)) => lines.push(Line::from(widgets::marked(
+            theme,
+            Icon::Stopped,
+            result.clone(),
+            Tone::Warn,
         ))),
         (None, State::Failed(error)) => {
             lines.push(Line::from(widgets::marked(
@@ -487,6 +506,27 @@ pub fn render_task(
             "Waiting for the task before it to finish.",
             Tone::Dim,
         )),
+        (None, State::Running) => {
+            // Still at work between the lines it says, which can be minutes
+            // apart, as when a VM boots.
+            let seconds = task.elapsed(now).map_or(0, |elapsed| elapsed.as_secs());
+            let frames: &[&str] = if theme.icons.unicode {
+                &["◐", "◓", "◑", "◒"]
+            } else {
+                &["|", "/", "-", "\\"]
+            };
+            let frame = frames[seconds as usize % frames.len()];
+            let stopping = if task.cancel {
+                "; it stops at its next question"
+            } else {
+                ""
+            };
+            lines.push(widgets::line(
+                theme,
+                format!("{frame} working, {seconds}s so far{stopping}"),
+                Tone::Info,
+            ));
+        }
         _ => {}
     }
     let rows: Vec<Line<'static>> = lines
@@ -496,7 +536,7 @@ pub fn render_task(
     // The question's answer area under the text: the buttons, or the field.
     let answer = match &task.pending {
         Some(pending) => match pending.question {
-            Question::Text(_) => Some(Line::from(
+            Question::Text(_) | Question::Edit(..) => Some(Line::from(
                 std::iter::once(Span::styled(
                     format!("{} ", theme.icon(Icon::Pointer)),
                     theme.accent(),
@@ -552,7 +592,7 @@ mod tests {
         assert_eq!(action, Action::Apply);
         assert_eq!(tasks.start_next(now), None, "one at a time");
         assert_eq!(tasks.summary().total, 2);
-        tasks.finish(first, Ok("done".to_owned()), now);
+        tasks.finish(first, Ok("done".to_owned().into()), now);
         let (second, _) = tasks.start_next(now).expect("then the next");
         assert_eq!(second, 2);
         tasks.finish(second, Err("it broke".to_owned()), now);
@@ -619,7 +659,23 @@ mod tests {
         );
         let text = widgets::plain_text(&buf);
         assert!(text.contains("checking"), "{text}");
+        // Between the lines it says, it shows it is still at work.
+        assert!(text.contains("working, 0s so far"), "{text}");
         let gauge = gauge(&theme, &tasks, 20).unwrap().to_string();
         assert!(gauge.contains("2 left"), "{gauge}");
+        // A task that changed nothing, as when No was answered, says so
+        // rather than done.
+        tasks.finish(
+            first,
+            Ok(Ended::NotDone("web is not added".to_owned())),
+            now,
+        );
+        let task = tasks.get(first).unwrap();
+        assert_eq!(task.state, State::NotDone("web is not added".to_owned()));
+        let mut buf = Buffer::empty(area);
+        render_task(area, &mut buf, &theme, &History::default(), task, now);
+        let text = widgets::plain_text(&buf);
+        assert!(text.contains("web is not added"), "{text}");
+        assert!(!text.contains("working"), "{text}");
     }
 }

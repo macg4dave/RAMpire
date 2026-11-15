@@ -49,9 +49,16 @@ rampire init
 `init` first checks the host: libvirt and QEMU versions, the service
 account and libvirt access. If something is missing it says what and how
 to fix it, and changes nothing. Otherwise it reads the host's memory and
-its VMs, writes `/etc/rampire/global.toml` with a suggested pool and host
-reserve, applies it, and starts the controller, which also starts at boot.
-It now runs, managing no VMs yet.
+its VMs and asks how much memory the host keeps for itself, with the
+recommended reserve filled in: Enter keeps it, or type your own
+(`--host-reserve SIZE` answers it for a script). It writes
+`/etc/rampire/global.toml` with that reserve and the pool it leaves,
+applies it, and starts the controller, which also starts at boot. It now
+runs, managing no VMs yet.
+
+The TUI (`sudo rampire`) does the same on a host that isn't set up yet:
+it opens **Set up this host** first, with the reserve filled in and the
+pool it leaves shown as you change it.
 
 ## 3. Add the VM
 

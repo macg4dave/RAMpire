@@ -28,10 +28,14 @@ observing VMs.
   working around it.
 - Deployments are kept in place and improved, not torn down after a run.
 
-## Test hosts run the current build
+## Ask before installing on a host or guest
 
-Before testing on a development or test host, upgrade RAMpire there to the
-current build, without asking: in its checkout, at the commit under test,
+Do not install, upgrade or start RAMpire's host or guest packages or
+services on any machine without the user's permission first. Ask each
+time; permission for one install does not cover the next.
+
+Once the user agrees, install the current build: in the checkout, at the
+commit under test,
 
 ```bash
 tools/build.sh install
@@ -42,5 +46,5 @@ with dnf or apt, upgrading what is installed; it checks that `rampire
 --version` reports the build just made. A guest gets the current guest
 package from the same build (`tools/build.sh package`).
 
-This rule is about operating the product. It does not restrict editing,
+These rules are about operating the product. It does not restrict editing,
 building or testing the code in this repository.

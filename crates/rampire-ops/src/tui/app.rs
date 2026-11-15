@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use super::actions::Action;
 use super::dialog::{Confirm, Dialog, OnYes};
-use super::form::{Field, Form, Purpose};
+use super::form::{Field, Form, HostFacts, Purpose};
 use super::help::Help;
 use super::input::{History, Input};
 use super::jobs::{self, Answer, DoctorSection, FlowEvent, Msg, Question, ReaderControl, TaskId};
@@ -207,6 +207,8 @@ pub struct App {
     /// Tasks are queued but never started: for tests, which mustn't run
     /// the commands.
     pub(crate) hold_tasks: bool,
+    /// The host isn't set up: its memory, for the setup form.
+    pub setup: Option<HostFacts>,
 }
 
 impl App {
@@ -250,6 +252,7 @@ impl App {
             effects: Vec::new(),
             quit: false,
             hold_tasks: false,
+            setup: None,
         }
     }
 
@@ -500,6 +503,24 @@ impl App {
             Msg::Doctor(sections) => self.doctor.loaded = Loaded::Done(sections),
             Msg::Log(text) => self.logs.loaded = Loaded::Done(text),
             Msg::Task(id, event) => self.on_task(id, event),
+            Msg::Setup(Ok(None)) => self.setup = None,
+            Msg::Setup(Ok(Some((host_bytes, domains)))) => {
+                self.setup = Some(HostFacts {
+                    host_bytes,
+                    set_aside_bytes: crate::init::set_aside(&domains),
+                    vms: domains.len(),
+                });
+                // Asked first, before anything else is done.
+                if self.dialog.is_none() {
+                    self.setup_form();
+                }
+            }
+            Msg::Setup(Err(error)) => {
+                self.notify(
+                    format!("Couldn't read the host's memory: {error}"),
+                    Tone::Warn,
+                );
+            }
             Msg::Peers(changes) => {
                 for change in changes {
                     self.notices.push(Message::titled(
@@ -569,6 +590,7 @@ impl App {
             FlowEvent::Ask(question, reply) => {
                 let input = match &question {
                     Question::Text(text) => Input::default().remembering(text.clone()),
+                    Question::Edit(_, suggested) => Input::new(suggested),
                     _ => Input::default(),
                 };
                 task.pager.follow();
@@ -589,10 +611,16 @@ impl App {
             }
             FlowEvent::Done(result) => {
                 let title = task.title.clone();
+                let init = matches!(task.action, Action::Init { .. });
                 match &result {
-                    Ok(_) => self
-                        .notices
-                        .push(Message::titled("Done", title.clone(), Tone::Good)),
+                    Ok(jobs::Ended::Done(_)) => {
+                        self.notices
+                            .push(Message::titled("Done", title.clone(), Tone::Good))
+                    }
+                    Ok(jobs::Ended::NotDone(text)) => {
+                        self.notices
+                            .push(Message::titled("Not done", text.clone(), Tone::Warn))
+                    }
                     Err(error) => {
                         self.errors.push(ErrorEntry {
                             time: crate::dashboard::clock(),
@@ -605,6 +633,9 @@ impl App {
                             Tone::Bad,
                         ));
                     }
+                }
+                if init {
+                    self.check_setup();
                 }
                 self.tasks.finish(id, result, Instant::now());
                 // What the action changed shows on the next reads.
@@ -966,21 +997,33 @@ impl App {
             vms: vms.to_vec(),
             fields,
             cursor: 0,
+            warning: None,
+            host: None,
         }));
     }
 
     /// The add form for `vms`: one VM's suggested settings, or for several,
     /// empty fields that give each its own; and how to log in to it.
     pub(super) fn add_form(&mut self, vms: &[String]) {
-        let suggested = match vms {
-            [vm] => self
-                .entries()
-                .into_iter()
+        let entries = self.entries();
+        let listed = |vm: &String| {
+            entries
+                .iter()
                 .find(|entry| &entry.name == vm)
-                .and_then(|entry| entry.listed)
-                .and_then(|listed| listed.suggested),
+                .and_then(|entry| entry.listed.clone())
+        };
+        let suggested = match vms {
+            [vm] => listed(vm).and_then(|listed| listed.suggested),
             _ => None,
         };
+        let running: Vec<(String, bool)> = vms
+            .iter()
+            .filter_map(|vm| {
+                let listed = listed(vm)?;
+                (listed.state == "running").then(|| (vm.clone(), restarts(&listed.to_fix)))
+            })
+            .collect();
+        let warning = running_warning(&running);
         let one = vms.len() == 1;
         let mut fields = vec![Field::new("priority", one.then(|| "100".to_owned()))];
         for (key, bytes) in [
@@ -996,6 +1039,41 @@ impl App {
             vms: vms.to_vec(),
             fields,
             cursor: 0,
+            warning,
+            host: None,
+        }));
+    }
+
+    /// Read whether the host is set up, and its memory if it isn't, for
+    /// the setup form.
+    pub fn check_setup(&mut self) {
+        let context = self.context.clone();
+        jobs::spawn_load(self.tx.clone(), move || {
+            Msg::Setup(if crate::flows::controller::is_set_up(&context) {
+                Ok(None)
+            } else {
+                crate::flows::controller::host_facts(&context).map(Some)
+            })
+        });
+    }
+
+    /// The setup form, for a host that isn't set up: the reserve to keep,
+    /// filled in with the recommended one.
+    pub(super) fn setup_form(&mut self) {
+        let Some(host) = self.setup else {
+            return self.notify(
+                "This host is set up already: change its settings with rampire set global KEY=VALUE.",
+                Tone::Dim,
+            );
+        };
+        let recommended = format_byte_size(crate::init::recommended_reserve(host.host_bytes));
+        self.dialog = Some(Dialog::Form(Form {
+            purpose: Purpose::Init,
+            vms: Vec::new(),
+            fields: vec![Field::new("host_reserve", Some(recommended))],
+            cursor: 0,
+            warning: None,
+            host: Some(host),
         }));
     }
 
@@ -1096,6 +1174,47 @@ impl App {
             !find.is_empty() && line.to_lowercase().contains(&find.to_lowercase())
         })
     }
+}
+
+/// Whether adding a running VM shuts it down and starts it again: every
+/// change to its definition but saving the requested size takes effect at
+/// its next start, as `vm add` decides.
+fn restarts(to_fix: &[String]) -> bool {
+    to_fix.iter().any(|change| !change.starts_with("save"))
+}
+
+/// What the add form says about the running VMs among those added, each
+/// with whether its definition changes: shut down and started again, or
+/// only when its guest package can't be installed with a login.
+fn running_warning(running: &[(String, bool)]) -> Option<String> {
+    let names = |restart: bool| -> Vec<&str> {
+        running
+            .iter()
+            .filter(|(_, restarts)| *restarts == restart)
+            .map(|(vm, _)| vm.as_str())
+            .collect()
+    };
+    let list = |names: &[&str]| match names {
+        [one] => format!("{one} is running"),
+        names => format!("{} are running", names.join(", ")),
+    };
+    let restarted = names(true);
+    let maybe = names(false);
+    let mut parts = Vec::new();
+    if !restarted.is_empty() {
+        let it = if restarted.len() == 1 { "it" } else { "each" };
+        parts.push(format!(
+            "{}. Adding shuts {it} down and starts {it} again, so its new memory setup takes effect.",
+            list(&restarted)
+        ));
+    }
+    if !maybe.is_empty() {
+        parts.push(format!(
+            "{}. If RAMpire can't log in to install rampire-guest, it shuts the VM down for a moment.",
+            list(&maybe)
+        ));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 /// `text` with a capital first letter, for the palette.
@@ -1202,5 +1321,24 @@ pub(crate) mod tests {
         );
         app.list.filter = Some("old".to_owned());
         assert_eq!(app.visible().len(), 1);
+    }
+
+    #[test]
+    fn adding_a_running_vm_warns_it_is_shut_down() {
+        assert_eq!(running_warning(&[]), None);
+        let changes = ["add the control channel org.rampire.control.0".to_owned()];
+        assert!(restarts(&changes));
+        assert!(!restarts(&[
+            "save the virtio-mem device's requested size as 0".to_owned()
+        ]));
+        assert_eq!(
+            running_warning(&[("web".to_owned(), true)]).as_deref(),
+            Some("web is running. Adding shuts it down and starts it again, so its new memory setup takes effect.")
+        );
+        let both = running_warning(&[("web".to_owned(), true), ("db".to_owned(), false)]).unwrap();
+        assert!(
+            both.contains("db is running. If RAMpire can't log in"),
+            "{both}"
+        );
     }
 }

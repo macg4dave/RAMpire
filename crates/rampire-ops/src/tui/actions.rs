@@ -3,7 +3,7 @@
 //! line that does the same, so a person learns the commands and can script
 //! what they did.
 
-use super::jobs::{self, ChannelUi, Msg, ReaderControl, TaskId};
+use super::jobs::{self, ChannelUi, Ended, Msg, ReaderControl, TaskId};
 use crate::context::Context;
 use crate::flows::{apply, controller, lifecycle};
 use crate::ui::Ui;
@@ -32,7 +32,11 @@ pub enum Action {
     Apply,
     /// `recover VM REASON`; the reason is asked.
     Recover(String),
-    Init,
+    /// `init`, with `--host-reserve SIZE` when it was chosen in the setup
+    /// form; else it is asked, filled in with the recommended one.
+    Init {
+        host_reserve: Option<String>,
+    },
 }
 
 /// The `vm add` option for a setting the add form names.
@@ -80,7 +84,10 @@ impl Action {
             }
             Self::Apply => owned(&["apply"]),
             Self::Recover(vm) => owned(&["recover", vm, "REASON"]),
-            Self::Init => owned(&["init"]),
+            Self::Init {
+                host_reserve: Some(reserve),
+            } => owned(&["init", "--host-reserve", reserve]),
+            Self::Init { host_reserve: None } => owned(&["init"]),
         }
     }
 
@@ -117,23 +124,28 @@ impl Action {
         });
     }
 
-    fn run(&self, context: &Context, ui: &mut ChannelUi) -> Result<String, String> {
+    fn run(&self, context: &Context, ui: &mut ChannelUi) -> Result<Ended, String> {
+        let done = |text: String| Ok(Ended::Done(text));
         match self {
             Self::Add { vm, changes } => {
-                lifecycle::vm_add(context, ui, &add_options(vm, changes)?)?;
-                Ok(format!("{vm} is added"))
+                match lifecycle::vm_add(context, ui, &add_options(vm, changes)?)? {
+                    lifecycle::Added::Declined => Ok(Ended::NotDone(format!(
+                        "{vm} is not added: the answer was No, so nothing was changed"
+                    ))),
+                    lifecycle::Added::Yes { .. } => done(format!("{vm} is added")),
+                }
             }
             Self::Remove(vm) => {
                 lifecycle::vm_remove(context, ui, vm)?;
-                Ok(format!("{vm} is removed"))
+                done(format!("{vm} is removed"))
             }
             Self::Restart(vm) => {
                 lifecycle::vm_restart(context, ui, vm)?;
-                Ok(format!("{vm} restarted"))
+                done(format!("{vm} restarted"))
             }
             Self::Upgrade(vm) => {
                 lifecycle::vm_upgrade(context, ui, vm, None)?;
-                Ok(format!("{vm}'s guest service is upgraded"))
+                done(format!("{vm}'s guest service is upgraded"))
             }
             Self::Set { target, changes } => {
                 let changes = changes
@@ -141,11 +153,11 @@ impl Action {
                     .map(|change| crate::set::parse_assignment(change))
                     .collect::<Result<Vec<_>, _>>()?;
                 lifecycle::set(context, ui, target, &changes, false)?;
-                Ok("the settings are saved and applied".to_owned())
+                done("the settings are saved and applied".to_owned())
             }
             Self::Apply => {
                 apply::apply(context, ui)?;
-                Ok("the configuration is applied".to_owned())
+                done("the configuration is applied".to_owned())
             }
             Self::Recover(vm) => {
                 let reason = ui.text(&format!(
@@ -159,11 +171,11 @@ impl Action {
                     context.command_line(&["recover", vm, reason.trim()])
                 ));
                 controller::recover(context, ui, vm, reason.trim())?;
-                Ok(format!("{vm} resumes resizing"))
+                done(format!("{vm} resumes resizing"))
             }
-            Self::Init => {
-                controller::init(context, ui)?;
-                Ok("the host is set up".to_owned())
+            Self::Init { host_reserve } => {
+                controller::init(context, ui, host_reserve.as_deref())?;
+                done("the host is set up".to_owned())
             }
         }
     }
@@ -217,7 +229,7 @@ pub fn from_fix(fix: &str) -> Option<Action> {
     };
     match words.as_slice() {
         ["apply"] => Some(Action::Apply),
-        ["init", ..] => Some(Action::Init),
+        ["init", ..] => Some(Action::Init { host_reserve: None }),
         ["vm", "add", vm] => Some(Action::add(vm)),
         ["vm", "restart", vm] => Some(Action::Restart((*vm).to_owned())),
         ["vm", "upgrade", vm] => Some(Action::Upgrade((*vm).to_owned())),
@@ -311,7 +323,7 @@ mod tests {
         );
         assert_eq!(
             from_fix("rampire init on a new host, or rampire apply"),
-            Some(Action::Init)
+            Some(Action::Init { host_reserve: None })
         );
         assert_eq!(
             from_fix("once the guest is checked, rampire recover web \"WHY IT IS SAFE TO RESUME\""),

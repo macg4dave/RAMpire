@@ -9,8 +9,43 @@ use crate::context::{applied_root, Context, SERVICE_ACCOUNT};
 use crate::process;
 use crate::ui::Ui;
 
-/// `rampire init`. Returns whether the applied configuration changed.
-pub fn init(context: &Context, ui: &mut dyn Ui) -> Result<bool, String> {
+/// This host's memory and its libvirt domains' memory, as `init` reads
+/// them to suggest the global settings.
+pub fn host_facts(context: &Context) -> Result<(u64, Vec<crate::init::DomainMemory>), String> {
+    let host = crate::host_readings::read_meminfo()?.total;
+    let libvirt = context.libvirt()?;
+    let mut domains = Vec::new();
+    for name in libvirt
+        .virsh(&["list", "--all", "--name"])?
+        .lines()
+        .map(str::trim)
+    {
+        if !name.is_empty() {
+            domains.push(crate::init::parse_domain(
+                name,
+                &libvirt.virsh(&["dumpxml", "--inactive", name])?,
+            )?);
+        }
+    }
+    Ok((host, domains))
+}
+
+/// Whether this host is set up: its global settings are written.
+pub fn is_set_up(context: &Context) -> bool {
+    context
+        .draft()
+        .join(rampire_core::settings::GLOBAL_FILE)
+        .exists()
+}
+
+/// `rampire init`, keeping `host_reserve` for the host: as given, else
+/// asked, with the recommended reserve as the answer to keep. Returns
+/// whether the applied configuration changed.
+pub fn init(
+    context: &Context,
+    ui: &mut dyn Ui,
+    host_reserve: Option<&str>,
+) -> Result<bool, String> {
     use crate::init;
     let connection = context.connection()?;
     let draft = context.draft();
@@ -33,22 +68,29 @@ pub fn init(context: &Context, ui: &mut dyn Ui) -> Result<bool, String> {
                 .to_owned(),
         );
     }
-    let host = crate::host_readings::read_meminfo()?.total;
-    let libvirt = context.libvirt()?;
-    let mut domains = Vec::new();
-    for name in libvirt
-        .virsh(&["list", "--all", "--name"])?
-        .lines()
-        .map(str::trim)
-    {
-        if !name.is_empty() {
-            domains.push(init::parse_domain(
-                name,
-                &libvirt.virsh(&["dumpxml", "--inactive", name])?,
-            )?);
-        }
+    let (host, domains) = host_facts(context)?;
+    let global = draft.join(rampire_core::settings::GLOBAL_FILE);
+    let recommended = rampire_core::format_byte_size(init::recommended_reserve(host));
+    let reserve = match host_reserve {
+        Some(reserve) => reserve.trim().to_owned(),
+        None if global.exists() => recommended,
+        None => ui.edit(
+            &format!(
+                "Memory the host keeps for itself, of its {:.1} GiB (recommended {recommended}):",
+                host as f64 / rampire_core::GIB as f64
+            ),
+            &recommended,
+        )?,
+    };
+    let reserve = rampire_core::parse_byte_size(&reserve)
+        .map_err(|error| format!("host reserve {reserve}: {error}"))?;
+    if let Some(problem) = init::reserve_problem(host, reserve) {
+        return Err(format!(
+            "host reserve {}: {problem}; nothing was written",
+            rampire_core::format_byte_size(reserve)
+        ));
     }
-    let suggestion = init::suggest(host, &domains);
+    let suggestion = init::with_reserve(host, &domains, reserve);
     let text = init::global_toml(&suggestion, &domains);
     for folder in [
         rampire_core::settings::VMS_DIRECTORY,

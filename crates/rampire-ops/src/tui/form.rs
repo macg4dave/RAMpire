@@ -1,8 +1,8 @@
 //! The settings form, for one VM or several, changing a managed VM's
-//! settings or giving a VM being added its own: a labelled text box for each
-//! setting, checked as it is typed, with a word about the chosen one, the
-//! command Save runs, and Cancel and Save. A short window gets one-row
-//! boxes.
+//! settings or giving a VM being added its own, or setting the host up: a
+//! labelled text box for each setting, checked as it is typed, with a word
+//! about the chosen one, the command Save runs, and Cancel and Save. A
+//! short window gets one-row boxes.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -34,6 +34,18 @@ pub enum Purpose {
     Set,
     /// Adding VMs: Save runs `vm add`, which shows what it will do and asks.
     Add,
+    /// Setting the host up: Save runs `init`.
+    Init,
+}
+
+/// The host's memory and what its VMs hold, for the setup form to show the
+/// pool its reserve leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostFacts {
+    pub host_bytes: u64,
+    /// What the host's VMs hold whatever happens, together.
+    pub set_aside_bytes: u64,
+    pub vms: usize,
 }
 
 /// A setting's name in its file, its label, and what it means.
@@ -41,28 +53,33 @@ fn about(key: &str) -> (&'static str, &'static str, Kind) {
     match key {
         "priority" => (
             "Priority",
-            "Who is served first when memory is short: a higher number goes first. 100 is usual.",
+            "Higher is served first when memory is short. 100 is normal.",
             Kind::Number,
         ),
         "min_ram" => (
             "Minimum RAM",
-            "The least memory the VM keeps, its boot memory included. RAMpire never takes memory back below this.",
+            "Never shrunk below this. Includes boot memory.",
             Kind::Size,
         ),
         "max_ram" => (
             "Maximum RAM",
-            "The most memory the VM may grow to. For Linux, at most about four times its boot memory.",
+            "Never grown above this. Linux: at most 4 times boot memory.",
             Kind::Size,
         ),
         "free_ram" => (
             "Free RAM",
-            "Spare memory the VM keeps ready: it asks for more when it has less than this, and gives back what is over.",
+            "Spare memory kept in the VM. Below it the VM grows; above it, it shrinks.",
             Kind::Size,
         ),
         "guest_login" => (
             "Guest login",
-            "How RAMpire logs in to the VM to install rampire-guest, as USER@HOST. Left empty: its guest agent, or root at the address libvirt has for it, with RAMpire's SSH key.",
+            "SSH login for installing rampire-guest, as USER@HOST. Empty: the guest agent, or root at the VM's address.",
             Kind::Login,
+        ),
+        "host_reserve" => (
+            "Host reserve",
+            "Memory the host keeps for itself. VMs never get it.",
+            Kind::Size,
         ),
         _ => ("Setting", "", Kind::Size),
     }
@@ -153,6 +170,11 @@ pub struct Form {
     pub vms: Vec<String>,
     pub fields: Vec<Field>,
     pub cursor: usize,
+    /// Said above the fields, in amber: what saving will do that a person
+    /// may not expect, such as shutting a running VM down.
+    pub warning: Option<String>,
+    /// For the setup form: the host's memory, for the pool it leaves.
+    pub host: Option<HostFacts>,
 }
 
 impl Form {
@@ -177,6 +199,11 @@ impl Form {
                             if bytes("free_ram").is_some_and(|free| free >= max) =>
                         {
                             Some("must be less than Maximum RAM".to_owned())
+                        }
+                        ("host_reserve", _) => {
+                            self.host.zip(field.bytes()).and_then(|(host, reserve)| {
+                                crate::init::reserve_problem(host.host_bytes, reserve)
+                            })
                         }
                         _ => None,
                     })
@@ -218,7 +245,53 @@ impl Form {
                     changes: changes.clone(),
                 })
                 .collect(),
+            Purpose::Init => vec![Action::Init {
+                host_reserve: self
+                    .field("host_reserve")
+                    .map(|field| field.value().to_owned()),
+            }],
         }
+    }
+
+    /// For the setup form: the host, its VMs and the pool the reserve
+    /// leaves, as lines.
+    fn host_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
+        let Some(host) = self.host else {
+            return Vec::new();
+        };
+        let gib = |bytes: u64| bytes as f64 / rampire_core::GIB as f64;
+        let mut lines = vec![widgets::line(
+            theme,
+            format!(
+                "This host has {:.1} GiB. Its {} VMs hold {:.1} GiB until RAMpire manages them.",
+                gib(host.host_bytes),
+                host.vms,
+                gib(host.set_aside_bytes)
+            ),
+            Tone::Dim,
+        )];
+        let reserve = self.field("host_reserve").and_then(Field::bytes);
+        lines.push(match reserve {
+            None => widgets::line(theme, "Pool: type a reserve to see it.", Tone::Dim),
+            Some(reserve) => {
+                match crate::init::pool_after(host.host_bytes, host.set_aside_bytes, reserve) {
+                    Some(pool) => widgets::line(
+                        theme,
+                        format!("Pool for managed VMs: {:.0} GiB.", gib(pool)),
+                        Tone::Good,
+                    ),
+                    None => widgets::line(
+                        theme,
+                        format!(
+                            "{} Pool: none. The reserve and the VMs use all the memory.",
+                            theme.icon(Icon::Problem)
+                        ),
+                        Tone::Warn,
+                    ),
+                }
+            }
+        });
+        lines
     }
 
     pub fn render(
@@ -233,25 +306,36 @@ impl Form {
         let inner_width = width.saturating_sub(4);
         let actions = self.actions();
         let commands = actions.len().clamp(1, 3) as u16;
-        // Padding, the boxes, a gap, the help, a rule, what Save runs, a
-        // gap, the buttons, and the border.
-        let fixed = 1 + 1 + 2 + 1 + commands + 1 + 1 + 2;
+        let warning = self.warning.as_ref().map(|warning| {
+            widgets::line(
+                theme,
+                format!("{} {warning}", theme.icon(Icon::Problem)),
+                Tone::Warn,
+            )
+        });
+        let host_lines = self.host_lines(theme);
+        // Rows above the fields: the warning, wrapped, and a gap.
+        let top = warning.as_ref().map_or(0, |line| {
+            widgets::wrap(line.clone(), inner_width as usize).len() as u16 + 1
+        });
+        // Padding, the warning, the boxes, a gap, the host's lines, the
+        // help, a rule, what Save runs, a gap, the buttons, and the border.
+        let extra = top + host_lines.len() as u16 + u16::from(!host_lines.is_empty());
+        let fixed = 1 + 1 + 2 + 1 + commands + 1 + 1 + 2 + extra;
         let rows = self.fields.len() as u16;
         let roomy = fixed + rows * 3 <= area.height.saturating_sub(2);
         let height = (fixed + rows * if roomy { 3 } else { 2 }).min(area.height.saturating_sub(2));
         let rect = widgets::centred(area, width, height);
         Clear.render(rect, buf);
         let (title, subtitle) = match (self.purpose, self.vms.as_slice()) {
-            (Purpose::Set, [vm]) => (format!("Settings for {vm}"), "saved and applied with Enter"),
+            (Purpose::Set, [vm]) => (format!("Settings for {vm}"), "Enter: save and apply"),
             (Purpose::Set, vms) => (
                 format!("Settings for {} VMs", vms.len()),
-                "saved and applied with Enter",
+                "Enter: save and apply",
             ),
-            (Purpose::Add, [vm]) => (format!("Add {vm}"), "Enter shows what it will do"),
-            (Purpose::Add, vms) => (
-                format!("Add {} VMs", vms.len()),
-                "Enter shows what it will do",
-            ),
+            (Purpose::Add, [vm]) => (format!("Add {vm}"), "Enter: review, then add"),
+            (Purpose::Add, vms) => (format!("Add {} VMs", vms.len()), "Enter: review, then add"),
+            (Purpose::Init, _) => ("Set up this host".to_owned(), "Enter: set up"),
         };
         let block =
             raised_panel(theme, Icon::Settings, &title, subtitle).padding(Padding::new(2, 2, 1, 0));
@@ -259,6 +343,21 @@ impl Form {
         block.render(rect, buf);
         let problems = self.problems();
         let mut y = inner.y;
+        if let Some(warning) = warning {
+            let rows = top.saturating_sub(1);
+            Paragraph::new(warning)
+                .wrap(Wrap { trim: true })
+                .style(theme.raised())
+                .render(
+                    Rect {
+                        height: rows,
+                        ..inner
+                    }
+                    .intersection(inner),
+                    buf,
+                );
+            y += top;
+        }
         let label_width = 14u16;
         let box_width = 24u16.min(inner_width.saturating_sub(label_width + 2));
         for (index, field) in self.fields.iter().enumerate() {
@@ -325,7 +424,7 @@ impl Form {
             } else if field.value().is_empty() && field.original.is_none() {
                 let blank = match (self.purpose, field.key) {
                     (Purpose::Add, "guest_login") => "automatic",
-                    (Purpose::Add, _) => "suggested",
+                    (Purpose::Add | Purpose::Init, _) => "suggested",
                     (Purpose::Set, _) => "each keeps its own",
                 };
                 Line::styled(blank, theme.dim())
@@ -341,6 +440,14 @@ impl Form {
                     format!("{} {problem}", theme.icon(Icon::Problem)),
                     Tone::Bad,
                 )),
+                (None, Some(original)) if self.purpose == Purpose::Init => Some((
+                    if field.changed() {
+                        format!("recommended {original}")
+                    } else {
+                        "recommended".to_owned()
+                    },
+                    Tone::Dim,
+                )),
                 (None, Some(original)) if field.changed() => {
                     Some((format!("was {original}"), Tone::Dim))
                 }
@@ -352,6 +459,20 @@ impl Form {
                 buf.set_string(x, middle, widgets::fit(&text, room), theme.tone(tone));
             }
             y += if roomy { 3 } else { 2 };
+        }
+        // The host and the pool it leaves, for the setup form.
+        if !host_lines.is_empty() {
+            let rows = host_lines.len() as u16;
+            Paragraph::new(host_lines).style(theme.raised()).render(
+                Rect {
+                    y: y + 1,
+                    height: rows,
+                    ..inner
+                }
+                .intersection(inner),
+                buf,
+            );
+            y += rows + 1;
         }
         // A word about the chosen setting.
         let help_area = Rect {
@@ -397,14 +518,7 @@ impl Form {
                 .enumerate()
                 .map(|(index, action)| {
                     Line::from(vec![
-                        Span::styled(
-                            if index == 0 {
-                                "Saving runs  "
-                            } else {
-                                "             "
-                            },
-                            theme.dim(),
-                        ),
+                        Span::styled(if index == 0 { "Runs  " } else { "      " }, theme.dim()),
                         Span::styled(action.command_line(context), theme.tone(Tone::Info)),
                     ])
                 })
@@ -412,7 +526,7 @@ impl Form {
             if actions.len() > 3 {
                 lines.push(widgets::line(
                     theme,
-                    format!("             and {} more", actions.len() - 3),
+                    format!("      and {} more", actions.len() - 3),
                     Tone::Dim,
                 ));
             }
@@ -472,6 +586,8 @@ mod tests {
                 Field::new("free_ram", Some("1GB".to_owned())),
             ],
             cursor: 0,
+            warning: None,
+            host: None,
         }
     }
 
@@ -531,8 +647,8 @@ mod tests {
                 "Minimum RAM:",
                 "Free RAM:",
                 "was 100",
-                "Who is served first",
-                "Saving runs  rampire set web priority=150",
+                "Higher is served first",
+                "Runs  rampire set web priority=150",
                 "Cancel",
                 "Save",
             ] {
@@ -544,5 +660,73 @@ mod tests {
             assert_eq!(text.contains("╭────"), roomy, "{text}");
             assert!(!text.contains("free_ram"), "{text}");
         }
+    }
+
+    #[test]
+    fn the_setup_form_shows_the_pool_its_reserve_leaves_and_a_warning() {
+        use rampire_core::GIB;
+        let theme = Theme::new(Palette::Midnight, Depth::TrueColor, Icons { unicode: true });
+        let context = Context {
+            config: None,
+            connect: None,
+            build: String::new(),
+            via: "tui",
+        };
+        let mut form = Form {
+            purpose: Purpose::Init,
+            vms: Vec::new(),
+            fields: vec![Field::new("host_reserve", Some("4GB".to_owned()))],
+            cursor: 0,
+            warning: None,
+            host: Some(HostFacts {
+                host_bytes: 32 * GIB,
+                set_aside_bytes: 20 * GIB,
+                vms: 3,
+            }),
+        };
+        let draw = |form: &Form| {
+            let area = Rect::new(0, 0, 100, 30);
+            let mut buf = Buffer::empty(area);
+            form.render(area, &mut buf, &theme, &History::default(), &context);
+            widgets::plain_text(&buf)
+        };
+        let text = draw(&form);
+        for needle in [
+            "Set up this host",
+            "Host reserve:",
+            "recommended",
+            "Pool for managed VMs: 8 GiB.",
+            "Runs  rampire init --host-reserve 4GB",
+        ] {
+            assert!(text.contains(needle), "lacks {needle}:\n{text}");
+        }
+        // Edited, it is still checked, and the pool follows it.
+        form.fields[0].input.set("13GB");
+        assert!(draw(&form).contains("Pool: none."), "{}", draw(&form));
+        form.fields[0].input.set("40GB");
+        assert!(!form.valid());
+        form.fields[0].input.set("6GB");
+        assert_eq!(
+            form.actions(),
+            [Action::Init {
+                host_reserve: Some("6GB".to_owned())
+            }]
+        );
+        // An add form for a running VM says it will be shut down.
+        let add = Form {
+            purpose: Purpose::Add,
+            vms: vec!["web".to_owned()],
+            fields: vec![Field::new("priority", Some("100".to_owned()))],
+            cursor: 0,
+            warning: Some(
+                "web is running. Adding it shuts it down and starts it again.".to_owned(),
+            ),
+            host: None,
+        };
+        let text = draw(&add);
+        assert!(
+            text.contains("web is running. Adding it shuts it"),
+            "{text}"
+        );
     }
 }

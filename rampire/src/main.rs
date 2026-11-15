@@ -112,7 +112,16 @@ enum Command {
     ///
     /// A host problem stops init before anything is written. An existing
     /// global.toml is never changed; the suggestion is shown instead.
-    Init,
+    ///
+    /// The memory the host keeps for itself is asked, with the
+    /// recommended reserve as the answer Enter keeps.
+    Init {
+        /// The memory the host keeps for itself, such as 4GB; default the
+        /// recommended one: an eighth of the host's memory, between 2 and
+        /// 8 GB. Not asked when given.
+        #[arg(long, value_name = "SIZE")]
+        host_reserve: Option<String>,
+    },
     /// Show the controller's status for one VM, or for every VM.
     Status {
         /// The VM; default every VM.
@@ -416,7 +425,9 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
     match command {
         Command::Daemon => Ok(daemon::run(&context.running())),
         Command::Status { vm } => reporting::status(cli, vm.as_deref()),
-        Command::Init => flows::init(&context, ui).map(|_| ExitCode::SUCCESS),
+        Command::Init { host_reserve } => {
+            flows::init(&context, ui, host_reserve.as_deref()).map(|_| ExitCode::SUCCESS)
+        }
         Command::Top { view, events } => {
             let mut top = rampire_ops::top::Command::load(&context)?;
             if top.vms.is_empty() {

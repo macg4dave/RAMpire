@@ -11,7 +11,7 @@ use super::app::{App, Effect, Loaded, Overlay, Prompt, Run, View};
 use super::dialog::{Confirm, Dialog, OnYes};
 use super::help::Help;
 use super::input::Input;
-use super::jobs::{Answer, Question};
+use super::jobs::Answer;
 use super::keymap::{self, Cmd, Key, Layer, Lookup};
 use super::scroll::{Scroll, Step};
 use super::spot::Spot;
@@ -83,7 +83,7 @@ impl App {
                     self.tasks
                         .get_mut(id)
                         .and_then(|task| task.pending.as_mut())
-                        .filter(|pending| matches!(pending.question, Question::Text(_)))
+                        .filter(|pending| pending.question.typed())
                         .map(|pending| &mut pending.input)
                 }
                 _ => None,
@@ -181,6 +181,7 @@ impl App {
             }
             Cmd::Reload => self.reload(),
             Cmd::Doctor => self.open(View::Doctor(None)),
+            Cmd::Setup => self.setup_form(),
             Cmd::Logs => self.open(View::Logs(None)),
             Cmd::Back if self.view != View::Main => self.open(View::Main),
             _ => {}
@@ -541,7 +542,7 @@ impl App {
         let text = task
             .pending
             .as_ref()
-            .map(|pending| matches!(pending.question, Question::Text(_)));
+            .map(|pending| pending.question.typed());
         let back = |app: &mut App| {
             app.overlay = if from_list {
                 Some(Overlay::Tasks)
@@ -862,6 +863,7 @@ mod tests {
     use crate::tui::actions::Action;
     use crate::tui::app::tests::app;
     use crate::tui::app::Pick;
+    use crate::tui::jobs::Question;
     use crate::tui::jobs::{FlowEvent, Msg};
     use crate::tui::list::SortBy;
     use ratatui::crossterm::event::KeyModifiers;

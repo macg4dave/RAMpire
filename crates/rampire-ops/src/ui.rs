@@ -19,6 +19,13 @@ pub trait Ui {
     fn review(&mut self, question: &str) -> Result<bool, String>;
     /// A short text only a person may give, such as a kernel release.
     fn text(&mut self, question: &str) -> Result<String, String>;
+    /// A value with a suggested one a person may change: the suggestion is
+    /// kept when there is no one to ask, with `--yes`, or when the answer
+    /// is empty.
+    fn edit(&mut self, question: &str, suggested: &str) -> Result<String, String> {
+        let _ = question;
+        Ok(suggested.to_owned())
+    }
 }
 
 /// Whether a typed answer is yes.
@@ -114,6 +121,18 @@ impl<R: BufRead, W: Write> Ui for Terminal<R, W> {
             return Err(Self::person_needed(question));
         }
         self.read_answer(&format!("{question} "))
+    }
+
+    fn edit(&mut self, question: &str, suggested: &str) -> Result<String, String> {
+        if self.yes || !self.interactive {
+            return Ok(suggested.to_owned());
+        }
+        let answer = self.read_answer(&format!("{question} [{suggested}] "))?;
+        Ok(if answer.is_empty() {
+            suggested.to_owned()
+        } else {
+            answer
+        })
     }
 }
 

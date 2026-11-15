@@ -151,6 +151,8 @@ pub enum Cmd {
     Choose,
     NextField,
     PrevField,
+    /// The setup form, for a host that isn't set up.
+    Setup,
 }
 
 /// A key with its Ctrl and Alt; Shift is in the character.
@@ -440,6 +442,7 @@ pub static BINDINGS: &[Binding] = &[
     bind(Views, &[ch(':')], C::Palette, "the command palette"),
     hinted(Views, &[ch('?')], C::Help, "the keys, for what is shown", "keys"),
     bind(Views, &[ch('g'), ch('d')], C::Doctor, "go to the doctor"),
+    bind(Views, &[ch('I')], C::Setup, "set up this host: its reserve and pool (rampire init)"),
     bind(Views, &[ch('g'), ch('l')], C::Logs, "go to the logs"),
     bind(Views, &[ch('g'), ch('w')], C::Tasks, "go to the tasks"),
     bind(Views, &[ch('g'), ch('e')], C::Errors, "go to the errors"),

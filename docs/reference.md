@@ -28,6 +28,12 @@ host's console, or from any computer with `ssh -t HOST sudo rampire`.
 Piped, or with `--help`, it prints the help instead. It needs a terminal
 of at least 80x24.
 
+On a host that isn't set up yet (no `/etc/rampire/global.toml`), the TUI
+opens **Set up this host** first: the memory the host keeps for itself,
+filled in with the recommended reserve to keep or change, and the pool it
+leaves, shown as you type. Enter runs `rampire init --host-reserve SIZE`;
+Esc closes it, and **I** opens it again.
+
 Everything starts from one screen: the pool, every VM on the host
 (managed, half-added and not managed), the pool's history and its
 latest events. On a window at least 140 columns wide and tall enough, the
@@ -38,7 +44,7 @@ offers only what fits that VM:
 | The VM is | Its menu |
 |---|---|
 | Managed | `v` live details (as `rampire watch` shows them); `s` settings: Priority, Minimum RAM, Maximum RAM and Free RAM (`priority`, `min_ram`, `max_ram`, `free_ram` in its file); `o` its doctor; `l` its logs; `u` Upgrade the guest service, when an update is available; `x` Remove RAMpire |
-| Not managed | What would stop adding it; `x` Remove RAMpire, when its definition still has RAMpire's parts; `a` Install RAMpire: its settings (Priority, Minimum, Maximum and Free RAM, filled in from its definition, and Guest login), then everything adding will do, asked once; `o` its doctor |
+| Not managed | What would stop adding it; `x` Remove RAMpire, when its definition still has RAMpire's parts; `a` Install RAMpire: its settings (Priority, Minimum, Maximum and Free RAM, filled in from its definition, and Guest login), with a warning when the VM is running and adding will shut it down; then everything adding will do, asked once. Answering No adds nothing, and the task ends **Not done**; `o` its doctor |
 | Half-added | `a` finish adding it; `o` its doctor |
 
 A managed VM whose guest service runs another build than the host's
@@ -57,7 +63,9 @@ instead of doing it.
 What an action does runs as a task, in the background, so the screen
 stays free. Tasks run one at a time, in the order they were started,
 since each changes the host's configuration; the others wait their turn.
-A task's question comes forward when nothing else is open, with the
+A task says each step as it starts it, such as logging in to a VM to
+install its guest package, and shows **working** with the time so far
+while it runs. A task's question comes forward when nothing else is open, with the
 task's output above it: `y` or `n`, or the arrows and Enter (No is
 chosen first); Esc leaves it waiting. The status bar shows how many of
 the tasks started are left, red once one has failed, and how many are
@@ -96,6 +104,7 @@ Anywhere:
 | `r` | Read again |
 | `t` | The next colour theme: midnight (the default: the mascot's colours on near-black), midnight in 256 colours, light, or the terminal's own 16 colours, which match your terminal's theme |
 | `i` | Unicode or ASCII icons |
+| `I` | Set up this host, when it isn't set up yet (`rampire init`) |
 | `?`, F1 | The keys |
 | `q`, Ctrl+C | Quit; while tasks run it asks first, and Ctrl+C twice quits at once |
 | Ctrl+Z | Back to the shell; `fg` brings the TUI back |
@@ -163,7 +172,7 @@ logged as `event=operator_change action=tui_failed`.
 
 | Command | What it does |
 |---|---|
-| `rampire init` | Checks the host as `doctor` does and stops on a problem; then suggests `global.toml` from the host's memory and its VMs (never over an existing one), creates the configuration folders, applies, and enables and starts the controller |
+| `rampire init [--host-reserve SIZE]` | Checks the host as `doctor` does and stops on a problem; then asks the host reserve (the recommended one filled in; `--host-reserve` answers it), suggests `global.toml` from the host's memory and its VMs (never over an existing one), creates the configuration folders, applies, and enables and starts the controller |
 | `rampire doctor [VM]` | Checks libvirt 10.1+, QEMU 8.2+ with virtio-mem's options, the service account, the socket group, libvirt access and an applied configuration, with the fix for each problem, and gives one line per managed VM. With a VM, everything about it: its saved and running definition (device, control channel, balloon, memory slots), its recorded setup, a latch, the guest's publication and readiness report (driver, onlining, pressure signal, `max_ram` against the movable zone), and the last request and what held it back |
 | `rampire check` | Checks the draft and every VM against its recorded setup; changes nothing |
 

@@ -118,25 +118,27 @@ impl Inspection {
         }
         if !self.guest_agent_channel {
             changes.push(format!(
-                "add the guest agent channel {GUEST_AGENT_CHANNEL_NAME}, so the guest's kernel is read, not asked"
+                "add the guest agent channel {GUEST_AGENT_CHANNEL_NAME}"
             ));
         }
         match self.device() {
             Some(device) if device.requested_bytes != 0 => changes.push(
-                "save the virtio-mem device's requested size as 0, so the VM starts on boot RAM alone".to_owned(),
+                "save the virtio-mem device's requested size as 0, so it boots on boot RAM"
+                    .to_owned(),
             ),
             None if self.can_add_device() => {
                 if self.adds_numa_cell() {
                     changes.push(format!(
-                        "add a NUMA cell holding the {} vCPUs and the {} MiB boot RAM",
+                        "add a NUMA cell: {} vCPUs, {} MiB boot RAM",
                         self.vcpus,
                         self.boot() / MIB
                     ));
                 }
                 if self.max_memory_slots.is_none() {
+                    let slots = self.other_memory_devices + 1;
                     changes.push(format!(
-                        "add <maxMemory> with {} slot(s), for boot RAM plus the device",
-                        self.other_memory_devices + 1
+                        "add <maxMemory>, {slots} slot{}",
+                        if slots == 1 { "" } else { "s" }
                     ));
                 }
                 changes.push(format!(
@@ -148,7 +150,7 @@ impl Inspection {
         }
         if self.balloon_active() {
             let mut change = format!(
-                "turn off the memory balloon (model '{}'): RAMpire resizes the VM with virtio-mem, and a balloon resizing it too would work against it",
+                "turn off the memory balloon ({}); it would fight virtio-mem",
                 self.balloon.as_deref().unwrap_or_default()
             );
             // A balloon target below boot RAM goes with the balloon: say so,
@@ -158,7 +160,7 @@ impl Inspection {
                 .filter(|current| *current < self.boot())
             {
                 change.push_str(&format!(
-                    ". The balloon holds the VM at {} MiB; without it the VM has all {} MiB of its boot RAM",
+                    ". The VM then uses all {1} MiB of its boot RAM, not the balloon's {0} MiB",
                     current / MIB,
                     self.boot() / MIB
                 ));
@@ -1146,7 +1148,7 @@ mod tests {
             .unwrap();
         assert!(
             balloon.ends_with(
-                "The balloon holds the VM at 3072 MiB; without it the VM has all 4096 MiB of its boot RAM"
+                "The VM then uses all 4096 MiB of its boot RAM, not the balloon's 3072 MiB"
             ),
             "{balloon}"
         );

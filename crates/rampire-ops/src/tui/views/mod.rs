@@ -16,7 +16,6 @@ use ratatui::Frame;
 
 use super::app::{App, Overlay, View};
 use super::dialog::Dialog;
-use super::jobs::Question;
 use super::keymap::{self, Layer};
 use super::theme::{Icon, Theme};
 use super::widgets::{self, panel, raised_panel};
@@ -157,7 +156,7 @@ fn status_bar(area: Rect, buf: &mut Buffer, app: &App) {
     let typing = layer == Layer::Task
         && matches!(&app.overlay, Some(Overlay::Task { id, .. })
             if app.tasks.get(*id).and_then(|task| task.pending.as_ref())
-                .is_some_and(|pending| matches!(pending.question, Question::Text(_))));
+                .is_some_and(|pending| pending.question.typed()));
     let hints: Vec<(String, &str)> = if typing {
         vec![
             ("type".to_owned(), "the answer"),
@@ -324,6 +323,7 @@ mod tests {
     use crate::tui::actions::Action;
     use crate::tui::app::ErrorEntry;
     use crate::tui::dialog::{Confirm, OnYes};
+    use crate::tui::jobs::Question;
     use crate::tui::jobs::{DoctorSection, FlowEvent, Msg};
     use crate::tui::pool::tests::themes;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

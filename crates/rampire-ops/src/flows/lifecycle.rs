@@ -55,6 +55,16 @@ impl AddOptions {
     }
 }
 
+/// How `vm add` ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Added {
+    /// The person answered No: nothing was changed.
+    Declined,
+    /// It is added; `changed` says whether the applied configuration
+    /// changed.
+    Yes { changed: bool },
+}
+
 /// Write a file that must not exist yet; an existing one is never replaced.
 fn write_new(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -83,9 +93,8 @@ fn settings_path(directory: &Path, name: &str) -> Result<PathBuf, String> {
 /// `rampire vm add`. Shows everything it will do and asks once; then fixes
 /// the definition, starts the VM, installs the guest package in it,
 /// restarts it when that is needed, writes its settings, applies, and waits
-/// for the guest to report in. Returns whether the applied configuration
-/// changed.
-pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Result<bool, String> {
+/// for the guest to report in.
+pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Result<Added, String> {
     use crate::vm;
     use rampire_core::settings::VMS_DIRECTORY;
     use std::time::Duration;
@@ -152,41 +161,49 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     };
 
     // What will be done, agreed to once.
-    let mut plan = Vec::new();
-    match &settings {
-        Some(chosen) => plan.push(format!(
-            "settings: priority {}, minimum RAM {}, maximum RAM {}, free RAM {}",
-            options.priority,
-            format_byte_size(chosen.min_ram),
-            format_byte_size(chosen.max_ram),
-            format_byte_size(chosen.free_ram)
-        )),
-        None => plan.push(format!(
-            "the settings an earlier vm add wrote, in {}",
-            settings_path.display()
-        )),
+    let mut shown = format!("Adding {name} to RAMpire\n\n");
+    if restart {
+        shown.push_str(&format!(
+            "  ! {name} is running: it will be shut down and started again.\n\n"
+        ));
+    } else if running && !options.no_guest_install {
+        shown.push_str(&format!(
+            "  ! {name} is running: if RAMpire can't log in to it, it is shut down for a moment to install rampire-guest.\n\n"
+        ));
     }
-    for change in &changes {
-        plan.push(format!("its definition: {change}"));
+    let mut row = |label: &str, text: &str| shown.push_str(&format!("  {label:<11} {text}\n"));
+    match &settings {
+        Some(chosen) => row(
+            "Settings",
+            &format!(
+                "priority {}, min {}, max {}, free {}",
+                options.priority,
+                format_byte_size(chosen.min_ram),
+                format_byte_size(chosen.max_ram),
+                format_byte_size(chosen.free_ram)
+            ),
+        ),
+        None => row(
+            "Settings",
+            &format!(
+                "kept from the earlier vm add, in {}",
+                settings_path.display()
+            ),
+        ),
+    }
+    for (index, change) in changes.iter().enumerate() {
+        row(if index == 0 { "Definition" } else { "" }, change);
     }
     if !options.no_guest_install {
-        plan.push(
-            "install or upgrade rampire-guest in it, the build this host runs: logged in to it, \
-             or with it shut down for a moment when it can't be logged in to"
-                .to_owned(),
-        );
+        row("Guest", "install rampire-guest, this host's build");
     }
     if !running {
-        plan.push("start it".to_owned());
+        row("Then", "start it");
     } else if restart {
-        plan.push("shut it down and start it, so its new definition takes effect".to_owned());
-    }
-    let mut shown = format!("Adding {name} to RAMpire:\n");
-    for line in &plan {
-        shown.push_str(&format!("  - {line}\n"));
+        row("Then", "shut it down and start it again");
     }
     ui.show(&shown);
-    let question = format!("RAMpire then grows and shrinks {name}'s memory while it runs. Add it?");
+    let question = format!("Add {name}? RAMpire then grows and shrinks its memory while it runs.");
     // Agreeing answers the review's question about the guest's programs,
     // which only a person may answer: never `--yes`.
     let new_review = !kept && options.review.is_none();
@@ -197,7 +214,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     };
     if !agreed {
         ui.say("nothing changed");
-        return Ok(false);
+        return Ok(Added::Declined);
     }
     let answers = if new_review {
         ask_review(ui, &after, name)?
@@ -239,10 +256,14 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     if !running && !options.no_guest_install && crate::guest::offline_available() {
         installed = Some(offline(false, ui)?);
     } else if !running {
+        ui.say(&format!("starting {name}"));
         libvirt.virsh(&["start", name])?;
         ui.say(&format!("{name} started"));
     }
     if !options.no_guest_install && installed.is_none() {
+        ui.say(&format!(
+            "logging in to {name} to install rampire-guest; this waits up to 3 minutes for it to boot"
+        ));
         let logged_in = crate::guest::Guest::reach(
             &libvirt,
             name,
@@ -277,6 +298,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
             .as_ref()
             .is_some_and(|installed| installed.restart_needed)
     {
+        ui.say(&format!("shutting {name} down and starting it again"));
         crate::attest::cold_restart(name, &libvirt, Duration::from_secs(300))?;
         ui.say(&format!("{name} restarted"));
     }
@@ -302,7 +324,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     let changed = super::apply::apply_agreed(context, ui)?;
     // An install at boot may boot the VM once more.
     guest_reports_in(context, ui, name, Duration::from_secs(300));
-    Ok(changed)
+    Ok(Added::Yes { changed })
 }
 
 /// The new VM's sizes: suggested from its definition, as given otherwise.

@@ -36,6 +36,9 @@ impl DomainMemory {
 pub struct Suggestion {
     pub host_bytes: u64,
     pub host_reserve_bytes: u64,
+    /// The reserve RAMpire recommends; the one above differs when a
+    /// person chose their own.
+    pub recommended_reserve_bytes: u64,
     /// `None` when nothing is left for a pool.
     pub pool_bytes: Option<u64>,
 }
@@ -44,16 +47,51 @@ pub struct Suggestion {
 /// GiB. The pool is the rest after every domain's set-aside memory, rounded
 /// down to whole GiB.
 pub fn suggest(host_bytes: u64, domains: &[DomainMemory]) -> Suggestion {
-    let reserve = (host_bytes / 8).clamp(2 * GIB, 8 * GIB) / GIB * GIB;
-    let set_aside = domains
+    with_reserve(host_bytes, domains, recommended_reserve(host_bytes))
+}
+
+/// The reserve RAMpire recommends for a host with `host_bytes`.
+pub fn recommended_reserve(host_bytes: u64) -> u64 {
+    (host_bytes / 8).clamp(2 * GIB, 8 * GIB) / GIB * GIB
+}
+
+/// What every domain sets aside, together.
+pub fn set_aside(domains: &[DomainMemory]) -> u64 {
+    domains
         .iter()
         .map(DomainMemory::set_aside_bytes)
-        .fold(0, u64::saturating_add);
-    let pool = host_bytes.saturating_sub(reserve).saturating_sub(set_aside) / GIB * GIB;
+        .fold(0, u64::saturating_add)
+}
+
+/// The pool left with `reserve` kept for the host, in whole GiB; `None`
+/// when nothing is left.
+pub fn pool_after(host_bytes: u64, set_aside_bytes: u64, reserve: u64) -> Option<u64> {
+    let pool = host_bytes
+        .saturating_sub(reserve)
+        .saturating_sub(set_aside_bytes)
+        / GIB
+        * GIB;
+    (pool > 0).then_some(pool)
+}
+
+/// The suggestion with `reserve` kept for the host, as a person chose it.
+pub fn with_reserve(host_bytes: u64, domains: &[DomainMemory], reserve: u64) -> Suggestion {
     Suggestion {
         host_bytes,
         host_reserve_bytes: reserve,
-        pool_bytes: (pool > 0).then_some(pool),
+        recommended_reserve_bytes: recommended_reserve(host_bytes),
+        pool_bytes: pool_after(host_bytes, set_aside(domains), reserve),
+    }
+}
+
+/// What is wrong with `reserve` for a host with `host_bytes`.
+pub fn reserve_problem(host_bytes: u64, reserve: u64) -> Option<String> {
+    if reserve < 512 * rampire_core::MIB {
+        Some("at least 512MB: the host needs memory of its own".to_owned())
+    } else if reserve >= host_bytes {
+        Some("must be less than the host's memory".to_owned())
+    } else {
+        None
     }
 }
 
@@ -88,10 +126,18 @@ pub fn global_toml(suggestion: &Suggestion, domains: &[DomainMemory]) -> String 
             tenths(suggestion.host_bytes)
         ),
     };
-    text.push_str(&format!(
-        "# Memory the host keeps for itself: {reserve} GiB, {reserve_why}\nhost_reserve = \"{reserve}GB\"\n\n",
-        reserve = gib(suggestion.host_reserve_bytes),
-    ));
+    if suggestion.host_reserve_bytes == suggestion.recommended_reserve_bytes {
+        text.push_str(&format!(
+            "# Memory the host keeps for itself: {reserve} GiB, {reserve_why}\nhost_reserve = \"{reserve}GB\"\n\n",
+            reserve = gib(suggestion.host_reserve_bytes),
+        ));
+    } else {
+        text.push_str(&format!(
+            "# Memory the host keeps for itself, as chosen at init. The\n# recommended {recommended} GiB is {reserve_why}\nhost_reserve = \"{reserve}\"\n\n",
+            recommended = gib(suggestion.recommended_reserve_bytes),
+            reserve = rampire_core::format_byte_size(suggestion.host_reserve_bytes),
+        ));
+    }
     text.push_str(if domains.is_empty() {
         "# The pool every managed VM grows from: the host's memory, less the\n# reserve. The host has no VMs yet.\n"
     } else {
@@ -194,6 +240,13 @@ mod tests {
         );
         assert!(!small.contains("whatever happens"), "{small}");
         // A large host: more than 8 GiB would be an eighth.
+        // A reserve a person chose says so, and what was recommended.
+        let chosen = global_toml(&with_reserve(32 * GIB, &[], 3 * GIB / 2), &[]);
+        assert!(chosen.contains("as chosen at init"), "{chosen}");
+        assert!(chosen.contains("host_reserve = \"1536MB\""), "{chosen}");
+        let globals: rampire_core::settings::GlobalSettings = toml::from_str(&chosen).unwrap();
+        assert_eq!(globals.host_reserve, 3 * GIB / 2);
+        assert_eq!(globals.pool, Some(30 * GIB));
         let large = global_toml(&suggest(128 * GIB, &[]), &[]);
         assert!(
             large.contains("8 GiB, the most it keeps, though an"),

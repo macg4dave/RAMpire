@@ -40,6 +40,8 @@ pub enum Msg {
     Task(TaskId, FlowEvent),
     /// Changes other people made.
     Peers(Vec<PeerChange>),
+    /// Whether the host is set up: if not, its memory and its VMs'.
+    Setup(Result<Option<(u64, Vec<crate::init::DomainMemory>)>, String>),
     /// A key, a paste or a resize.
     Term(Event),
     /// The terminal can't be read any more.
@@ -59,7 +61,31 @@ pub enum FlowEvent {
     Shown(String),
     Ask(Question, Sender<Answer>),
     /// The flow ended: what it last said, or its error.
-    Done(Result<String, String>),
+    Done(Result<Ended, String>),
+}
+
+/// How a flow that didn't fail ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ended {
+    /// It did what it was started for.
+    Done(String),
+    /// It stopped without doing it, such as when No was answered; nothing
+    /// was changed.
+    NotDone(String),
+}
+
+impl Ended {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Done(text) | Self::NotDone(text) => text,
+        }
+    }
+}
+
+impl From<String> for Ended {
+    fn from(text: String) -> Self {
+        Self::Done(text)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,13 +96,22 @@ pub enum Question {
     Review(String),
     /// A short text.
     Text(String),
+    /// A value, filled in with the suggested one to keep or change.
+    Edit(String, String),
 }
 
 impl Question {
     pub fn text(&self) -> &str {
         match self {
-            Self::Confirm(text) | Self::Review(text) | Self::Text(text) => text,
+            Self::Confirm(text) | Self::Review(text) | Self::Text(text) | Self::Edit(text, _) => {
+                text
+            }
         }
+    }
+
+    /// Answered by typing, not yes or no.
+    pub fn typed(&self) -> bool {
+        matches!(self, Self::Text(_) | Self::Edit(..))
     }
 }
 
@@ -141,6 +176,13 @@ impl Ui for ChannelUi {
             _ => Ok(String::new()),
         }
     }
+
+    fn edit(&mut self, question: &str, suggested: &str) -> Result<String, String> {
+        match self.ask(Question::Edit(question.to_owned(), suggested.to_owned()))? {
+            Answer::Text(text) if !text.trim().is_empty() => Ok(text),
+            _ => Ok(suggested.to_owned()),
+        }
+    }
 }
 
 /// Run task `id`'s flow on its own thread, its questions and lines sent to
@@ -148,7 +190,7 @@ impl Ui for ChannelUi {
 pub fn spawn_flow(
     tx: Sender<Msg>,
     id: TaskId,
-    flow: impl FnOnce(&mut ChannelUi) -> Result<String, String> + Send + 'static,
+    flow: impl FnOnce(&mut ChannelUi) -> Result<Ended, String> + Send + 'static,
 ) {
     std::thread::spawn(move || {
         let mut ui = ChannelUi::new(tx, id);
@@ -382,10 +424,10 @@ mod tests {
         spawn_flow(tx, 1, |ui| {
             ui.say("checking");
             if !ui.confirm("Apply this?")? {
-                return Ok("nothing changed".to_owned());
+                return Ok("nothing changed".to_owned().into());
             }
             let kernel = ui.text("The guest's kernel release:")?;
-            Ok(format!("kernel {kernel}"))
+            Ok(format!("kernel {kernel}").into())
         });
         let mut said = Vec::new();
         loop {
@@ -400,7 +442,7 @@ mod tests {
                     reply.send(Answer::Text("6.12".to_owned())).unwrap();
                 }
                 Msg::Task(1, FlowEvent::Done(result)) => {
-                    said.push(result.unwrap());
+                    said.push(result.unwrap().text().to_owned());
                     break;
                 }
                 _ => panic!("unexpected message"),
@@ -421,7 +463,8 @@ mod tests {
     fn closing_a_question_stops_the_flow_with_nothing_more_changed() {
         let (tx, rx) = channel();
         spawn_flow(tx, 1, |ui| {
-            ui.confirm("Apply this?").map(|_| "applied".to_owned())
+            ui.confirm("Apply this?")
+                .map(|_| "applied".to_owned().into())
         });
         let error = loop {
             match rx.recv_timeout(Duration::from_secs(5)).unwrap() {

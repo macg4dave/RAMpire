@@ -137,6 +137,7 @@ fn run_app(context: Context) -> Result<(), String> {
         Duration::from_secs(1),
     );
     let mut app = app::App::new(context, theme, tx.clone(), control.clone());
+    app.check_setup();
     let mut screen = term::Term::open()?;
     jobs::spawn_keys(tx);
     let result = (|| -> Result<(), String> {

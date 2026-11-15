@@ -9,6 +9,20 @@ A change someone using RAMpire would notice gets a line under
 turns that section into the release's entry, and the entry becomes the
 release's notes on GitHub ([releasing](docs/releasing.md)).
 
+## Unreleased
+
+- The TUI sets up a host that isn't set up yet: it opens **Set up this
+  host** first, with the recommended host reserve filled in to keep or
+  change and the pool it leaves shown as you type. `rampire init` asks
+  the reserve the same way, and `--host-reserve SIZE` gives it.
+- Adding a VM in the TUI and answering No now ends **Not done**, not
+  "Done: VM is added".
+- A task's window shows that it is still working between steps, and
+  `vm add` says each step as it starts it, such as logging in to the VM.
+- The add form warns when the VM is running and adding will shut it
+  down; the plan `vm add` shows puts that warning first.
+- The add form and `vm add`'s plan are shorter and plainer.
+
 ## 0.5.0 (2026-11-15): Linux only
 
 The first release: the controller for a Linux KVM host and the Linux
