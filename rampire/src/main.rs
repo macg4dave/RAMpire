@@ -1,6 +1,6 @@
 //! `rampire`: the controller daemon and every operator command, defined once
 //! here with clap so `--help`, completions and man pages share one source
-//! (decision D16).
+//! and nothing else describes the command line.
 
 mod controller;
 mod daemon;
@@ -48,13 +48,37 @@ fn version() -> String {
     format!("{} (build {BUILD_ID})", env!("CARGO_PKG_VERSION"))
 }
 
+/// The help heading of every option meant for scripts rather than people.
+const SCRIPTS: &str = "For scripts";
+
+/// What stays the same from release to release, for scripts: shown after
+/// `rampire --help` and in rampire(8).
+const STABLE: &str = "For scripts:
+  Commands act at once and ask before a change; --yes answers those
+  questions, never a review question about a VM's programs. These stay
+  the same from the first release, and a change to any of them is named
+  in the changelog:
+  - the JSON documents of --json, each naming its schema and version:
+    rampire.status-report, rampire.check, rampire.doctor, rampire.vm-list;
+  - exit codes: 0 done, 1 failed or a problem found, 2 a wrong command
+    line, and with apply --detailed-exitcode 2 when the configuration
+    changed;
+  - the journal's event names and keys, the controller's and
+    event=operator_change for people's changes.
+  Text output and the TUI are for people and may change.";
+
 /// Share a pool of RAM between the VMs on a KVM host.
 ///
 /// Run with no command on a terminal, `rampire` opens the TUI: the pool,
 /// each VM, adding and removing VMs and the doctor, over SSH with
 /// `ssh -t HOST sudo rampire`.
 #[derive(Debug, Parser)]
-#[command(name = "rampire", version = version(), propagate_version = true)]
+#[command(
+    name = "rampire",
+    version = version(),
+    propagate_version = true,
+    after_long_help = STABLE
+)]
 struct Cli {
     /// The configuration directory. Default: /etc/rampire, the draft, for
     /// commands that change or check the configuration; the applied copy
@@ -64,11 +88,13 @@ struct Cli {
     /// The libvirt connection; default the configuration's `libvirt_uri`.
     #[arg(long, global = true, value_name = "URI")]
     connect: Option<String>,
-    /// Answer yes to every question, as a script does.
-    #[arg(long, global = true)]
+    /// Answer yes to every question that may be answered for a person
+    /// (never a review question), as a script does.
+    #[arg(long, global = true, help_heading = SCRIPTS)]
     yes: bool,
-    /// Write a versioned JSON document instead of text.
-    #[arg(long, global = true)]
+    /// Write a versioned JSON document instead of text (status, check,
+    /// doctor, vm list).
+    #[arg(long, global = true, help_heading = SCRIPTS)]
     json: bool,
     #[command(subcommand)]
     command: Option<Command>,
@@ -95,7 +121,7 @@ enum Command {
         #[command(flatten)]
         view: View,
         /// Pool events shown.
-        #[arg(long, value_name = "N", default_value_t = 8)]
+        #[arg(long, value_name = "N", default_value_t = 8, help_heading = SCRIPTS)]
         events: usize,
     },
     /// Watch one VM live.
@@ -105,13 +131,13 @@ enum Command {
         #[command(flatten)]
         view: View,
         /// Journal events shown.
-        #[arg(long, value_name = "N", default_value_t = 6)]
+        #[arg(long, value_name = "N", default_value_t = 6, help_heading = SCRIPTS)]
         events: usize,
         /// Seconds between guest agent reads.
-        #[arg(long, value_name = "SECONDS", default_value_t = 1)]
+        #[arg(long, value_name = "SECONDS", default_value_t = 1, help_heading = SCRIPTS)]
         guest_interval_seconds: u64,
         /// Skip guest agent reads.
-        #[arg(long)]
+        #[arg(long, help_heading = SCRIPTS)]
         no_guest: bool,
     },
     /// Check the configuration and every VM's attestation against the live
@@ -128,7 +154,7 @@ enum Command {
     Apply {
         /// Exit 0 when nothing changed, 2 when something changed and 1 on
         /// failure, for configuration management.
-        #[arg(long)]
+        #[arg(long, help_heading = SCRIPTS)]
         detailed_exitcode: bool,
     },
     /// Go back to the applied copy before the current one, through the same
@@ -147,7 +173,7 @@ enum Command {
         #[arg(required = true, value_name = "KEY=VALUE")]
         changes: Vec<String>,
         /// Change the draft only; apply later.
-        #[arg(long)]
+        #[arg(long, help_heading = SCRIPTS)]
         no_apply: bool,
     },
     /// Check what the host needs for RAMpire, with the fix for each problem,
@@ -229,23 +255,23 @@ enum VmCommand {
         #[arg(long)]
         fix_xml: bool,
         /// Use this reviewed profile in reviews/ instead of asking.
-        #[arg(long, value_name = "PROFILE")]
+        #[arg(long, value_name = "PROFILE", help_heading = SCRIPTS)]
         review: Option<String>,
         /// The guest's kernel release (`uname -r`), for a new review.
-        #[arg(long, value_name = "RELEASE")]
+        #[arg(long, value_name = "RELEASE", help_heading = SCRIPTS)]
         kernel: Option<String>,
         /// Pool priority; higher is served first.
-        #[arg(long, default_value_t = 100)]
+        #[arg(long, default_value_t = 100, help_heading = SCRIPTS)]
         priority: u32,
         /// Smallest size; default the boot RAM.
-        #[arg(long, value_name = "SIZE")]
+        #[arg(long, value_name = "SIZE", help_heading = SCRIPTS)]
         min_ram: Option<String>,
         /// Largest size; default the lower of the device and four times
         /// boot RAM.
-        #[arg(long, value_name = "SIZE")]
+        #[arg(long, value_name = "SIZE", help_heading = SCRIPTS)]
         max_ram: Option<String>,
         /// Spare memory the guest keeps; default 512MB.
-        #[arg(long, value_name = "SIZE")]
+        #[arg(long, value_name = "SIZE", help_heading = SCRIPTS)]
         free_ram: Option<String>,
     },
     /// Stop managing a VM at once. It keeps the memory it has until its next
@@ -264,7 +290,7 @@ enum VmCommand {
     ///
     /// Needed after any change to the VM's definition: a VM whose live
     /// evidence has drifted from its attestation is never re-attested
-    /// without a person (decision D11).
+    /// without a person.
     Attest {
         /// The VM; or --drifted for every VM whose evidence has drifted.
         #[arg(required_unless_present = "drifted", conflicts_with = "drifted")]
@@ -277,7 +303,7 @@ enum VmCommand {
         #[arg(long, conflicts_with = "drifted")]
         restart: bool,
         /// Write the attestation to the draft only; apply later.
-        #[arg(long)]
+        #[arg(long, help_heading = SCRIPTS)]
         no_apply: bool,
     },
 }
@@ -286,10 +312,10 @@ enum VmCommand {
 #[derive(Debug, clap::Args)]
 struct View {
     /// Print one plain snapshot and exit.
-    #[arg(long)]
+    #[arg(long, help_heading = SCRIPTS)]
     once: bool,
     /// Seconds between refreshes.
-    #[arg(long, value_name = "SECONDS", default_value_t = 1)]
+    #[arg(long, value_name = "SECONDS", default_value_t = 1, help_heading = SCRIPTS)]
     interval_seconds: u64,
 }
 
@@ -488,6 +514,9 @@ fn generate(what: Generated, directory: &Path) -> Result<ExitCode, String> {
         Generated::Man => {
             command.build();
             man_pages(&command, "rampire", directory)?;
+            let path = directory.join("rampire.toml.5");
+            std::fs::write(&path, toml_page())
+                .map_err(|error| format!("write {}: {error}", path.display()))?;
         }
         Generated::Completions => {
             for shell in [
@@ -528,6 +557,89 @@ fn man_pages(command: &clap::Command, name: &str, directory: &Path) -> Result<()
     Ok(())
 }
 
+/// Markdown from the settings' definitions as roff: code in bold, links as
+/// their text, and roff's own characters escaped.
+fn roff_text(markdown: &str) -> String {
+    let mut text = String::new();
+    let mut rest = markdown;
+    // Links keep their text.
+    while let Some(open) = rest.find('[') {
+        match (rest[open..].find("]("), rest[open..].find(')')) {
+            (Some(middle), Some(close)) if middle < close => {
+                text.push_str(&rest[..open]);
+                text.push_str(&rest[open + 1..open + middle]);
+                rest = &rest[open + close + 1..];
+            }
+            _ => {
+                text.push_str(&rest[..=open]);
+                rest = &rest[open + 1..];
+            }
+        }
+    }
+    text.push_str(rest);
+    let escaped = text.replace('\\', "\\e").replace('-', "\\-");
+    let mut bold = false;
+    let mut out = String::new();
+    for character in escaped.chars() {
+        if character == '`' {
+            out.push_str(if bold { "\\fR" } else { "\\fB" });
+            bold = !bold;
+        } else {
+            out.push(character);
+        }
+    }
+    // A line may not start with roff's control characters.
+    out.lines()
+        .map(|line| {
+            if line.starts_with('.') || line.starts_with('\'') {
+                format!("\\&{line}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// rampire.toml(5): the configuration files and every setting, from the
+/// settings' definitions in rampire-core.
+fn toml_page() -> String {
+    use rampire_core::settings_reference::{FILES, SIZES};
+    let mut page = format!(
+        ".TH RAMPIRE.TOML 5 \"\" \"RAMpire {}\" \"RAMpire\"\n.SH NAME\nrampire.toml \\- the RAMpire controller's configuration\n.SH DESCRIPTION\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    page.push_str(&roff_text(
+        "The draft in `/etc/rampire` holds `global.toml` for the host, one `vms.d/VM.toml` per VM and the review profiles in `reviews/`. People and tools edit the draft, or change it with `rampire set`; `rampire apply` checks a copy and makes it what the controller runs.",
+    ));
+    page.push('\n');
+    for file in FILES {
+        page.push_str(&format!(".SH {}\n", file.path.to_uppercase()));
+        page.push_str(&roff_text(&file.intro.replace('\n', " ")));
+        page.push('\n');
+        for setting in file.settings {
+            page.push_str(".TP\n");
+            page.push_str(&roff_text(setting.names));
+            if let Some(default) = setting.default {
+                page.push_str(&format!(" (default {})", roff_text(default)));
+            }
+            page.push('\n');
+            page.push_str(&roff_text(setting.meaning));
+            page.push_str(".\n");
+        }
+    }
+    page.push_str(".SH SIZES\n");
+    for paragraph in SIZES.split("\n\n") {
+        page.push_str(".PP\n");
+        page.push_str(&roff_text(&paragraph.replace('\n', " ")));
+        page.push('\n');
+    }
+    page.push_str(
+        ".SH SEE ALSO\n\\fBrampire\\fR(8), \\fBrampire\\-set\\fR(8), \\fBrampire\\-apply\\fR(8)\n",
+    );
+    page
+}
+
 /// The views' own options, from the shared ones.
 fn view_args(context: &Context, view: &View) -> Result<Vec<String>, String> {
     let mut args = vec![
@@ -555,6 +667,38 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use rampire_ops::reports::{CheckReport, CheckSchema};
+
+    #[test]
+    fn the_settings_page_names_every_setting_in_roff() {
+        let page = toml_page();
+        assert!(page.starts_with(".TH RAMPIRE.TOML 5"), "{page}");
+        for file in rampire_core::settings_reference::FILES {
+            for name in file.names() {
+                assert!(page.contains(&roff_text(&format!("`{name}`"))), "{name}");
+            }
+        }
+        assert!(
+            !page.contains("](administration.md"),
+            "links keep only their text"
+        );
+        assert_eq!(roff_text("`a-b` [x](y)"), "\\fBa\\-b\\fR x");
+        assert_eq!(roff_text(".x"), "\\&.x");
+    }
+
+    #[test]
+    fn script_options_are_under_their_own_heading() {
+        let command = Cli::command();
+        let json = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "json")
+            .unwrap();
+        assert_eq!(json.get_help_heading(), Some(SCRIPTS));
+        let config = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "config")
+            .unwrap();
+        assert_eq!(config.get_help_heading(), None);
+    }
 
     #[test]
     fn the_command_line_is_consistent() {

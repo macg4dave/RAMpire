@@ -6,7 +6,8 @@ use thiserror::Error;
 use crate::guest_policy::GuestPolicyDiagnostics;
 use crate::memory_request::{valid_identity, MemoryRequest, MemoryResult};
 
-/// The guest publication's version. Decision D20 restarted it at 1.
+/// The guest publication's version, restarted at 1 when documents began
+/// naming their schema (docs/names.md, wire identifiers).
 pub const RAW_TELEMETRY_VERSION: u16 = 1;
 
 crate::schema_name! {

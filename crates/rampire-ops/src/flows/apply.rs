@@ -149,7 +149,8 @@ fn stage_and_apply(
 ) -> Result<bool, String> {
     let draft = context.draft();
     // A VM with no attestation yet is attested here when its file names a
-    // review profile and it runs (decision D11); a drifted one is not.
+    // review profile and it runs; a drifted one is not, since only a person
+    // may accept a changed VM (`rampire vm attest`).
     for vm in crate::attest::attest_missing(&draft, &context.libvirt()?)? {
         ui.say(&format!("attested {vm}, which had no attestation"));
     }

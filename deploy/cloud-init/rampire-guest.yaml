@@ -1,5 +1,5 @@
 #cloud-config
-# A Linux guest RAMpire manages (roadmap O4.4). The VM's definition needs a
+# A Linux guest RAMpire manages (docs/fleet.md, adding VMs). The VM's definition needs a
 # virtio-mem device and the control channel org.rampire.control.0; on the
 # host, `rampire vm add VM --fix-xml` adds both. Boot RAM can be small: the
 # guest grows on demand once its service runs. A workload that reserves a

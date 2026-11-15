@@ -1,4 +1,4 @@
-//! The applied configuration (decision D10). `/etc/rampire` is a draft that
+//! The applied configuration (docs/administration.md). `/etc/rampire` is a draft that
 //! people and tools edit; the controller runs only a copy that
 //! `rampire apply` checked. Each applied copy is a snapshot directory under
 //! [`APPLIED_ROOT`] that is never changed once written, and the `current`

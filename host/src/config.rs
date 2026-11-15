@@ -124,7 +124,7 @@ impl HostSettings {
 
 impl HostSettings {
     /// Whether a running controller on `self` can take `new` by reloading
-    /// (roadmap O4.5): the same VMs on the same connection, each with the
+    /// (`systemctl reload rampire`): the same VMs on the same connection, each with the
     /// same device, guest and attestation. Priorities, limits, the pool, the
     /// host reserve, observe-only and the convergence timeout may change.
     pub fn reloadable_to(&self, new: &HostSettings) -> Result<(), String> {

@@ -19,7 +19,7 @@ SupplementaryGroups=qemu
 # libvirt_uri in global.toml.
 Environment=HOME=/run/rampire
 Environment=XDG_CACHE_HOME=/run/rampire/.cache
-# The controller runs only the copy `rampire apply` checked (decision D10),
+# The controller runs only the copy `rampire apply` checked,
 # never the draft in /etc/rampire: a mistake there can't reach it, through
 # a restart or a reboot. The copy holds global.toml, vms.d/ and
 # attestations/; durable state goes in the StateDirectory below.
@@ -34,7 +34,7 @@ Restart=no
 # Inherit the host manager's configured stop timeout rather than embedding a
 # test-derived deadline in the repository unit.
 # Holds each guest's latest publication (<vm_name>.publication.json) for
-# `rampire top` and `watch`, which run as root (decision D14), so it is
+# `rampire top` and `watch`, which run as root, so it is
 # private to the service account and root.
 RuntimeDirectory=rampire
 RuntimeDirectoryMode=0750

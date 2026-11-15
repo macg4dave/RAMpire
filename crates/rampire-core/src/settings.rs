@@ -82,7 +82,7 @@ const LINUX_REMOVAL_RETRY_MAX_SECONDS: u64 = 300;
 const LINUX_REMOVAL_RETRIES_AWAITED: u32 = 3;
 /// Allowance for the awaited retry's own offlining work and the next host
 /// poll (at most 10 s) to show its movement. Provisional until the recorded
-/// late-retry run (roadmap P1).
+/// late-retry run on a deployment.
 const LINUX_REMOVAL_SETTLE_MARGIN_SECONDS: u64 = 30;
 
 /// Seconds from a Linux removal's first busy failure to its `retries`-th
@@ -464,7 +464,7 @@ pub fn load_vm(path: &Path) -> Result<VmSettings, String> {
 /// consumer can act: `global.toml`, which may be absent, and every
 /// `vms.d/NAME.toml`, in name order. Other files in `vms.d`, such as editor
 /// backups, hidden files and a package's `NAME.toml.rpmnew`, are ignored. An
-/// empty `vms.d` is valid: the controller then manages no VMs (decision D13).
+/// empty `vms.d` is valid: the controller then manages no VMs (the controller waits for one).
 pub fn load_configuration(directory: &Path) -> Result<(GlobalSettings, Vec<VmSettings>), String> {
     let globals = load_globals(directory)?;
     let vms_directory = directory.join(VMS_DIRECTORY);

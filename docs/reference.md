@@ -14,7 +14,12 @@ once here. `rampire --help` and
 | `--json` | Write a versioned JSON document ([JSON documents](json.md)) |
 
 Every command but `daemon` runs as root. Exit codes: 0 done, 1 failed or
-a problem found, 2 a wrong command line.
+a problem found, 2 a wrong command line. The options for scripts, and
+what stays the same between releases, are in
+[the script interface](fleet.md#the-script-interface). `man rampire`,
+`man rampire-COMMAND` (`man rampire-vm-add`) and `man rampire.toml` are
+installed with the host package, and shell completion for bash, zsh and
+fish.
 
 ## The TUI
 

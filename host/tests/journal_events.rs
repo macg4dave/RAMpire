@@ -1,5 +1,5 @@
 //! Every journal event the controller logs is listed in docs/journal.md
-//! (roadmap O4.3), so scripts can rely on the names.
+//! (docs/fleet.md, the script interface), so scripts can rely on the names.
 
 use std::collections::BTreeSet;
 use std::path::Path;

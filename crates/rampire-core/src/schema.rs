@@ -1,4 +1,4 @@
-//! Every JSON document names its schema beside its version (decision D20),
+//! Every JSON document names its schema beside its version (docs/names.md, wire identifiers),
 //! so a reader can tell documents apart. A document whose `schema` is
 //! missing or names another document is refused when it is parsed.
 

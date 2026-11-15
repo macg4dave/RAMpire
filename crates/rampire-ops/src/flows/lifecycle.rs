@@ -424,7 +424,8 @@ pub fn vm_remove(
         return Ok(());
     }
     let libvirt = context.libvirt()?;
-    // The next cold start begins on boot RAM alone (decision D18).
+    // The next cold start begins on boot RAM alone: the saved requested
+    // size goes to 0.
     if libvirt.state(name).is_ok() {
         libvirt.virsh(&[
             "update-memory-device",

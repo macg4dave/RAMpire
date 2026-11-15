@@ -1,4 +1,4 @@
-//! The controller's metrics as a Prometheus text file (roadmap O4.2): no
+//! The controller's metrics as a Prometheus text file (docs/fleet.md): no
 //! listening socket, so the sandbox doesn't change. node_exporter's textfile
 //! collector, or anything else, reads `/run/rampire/metrics.prom`.
 

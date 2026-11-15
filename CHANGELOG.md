@@ -17,6 +17,12 @@ again (decision D9).
   the same and is logged to the journal (`event=operator_change`).
   `rampire top` and `rampire watch` draw its screens alone.
 - `rampire vm list` and `rampire doctor VM`.
+- Man pages, `man rampire`, `man rampire-COMMAND` and `man rampire.toml`,
+  and `rampire-guest(8)` and `rampire-watch-ram(1)` in the guest package,
+  made from the same definitions as `--help`; shell completion for bash,
+  zsh and fish. Options meant for scripts are under "For scripts" in
+  `--help` and the man pages, and docs/fleet.md says what stays the same
+  between releases.
 - One command, `rampire`: `init`, `status`, `top`, `watch`, `check`,
   `diff`, `apply`, `rollback`, `set`, `logs`, `doctor` and `recover`, and
   `daemon` for the unit. Every command takes `--json` and `--yes`, and

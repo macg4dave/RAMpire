@@ -1,4 +1,4 @@
-//! The controller's systemd unit: one per host (decision D2).
+//! The controller's systemd unit: one per host, managing every VM.
 
 /// The controller's unit.
 pub const CONTROLLER_UNIT: &str = "rampire.service";

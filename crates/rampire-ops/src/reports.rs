@@ -1,4 +1,4 @@
-//! The documents `rampire COMMAND --json` writes (roadmap O4.1). Each names
+//! The documents `rampire COMMAND --json` writes. Each names
 //! its schema and version; docs/json.md describes them, and the tests below
 //! hold each to its example in `fixtures/json/`.
 

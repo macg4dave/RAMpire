@@ -1,4 +1,4 @@
-//! `rampire vm add` and `rampire vm remove` (roadmap O3.1 to O3.4, O3.7):
+//! `rampire vm add` and `rampire vm remove`:
 //! read a domain's definition, say what it lacks, fix what can be fixed by
 //! hand-checked text edits, and suggest its settings and review.
 
@@ -546,7 +546,7 @@ fn insert_device(text: &mut String, device: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Suggested settings for a domain (O3.4).
+/// Suggested settings for a domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Suggested {
     pub min_ram: u64,
@@ -581,7 +581,7 @@ pub struct Detected {
     pub answer: Option<(bool, AnswerSource)>,
 }
 
-/// The yes-or-no review answers (O3.2): detected where the definition shows
+/// The yes-or-no review answers: detected where the definition shows
 /// them, left to a person otherwise.
 pub fn review_answers(inspection: &Inspection, host_has_rdma: bool) -> Vec<Detected> {
     let seen = |clear: bool| clear.then_some((true, AnswerSource::Detected));

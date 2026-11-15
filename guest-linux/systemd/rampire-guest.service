@@ -34,7 +34,7 @@ UMask=0022
 # still runs, on two-second windows. It holds no other capability.
 AmbientCapabilities=CAP_SYS_RESOURCE
 CapabilityBoundingSet=CAP_SYS_RESOURCE
-# Sandbox, reviewed 2026-11-13 with the transport final (T4.4). The service
+# Sandbox, reviewed 2026-11-13 with the control channel as the transport. The service
 # reads /proc/meminfo, /proc/vmstat, /proc/pressure/memory (and writes its
 # trigger there), /sys memory-hotplug facts and its state directory, and
 # talks to the host only over the descriptor systemd opens for it.

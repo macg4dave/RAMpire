@@ -12,6 +12,7 @@ pub mod guest_policy;
 pub mod memory_request;
 pub mod pool;
 pub mod settings;
+pub mod settings_reference;
 pub mod stream;
 pub mod target_controller;
 pub mod units;

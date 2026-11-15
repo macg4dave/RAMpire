@@ -64,7 +64,7 @@ pub struct HostRuntime<G, S, R, H> {
     poll_interval: Duration,
     /// Where each round's metrics go, if anywhere.
     metrics: Option<MetricsFile>,
-    /// Set by SIGHUP: load the applied configuration again (O4.5).
+    /// Set by SIGHUP: load the applied configuration again.
     reload: Option<Reload>,
     #[cfg(unix)]
     controls: Vec<std::sync::Arc<crate::control_channel::ControlChannel>>,
@@ -135,7 +135,7 @@ where
         Ok(())
     }
 
-    /// Reload when `requested` is set, from what `load` returns (O4.5).
+    /// Reload when `requested` is set, from what `load` returns.
     pub fn with_reload(
         mut self,
         requested: std::sync::Arc<AtomicBool>,
@@ -184,7 +184,7 @@ where
         Ok(())
     }
 
-    /// Write each round's metrics to `path` (roadmap O4.2).
+    /// Write each round's metrics to `path`.
     pub fn with_metrics(mut self, path: std::path::PathBuf, build: String) -> Self {
         self.metrics = Some(MetricsFile {
             path,

@@ -1,10 +1,10 @@
-//! Making attestations (roadmap O3.5, O3.6). An attestation binds a VM's
+//! Making attestations (docs/administration.md, adding a VM). An attestation binds a VM's
 //! review profile to its live evidence; it lands in the draft's
 //! `attestations/` folder, so the next applied copy carries it.
 //!
 //! A VM with no attestation yet is attested by `apply` when its file names a
 //! review profile and it is running. A VM whose live evidence has drifted
-//! from its attestation needs a person: `rampire vm attest` (decision D11).
+//! from its attestation needs a person: `rampire vm attest`, never `apply` on its own.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

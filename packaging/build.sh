@@ -29,6 +29,8 @@ sed 's#/usr/local/libexec/rampire-guest#/usr/libexec/rampire-guest#' \
   guest-linux/systemd/rampire-guest.service > target/packaging/rampire-guest.service
 grep -q '^ExecStart=/usr/libexec/rampire-guest ' target/packaging/rampire-guest.service
 cp target/packaging/rampire-guest.service "$stage/rampire-guest.service"
+# Man pages and completions, from the binaries just built.
+bash packaging/docs.sh target/packaging/docs
 
 export VERSION=$version ARCH=amd64
 for package in rampire rampire-guest; do

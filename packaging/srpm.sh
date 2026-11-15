@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the source RPM that COPR builds the host and guest RPMs from
-# (roadmap O2.7), from the commit checked out:
+# (docs/releasing.md), from the commit checked out:
 #
 #   packaging/srpm.sh VERSION BUILD_ID OUTPUT_DIRECTORY [--rebuild]
 #

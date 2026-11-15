@@ -4,17 +4,45 @@ For administrators of many hosts. RAMpire's command works the same for a
 script as for a person. This page
 collects what automation needs.
 
-## The contract
+## The script interface
+
+Commands for people are short and act by default, asking before each
+change. A script uses the same commands with explicit options. These are
+listed under **For scripts** in `rampire --help`, each command's
+`--help` and the man pages:
+
+| Option | Commands | Does |
+|---|---|---|
+| `--yes` | every command | Answers yes to every question a script may answer. Never a review question about a VM's programs: give `vm add` a reviewed profile with `--review` instead |
+| `--json` | `status`, `check`, `doctor`, `vm list` | A versioned JSON document instead of text |
+| `--detailed-exitcode` | `apply` | 0 unchanged, 2 changed, 1 failed |
+| `--no-apply` | `set`, `vm attest` | Change the draft only, to apply later |
+| `--review`, `--kernel`, `--priority`, `--min-ram`, `--max-ram`, `--free-ram` | `vm add` | Every answer and setting given, so nothing is asked |
+| `--once`, `--interval-seconds`, `--events`, `--guest-interval-seconds`, `--no-guest` | `top`, `watch` | One plain snapshot, and how much is read |
 
 - Every command runs as root.
 - With `--yes`, or without a terminal, a command never asks. Without a
   terminal and without `--yes`, a command that would change something
   changes nothing and says so.
-- `--json` writes a versioned document; see [JSON documents](json.md).
-- Exit codes: 0 done, 1 failed or a problem found, 2 a wrong command
-  line. `rampire apply --detailed-exitcode` exits 0 when nothing changed,
-  2 when something changed and 1 on failure.
 - `rampire --version` names the build.
+
+### What stays the same
+
+From the first release, these don't change without the
+[changelog](../CHANGELOG.md) saying so:
+
+- the JSON documents, each naming its `schema` and `version`; a document
+  only gains fields within a version ([JSON documents](json.md));
+- exit codes: 0 done, 1 failed or a problem found, 2 a wrong command
+  line; `rampire apply --detailed-exitcode` exits 2 when something
+  changed;
+- the journal's event names and keys, the controller's and
+  `event=operator_change` for people's changes ([journal](journal.md));
+- the settings and their files ([reference](reference.md), `man
+  rampire.toml`).
+
+Text output, the TUI and the order of a command's lines are for people
+and may change: a script reads `--json`, exit codes and the journal.
 
 ## Configuration in git
 

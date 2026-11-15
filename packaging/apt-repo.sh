@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the signed apt repository that GitHub Pages serves (roadmap O2.7)
+# Build the signed apt repository that GitHub Pages serves (docs/releasing.md)
 # from a release's .deb packages:
 #
 #   packaging/apt-repo.sh PACKAGE_DIRECTORY OUTPUT_DIRECTORY

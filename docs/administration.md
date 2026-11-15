@@ -89,7 +89,7 @@ QEMU, `virsh` on the path, polkit, and Rust to build the controller.
 ### Changing the configuration
 
 `/etc/rampire` is a draft. The controller runs only a copy that
-`rampire apply` has checked (decision D10), so a mistake in the draft
+`rampire apply` has checked, so a mistake in the draft
 never reaches it, through a restart or a reboot:
 
 ```bash
