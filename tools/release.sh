@@ -214,7 +214,8 @@ publish() {
   has_text "$(entry Unreleased)" \
     && die "CHANGELOG.md lists unreleased changes: run tools/release.sh prepare first"
   notes_file=$(mktemp)
-  trap 'rm -f "$notes_file"' EXIT
+  # The path now: the trap runs after this function's locals are gone.
+  trap "rm -f $(printf %q "$notes_file")" EXIT
   notes "$version" > "$notes_file"
 
   echo >&2 "==> checking $tag against origin and GitHub"
