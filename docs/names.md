@@ -55,7 +55,7 @@ under `crates/` follow their crate names.
 | `virtio-mem-host` | `rampire` | One binary; the unit runs `rampire daemon` |
 | `virtio-mem-guest` (Linux) | `rampire-guest` | |
 | `virtio-mem-service.exe` (Windows) | `rampire-guest.exe` | Same name as on Linux |
-| `virtio-mem-watch-ram` (guest `.deb`) | `rampire-watch-ram` | |
+| `virtio-mem-watch-ram` (guest `.deb`) | `rampire-watch-ram` | Removed in 0.5.0; `rampire watch` and `rampire top` on the host show the guest's memory |
 
 ## Host
 
@@ -134,7 +134,7 @@ for example `VIRTIO_MEM_BUILD_ID` → `RAMPIRE_BUILD_ID`, apart from these:
 | Now | New | Why |
 |---|---|---|
 | `VIRTIO_MEM_CONNECT`, `VIRTIO_MEM_HOST_BIN`, `VIRTIO_MEM_HOST_CONFIG` | deleted | Used only by `recover-latch.sh`, deleted in O1.10 |
-| `VIRTIO_MEM_POOL_HOST`, `VIRTIO_MEM_POOL_CONFIG`, `VIRTIO_MEM_POOL_CHECKOUT` | `RAMPIRE_TOP_HOST`; the other two deleted | `Watch-Pool.ps1` runs `rampire top` over SSH, with no checkout or config path |
+| `VIRTIO_MEM_POOL_HOST`, `VIRTIO_MEM_POOL_CONFIG`, `VIRTIO_MEM_POOL_CHECKOUT` | deleted | `Watch-Pool.ps1`, which used `RAMPIRE_TOP_HOST`, was removed in 0.5.0: `ssh -t HOST sudo rampire top` does the same |
 
 ## Development names
 

@@ -1,8 +1,7 @@
 # Tools
 
-The live views: the TUI (`rampire` with no command), `rampire watch` and
-`rampire top` from the host package, and `rampire-watch-ram` from the
-guest package. `top` and `watch` are the TUI's dashboard and VM details
+The live views, all from the host package: the TUI (`rampire` with no
+command), `rampire watch` and `rampire top`. `top` and `watch` are the TUI's dashboard and VM details
 alone ([reference](reference.md#the-tui)). The host's views read the
 controller's journal, libvirt and each guest's publication. `CONFIG` below
 is the configuration directory the controller runs (installed as
@@ -75,37 +74,9 @@ From any computer with an SSH client, the whole TUI:
 ssh -t HOST sudo rampire
 ```
 
-From a Windows workstation, the pool alone:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\windows\Watch-Pool.ps1 [-NewWindow]
-```
-
-`Watch-Pool.ps1` connects with `ssh -t` and runs the host's installed
-`rampire top` through `sudo`, so the host needs no checkout. The host is a
-site value: pass `-HostName`, set `RAMPIRE_TOP_HOST`, or copy
-[deploy/examples/pool.env.example](../deploy/examples/pool.env.example) to
-`site/pool.env`. `-NewWindow` opens a separate 140-column window, and
-`-IntervalSeconds` and `-Events` are passed through.
-
-## Watching guest RAM
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\windows\Watch-Ram.ps1
-```
-
-`Watch-Ram.ps1` runs inside a Windows guest and reads memory directly with
-`GetPerformanceInfo`. It needs no configuration and no running service.
-
-```bash
-rampire-watch-ram [-i SECONDS] [--csv]
-```
-
-`rampire-watch-ram` comes with the Linux guest package and runs in the
-guest without root. It reads `/proc/meminfo` on every tick: a memory
-table, usage bars, memory pressure and page-cache refaults, and a history
-of total and in-use RAM. Piped, it prints plain snapshots; `--csv` gives
-one row per sample.
+On a Windows workstation, the same from PowerShell or Windows Terminal
+with Windows' own OpenSSH client; `ssh -t HOST sudo rampire top` shows
+the pool alone.
 
 ## Building
 

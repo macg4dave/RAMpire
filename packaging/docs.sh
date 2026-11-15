@@ -7,7 +7,7 @@
 # Run from the repository root after the release build. Writes
 #   man8/    rampire(8) and a page per subcommand (rampire-vm-add(8), ...)
 #   man5/    rampire.toml(5), from the settings' definitions in rampire-core
-#   guest/   rampire-guest(8) and rampire-watch-ram(1), from their --help
+#   guest/   rampire-guest(8), from its help
 #   completions/  rampire for bash, _rampire for zsh, rampire.fish for fish
 set -euo pipefail
 if (( $# != 1 )); then
@@ -38,9 +38,6 @@ help_page() {
 "$bin/rampire-guest" help |
   help_page rampire-guest 8 'the guest side of RAMpire, run by rampire-guest.service' \
   > "$out/guest/rampire-guest.8"
-bash tools/linux/watch-ram.sh --help |
-  help_page rampire-watch-ram 1 'show the RAM a Linux guest sees, live' \
-  > "$out/guest/rampire-watch-ram.1"
 
 # Compressed as distributions ship them; -n keeps the packages reproducible.
 gzip -n -9 "$out"/man8/* "$out"/man5/* "$out"/guest/*

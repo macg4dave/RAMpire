@@ -41,7 +41,6 @@ later:
 
 ```bash
 install -m 0755 rampire-guest /usr/libexec/rampire-guest
-install -m 0755 rampire-watch-ram /usr/bin/rampire-watch-ram
 install -m 0644 rampire-guest.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now rampire-guest

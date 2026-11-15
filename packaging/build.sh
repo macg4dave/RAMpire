@@ -66,7 +66,6 @@ if [[ -x $musl/rampire && -x $musl/rampire-guest ]]; then
   mkdir -p "$guest"
   install -m 0755 "$musl/rampire-guest" "$guest/rampire-guest"
   install -m 0644 "$stage/rampire-guest.service" "$repo/packaging/INSTALL.md" "$repo/LICENSE" "$guest/"
-  install -m 0755 "$repo/tools/linux/watch-ram.sh" "$guest/rampire-watch-ram"
   tar -C "$stage" -czf "$output/rampire-guest-$version-x86_64-linux.tar.gz" "${guest##*/}"
 fi
 

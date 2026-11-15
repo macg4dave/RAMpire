@@ -8,7 +8,7 @@ Task prompts are in `.github/prompts/`.
 The project is a product, not an early prototype. Anything done to a
 virtual machine, a guest, the host or the controller is done with the
 product itself: the `rampire` and `rampire-guest` packages and their
-commands (`rampire`, `rampire-watch-ram`). That covers installing,
+command, `rampire`. That covers installing,
 setting up, adding, configuring, starting, stopping, resizing and
 observing VMs.
 
