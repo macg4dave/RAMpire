@@ -9,7 +9,7 @@
 //! anything.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use rampire_core::{RawTelemetryEnvelope, VirtioMemState};
@@ -17,6 +17,7 @@ use rampire_host::config::HostSettings;
 use rampire_host::guest_channel::publication_copy_path;
 use rampire_host::virsh::Virsh;
 
+use crate::context::Context;
 use crate::dashboard::mib;
 use crate::host_readings::{
     device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
@@ -25,16 +26,6 @@ use crate::journal::{self, field};
 use crate::process;
 use crate::tone::{self, Tone};
 use rampire_core::GIB;
-
-pub const HELP: &str = "Pool options (read-only live dashboard of every VM):
-  --config PATH                 Required host list; the VMs, pool size and
-                                host floor come from it.
-  --connect URI                 Libvirt URI; default qemu:///system.
-  --interval-seconds N          Refresh period; default 1.
-  --events N                    Pool events shown; default 8.
-  --once                        Print one plain snapshot.
-Ctrl+C or q leaves a plain snapshot on the screen to copy.
-";
 
 /// Samples kept for the chart: more than the widest terminal shows.
 pub const HISTORY_SAMPLES: usize = 300;
@@ -66,6 +57,20 @@ pub struct Command {
 }
 
 impl Command {
+    /// The pool of the configuration the controller runs, with every
+    /// default.
+    pub fn load(context: &Context) -> Result<Self, String> {
+        let running = context.running();
+        if !running.join(rampire_core::settings::GLOBAL_FILE).exists() {
+            return Err(format!(
+                "{} has no configuration yet: set the host up with rampire init",
+                running.display()
+            ));
+        }
+        let settings = HostSettings::load(&running).map_err(|error| error.to_string())?;
+        Ok(Self::from_settings(&settings, &context.connection()?))
+    }
+
     /// The pool of the configuration in `settings`, which may manage no VMs.
     pub fn from_settings(settings: &HostSettings, connect: &str) -> Self {
         Self {
@@ -94,58 +99,6 @@ impl Command {
             once: false,
         }
     }
-}
-
-pub fn parse(args: &[String]) -> Result<Command, String> {
-    let mut config_path = None;
-    let mut connect = "qemu:///system".to_owned();
-    let mut interval = Duration::from_secs(1);
-    let mut events = 8;
-    let mut once = false;
-    let mut index = 0;
-    while index < args.len() {
-        let option = args[index].as_str();
-        if option == "--once" {
-            once = true;
-            index += 1;
-            continue;
-        }
-        let value = args
-            .get(index + 1)
-            .ok_or_else(|| format!("{option} requires a value"))?;
-        match option {
-            "--config" => config_path = Some(PathBuf::from(value)),
-            "--connect" => connect = value.clone(),
-            "--interval-seconds" => {
-                interval = value
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|seconds| seconds.is_finite() && *seconds >= 0.1)
-                    .map(Duration::from_secs_f64)
-                    .ok_or("--interval-seconds requires a number of seconds >= 0.1")?;
-            }
-            "--events" => {
-                events = value
-                    .parse()
-                    .ok()
-                    .filter(|count| (1..=30).contains(count))
-                    .ok_or("--events requires 1..=30")?;
-            }
-            _ => return Err(format!("unknown pool option: {option}\n\n{HELP}")),
-        }
-        index += 2;
-    }
-    let config_path = config_path.ok_or_else(|| format!("pool requires --config\n\n{HELP}"))?;
-    let settings = HostSettings::load(&config_path)
-        .map_err(|error| format!("{}: {error}", config_path.display()))?;
-    let mut command = Command::from_settings(&settings, &connect);
-    if command.vms.is_empty() {
-        return Err("RAMpire manages no VMs yet: there is no pool to show".to_owned());
-    }
-    command.interval = interval;
-    command.events = events;
-    command.once = once;
-    Ok(command)
 }
 
 /// One VM's device and guest at one refresh.
@@ -463,41 +416,31 @@ mod tests {
             .into_owned()
     }
 
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_owned()).collect()
+    fn command() -> Command {
+        let settings = HostSettings::load(Path::new(&fixture())).expect("tracked config");
+        Command::from_settings(&settings, "qemu:///system")
     }
 
     #[test]
     fn reads_every_vm_and_the_pool_from_the_configuration() {
-        let config = fixture();
-        let settings = HostSettings::load(Path::new(&config)).expect("tracked config");
-        let command = parse(&strings(&["--config", &config])).expect("defaults");
+        let settings = HostSettings::load(Path::new(&fixture())).expect("tracked config");
+        let context = Context {
+            config: Some(std::path::PathBuf::from(fixture())),
+            connect: Some("test:///default".to_owned()),
+            build: String::new(),
+            via: "command",
+        };
+        let command = Command::load(&context).expect("the fixture's pool");
         assert_eq!(command.vms.len(), settings.vms.len());
         assert_eq!(command.vms[0].name, settings.vms[0].vm_name);
         assert_eq!(command.pool_bytes, settings.pool_bytes);
         assert_eq!(command.unit, "rampire.service");
-        let command = parse(&strings(&[
-            "--config",
-            &config,
-            "--interval-seconds",
-            "0.5",
-            "--events",
-            "3",
-            "--once",
-        ]))
-        .expect("options");
-        assert!(command.once);
-        assert_eq!(command.interval, Duration::from_millis(500));
-        assert_eq!(command.events, 3);
-        for bad in [
-            vec![],
-            vec!["--config"],
-            vec!["--config", &config, "--interval-seconds", "0"],
-            vec!["--config", &config, "--events", "0"],
-            vec!["--config", &config, "--vm", "x"],
-        ] {
-            assert!(parse(&strings(&bad)).is_err(), "{bad:?}");
-        }
+        assert_eq!(command.connect, "test:///default");
+        let empty = Context {
+            config: Some(std::env::temp_dir().join("rampire-top-no-configuration")),
+            ..context
+        };
+        assert!(Command::load(&empty).unwrap_err().contains("rampire init"));
     }
 
     #[test]
@@ -548,8 +491,7 @@ mod tests {
 
     #[test]
     fn a_snapshot_sums_charges_free_memory_and_resizes() {
-        let config = fixture();
-        let mut command = parse(&strings(&["--config", &config])).unwrap();
+        let mut command = command();
         command.pool_bytes = Some(8 * GIB);
         let device = |requested: u64, current: u64| {
             Some(VirtioMemState {

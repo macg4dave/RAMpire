@@ -8,7 +8,9 @@ mod reporting;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
+use clap::builder::RangedU64ValueParser;
 use clap::{Parser, Subcommand};
 use rampire_ops::context::Context;
 use rampire_ops::flows::{apply, controller as flows, lifecycle};
@@ -121,7 +123,13 @@ enum Command {
         #[command(flatten)]
         view: View,
         /// Pool events shown.
-        #[arg(long, value_name = "N", default_value_t = 8, help_heading = SCRIPTS)]
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = 8,
+            value_parser = RangedU64ValueParser::<usize>::new().range(1..=30),
+            help_heading = SCRIPTS
+        )]
         events: usize,
     },
     /// Watch one VM live.
@@ -131,10 +139,22 @@ enum Command {
         #[command(flatten)]
         view: View,
         /// Journal events shown.
-        #[arg(long, value_name = "N", default_value_t = 6, help_heading = SCRIPTS)]
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = 6,
+            value_parser = RangedU64ValueParser::<usize>::new().range(1..=20),
+            help_heading = SCRIPTS
+        )]
         events: usize,
         /// Seconds between guest agent reads.
-        #[arg(long, value_name = "SECONDS", default_value_t = 1, help_heading = SCRIPTS)]
+        #[arg(
+            long,
+            value_name = "SECONDS",
+            default_value_t = 1,
+            value_parser = clap::value_parser!(u64).range(1..),
+            help_heading = SCRIPTS
+        )]
         guest_interval_seconds: u64,
         /// Skip guest agent reads.
         #[arg(long, help_heading = SCRIPTS)]
@@ -315,8 +335,21 @@ struct View {
     #[arg(long, help_heading = SCRIPTS)]
     once: bool,
     /// Seconds between refreshes.
-    #[arg(long, value_name = "SECONDS", default_value_t = 1, help_heading = SCRIPTS)]
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 1,
+        value_parser = clap::value_parser!(u64).range(1..),
+        help_heading = SCRIPTS
+    )]
     interval_seconds: u64,
+}
+
+impl View {
+    /// The refresh period and whether to print one snapshot.
+    fn settings(&self) -> (Duration, bool) {
+        (Duration::from_secs(self.interval_seconds), self.once)
+    }
 }
 
 fn main() -> ExitCode {
@@ -384,9 +417,13 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
         Command::Status { vm } => reporting::status(cli, vm.as_deref()),
         Command::Init => flows::init(&context, ui).map(|_| ExitCode::SUCCESS),
         Command::Top { view, events } => {
-            let mut args = view_args(&context, view)?;
-            args.extend(["--events".to_owned(), events.to_string()]);
-            rampire_ops::tui::live::top(rampire_ops::top::parse(&args)?, cwd)?;
+            let mut top = rampire_ops::top::Command::load(&context)?;
+            if top.vms.is_empty() {
+                return Err("RAMpire manages no VMs yet: there is no pool to show".to_owned());
+            }
+            (top.interval, top.once) = view.settings();
+            top.events = *events;
+            rampire_ops::tui::live::top(top, cwd)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Watch {
@@ -396,20 +433,12 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
             guest_interval_seconds,
             no_guest,
         } => {
-            let mut args = view_args(&context, view)?;
-            args.extend([
-                "--events".to_owned(),
-                events.to_string(),
-                "--guest-interval-seconds".to_owned(),
-                guest_interval_seconds.to_string(),
-            ]);
-            if let Some(vm) = vm {
-                args.extend(["--vm".to_owned(), vm.clone()]);
-            }
-            if *no_guest {
-                args.push("--no-guest".to_owned());
-            }
-            rampire_ops::tui::live::watch(rampire_ops::watch::parse(&args)?, cwd)?;
+            let mut watch = rampire_ops::watch::Command::load(&context, vm.as_deref())?;
+            (watch.interval, watch.once) = view.settings();
+            watch.events = *events;
+            watch.guest_interval = Duration::from_secs(*guest_interval_seconds);
+            watch.guest = !no_guest;
+            rampire_ops::tui::live::watch(watch, cwd)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Check => reporting::check(cli),
@@ -640,28 +669,6 @@ fn toml_page() -> String {
     page
 }
 
-/// The views' own options, from the shared ones.
-fn view_args(context: &Context, view: &View) -> Result<Vec<String>, String> {
-    let mut args = vec![
-        "--config".to_owned(),
-        path_text(&context.running())?,
-        "--connect".to_owned(),
-        context.connection()?,
-        "--interval-seconds".to_owned(),
-        view.interval_seconds.to_string(),
-    ];
-    if view.once {
-        args.push("--once".to_owned());
-    }
-    Ok(args)
-}
-
-fn path_text(path: &Path) -> Result<String, String> {
-    path.to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,6 +764,18 @@ mod tests {
         assert!(Cli::try_parse_from(["rampire", "logs", "--vm", "web"]).is_ok());
         assert!(Cli::try_parse_from(["rampire", "vm", "remove", "web"]).is_ok());
         assert!(Cli::try_parse_from(["rampire", "vm", "attest", "web", "--drifted"]).is_err());
+        // The live views' ranges.
+        assert!(Cli::try_parse_from(["rampire", "top", "--events", "30"]).is_ok());
+        for bad in [
+            &["top", "--events", "0"][..],
+            &["top", "--events", "31"],
+            &["top", "--interval-seconds", "0"],
+            &["watch", "--events", "21"],
+            &["watch", "--guest-interval-seconds", "0"],
+        ] {
+            let args = std::iter::once("rampire").chain(bad.iter().copied());
+            assert!(Cli::try_parse_from(args).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

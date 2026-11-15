@@ -13,7 +13,6 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rampire_host::config::{HostConfig, HostSettings};
 use ratatui::crossterm::event::Event;
 
 use super::peers::{self, PeerChange};
@@ -287,7 +286,7 @@ pub fn spawn_reader(context: Context, control: ReaderControl, tx: Sender<Msg>, i
                     let _ = tx.send(Msg::Peers(news));
                 }
                 let _ = tx.send(Msg::Controller(crate::systemd_unit::controller_state()));
-                match pool_command(&context) {
+                match crate::top::Command::load(&context) {
                     Ok(command) => {
                         if pool
                             .as_ref()
@@ -317,7 +316,7 @@ pub fn spawn_reader(context: Context, control: ReaderControl, tx: Sender<Msg>, i
                         .as_ref()
                         .is_none_or(|reader| &reader.command().vm != name);
                     if changed || slow_due {
-                        match vm_command(&context, name) {
+                        match crate::watch::Command::load(&context, Some(name)) {
                             Ok(command) => {
                                 if vm
                                     .as_ref()
@@ -346,30 +345,6 @@ pub fn spawn_reader(context: Context, control: ReaderControl, tx: Sender<Msg>, i
             }
         }
     });
-}
-
-fn pool_command(context: &Context) -> Result<crate::top::Command, String> {
-    let running = context.running();
-    if !running.join(rampire_core::settings::GLOBAL_FILE).exists() {
-        return Err(format!(
-            "{} has no configuration yet: set the host up with rampire init",
-            running.display()
-        ));
-    }
-    let settings = HostSettings::load(&running).map_err(|error| error.to_string())?;
-    Ok(crate::top::Command::from_settings(
-        &settings,
-        &context.connection()?,
-    ))
-}
-
-fn vm_command(context: &Context, vm: &str) -> Result<crate::watch::Command, String> {
-    let config =
-        HostConfig::load_vm(&context.running(), Some(vm)).map_err(|error| error.to_string())?;
-    Ok(crate::watch::Command::from_config(
-        &config,
-        &context.connection()?,
-    ))
 }
 
 /// A VM's settings as the controller runs them, its boot RAM and its state.

@@ -20,6 +20,7 @@ use rampire_host::guest_channel::{PublicationCopyFirst, PublicationSource};
 use rampire_host::qga::{GuestFileReader, VirshGuestFiles};
 use rampire_host::virsh::Virsh;
 
+use crate::context::Context;
 use crate::dashboard::mib;
 use crate::host_readings::{
     device_state, read_meminfo, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES,
@@ -27,19 +28,6 @@ use crate::host_readings::{
 use crate::journal::{self, field};
 use crate::tone::{self, Tone};
 use rampire_core::MIB;
-
-pub const HELP: &str = "Watch options (read-only live dashboard):
-  --config PATH                 Required host TOML; the VM, device alias,
-                                telemetry path and host floor come from it.
-  --vm NAME                     The [[vm]] to show; required with several.
-  --connect URI                 Libvirt URI; default qemu:///system.
-  --interval-seconds N          Refresh period; default 1.
-  --guest-interval-seconds N    Guest-agent telemetry read period; default 1.
-  --events N                    Journal events shown; default 6.
-  --no-guest                    Skip guest-agent reads.
-  --once                        Print one plain snapshot.
-Ctrl+C or q leaves a plain snapshot and the full recent events on the screen to copy.
-";
 
 /// Device samples kept for the history.
 pub const HISTORY_SAMPLES: usize = 300;
@@ -60,6 +48,15 @@ pub struct Command {
 }
 
 impl Command {
+    /// `vm` in the configuration the controller runs, with every default;
+    /// with no name, its only VM.
+    pub fn load(context: &Context, vm: Option<&str>) -> Result<Self, String> {
+        let running = context.running();
+        let config = HostConfig::load_vm(&running, vm)
+            .map_err(|error| format!("{}: {error}", running.display()))?;
+        Ok(Self::from_config(&config, &context.connection()?))
+    }
+
     /// One VM of the configuration, with every default.
     pub fn from_config(config: &HostConfig, connect: &str) -> Self {
         Self {
@@ -76,65 +73,6 @@ impl Command {
             once: false,
         }
     }
-}
-
-pub fn parse(args: &[String]) -> Result<Command, String> {
-    let mut config_path = None;
-    let mut vm = None;
-    let mut connect = "qemu:///system".to_owned();
-    let mut interval = Duration::from_secs(1);
-    let mut guest_interval = Duration::from_secs(1);
-    let mut events = 6;
-    let mut guest = true;
-    let mut once = false;
-    let mut index = 0;
-    while index < args.len() {
-        let option = args[index].as_str();
-        match option {
-            "--no-guest" => guest = false,
-            "--once" => once = true,
-            _ => {
-                index += 1;
-                let value = args
-                    .get(index)
-                    .ok_or_else(|| format!("{option} requires a value"))?;
-                let seconds = || {
-                    value
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|seconds| seconds.is_finite() && *seconds >= 0.1)
-                        .map(Duration::from_secs_f64)
-                        .ok_or_else(|| format!("{option} requires a number of seconds >= 0.1"))
-                };
-                match option {
-                    "--config" => config_path = Some(std::path::PathBuf::from(value)),
-                    "--vm" => vm = Some(value.clone()),
-                    "--connect" => connect = value.clone(),
-                    "--interval-seconds" => interval = seconds()?,
-                    "--guest-interval-seconds" => guest_interval = seconds()?,
-                    "--events" => {
-                        events = value
-                            .parse()
-                            .ok()
-                            .filter(|count| (1..=20).contains(count))
-                            .ok_or("--events requires 1..=20")?;
-                    }
-                    _ => return Err(format!("unknown watch option: {option}\n\n{HELP}")),
-                }
-            }
-        }
-        index += 1;
-    }
-    let config_path = config_path.ok_or_else(|| format!("watch requires --config\n\n{HELP}"))?;
-    let config = HostConfig::load_vm(&config_path, vm.as_deref())
-        .map_err(|error| format!("{}: {error}", config_path.display()))?;
-    let mut command = Command::from_config(&config, &connect);
-    command.interval = interval;
-    command.guest_interval = guest_interval;
-    command.events = events;
-    command.guest = guest;
-    command.once = once;
-    Ok(command)
 }
 
 /// The guest's latest publication, and which route it came by.
@@ -509,43 +447,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_the_vm_from_the_host_config_and_options() {
+    fn reads_the_vm_from_the_configuration() {
         let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/config");
-        let config = config.to_str().expect("UTF-8 path");
-        let expected = HostConfig::load_vm(Path::new(config), None).expect("tracked config");
-        let defaults = parse(&["--config", config].map(str::to_owned)).expect("defaults");
+        let expected = HostConfig::load_vm(&config, None).expect("tracked config");
+        let context = Context {
+            config: Some(config),
+            connect: Some("test:///default".to_owned()),
+            build: String::new(),
+            via: "command",
+        };
+        let defaults = Command::load(&context, None).expect("defaults");
         assert_eq!(defaults.vm, expected.vm_name);
         assert_eq!(defaults.alias, expected.alias);
         assert_eq!(defaults.telemetry_path, expected.raw_telemetry_path);
         assert_eq!(defaults.host_floor_bytes, expected.host_min_headroom_bytes);
         assert_eq!(defaults.unit, "rampire.service");
+        assert_eq!(defaults.connect, "test:///default");
         assert_eq!(defaults.interval, Duration::from_secs(1));
-        let command = parse(
-            &[
-                "--config",
-                config,
-                "--interval-seconds",
-                "0.5",
-                "--events",
-                "3",
-                "--no-guest",
-            ]
-            .map(str::to_owned),
-        )
-        .expect("options");
-        assert_eq!(command.interval, Duration::from_millis(500));
-        assert_eq!(command.events, 3);
-        assert!(!command.guest);
-        for bad in [
-            vec![],
-            vec!["--config", config, "--vm", "missing"],
-            vec!["--config", config, "--interval-seconds", "0"],
-            vec!["--config", config, "--events", "0"],
-            vec!["--config", config, "--bogus", "1"],
-            vec!["--config"],
-        ] {
-            assert!(parse(&bad.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
-        }
+        assert!(Command::load(&context, Some("missing")).is_err());
     }
 
     #[test]

@@ -19,8 +19,8 @@ site/pool.env (untracked; copy deploy/examples/pool.env.example):
 [CmdletBinding()]
 param(
     [string] $HostName,
-    [ValidateRange(0.1, 3600)]
-    [double] $IntervalSeconds = 1,
+    [ValidateRange(1, 3600)]
+    [int] $IntervalSeconds = 1,
     [ValidateRange(1, 30)]
     [int] $Events = 8,
     # Open the dashboard in a separate, suitably sized console window.
@@ -45,17 +45,15 @@ if (-not $HostName) {
 if ($HostName -match '[\s''"`$\\;&|<>]') {
     throw "Refusing a host name with spaces or shell characters: $HostName"
 }
-$interval = $IntervalSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
-
 if ($NewWindow) {
     $arguments = @(
         '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command',
         ("mode con cols=140 lines=52; & '{0}' -HostName '{1}' -IntervalSeconds {2} -Events {3}" -f
-            $PSCommandPath, $HostName, $interval, $Events)
+            $PSCommandPath, $HostName, $IntervalSeconds, $Events)
     )
     Start-Process powershell -ArgumentList $arguments
     return
 }
 
-& ssh -t $HostName "sudo rampire top --interval-seconds $interval --events $Events"
+& ssh -t $HostName "sudo rampire top --interval-seconds $IntervalSeconds --events $Events"
 exit $LASTEXITCODE
