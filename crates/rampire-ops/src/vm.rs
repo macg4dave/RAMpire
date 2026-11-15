@@ -51,6 +51,15 @@ impl Inspection {
         self.devices.first()
     }
 
+    /// Whether `live`, the running definition, lacks what this saved one
+    /// gives RAMpire: the device, the control channel or the balloon as
+    /// saved. Such a VM needs a cold start to run its saved definition.
+    pub fn runs_behind(&self, live: &Self) -> bool {
+        live.device().is_none()
+            || live.control_channel != self.control_channel
+            || live.balloon != self.balloon
+    }
+
     /// Problems that stop RAMpire managing the domain, each with its fix.
     pub fn problems(&self) -> Vec<(String, String)> {
         let mut problems = Vec::new();

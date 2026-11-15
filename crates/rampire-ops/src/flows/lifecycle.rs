@@ -137,7 +137,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
             }
             let backups = Path::new(DOMAIN_BACKUPS);
             std::fs::create_dir_all(backups).map_err(|error| error.to_string())?;
-            let backup = backups.join(format!("{name}-{}.xml", process::unix_millis()?));
+            let backup = backups.join(backup_name(name, process::unix_millis()?));
             std::fs::copy(&before, &backup)
                 .map_err(|error| format!("keep {}: {error}", backup.display()))?;
             libvirt.virsh(&["define", &path_text(&after)?])?;
@@ -203,9 +203,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     // its saved definition has still needs one.
     if running && !restart_needed {
         let live = vm::inspect(&libvirt.virsh(&["dumpxml", name])?)?;
-        restart_needed = live.device().is_none()
-            || !live.control_channel
-            || live.balloon.as_deref() != inspection.balloon.as_deref();
+        restart_needed = inspection.runs_behind(&live);
     }
     let question = match (running, restart_needed) {
         (true, false) => None,
@@ -503,11 +501,7 @@ pub fn forgotten_files(
     }
     if let Ok(entries) = std::fs::read_dir(DOMAIN_BACKUPS) {
         for entry in entries.flatten() {
-            let file = entry.file_name().to_string_lossy().into_owned();
-            if file
-                .strip_prefix(name)
-                .is_some_and(|rest| rest.starts_with('-') && rest.ends_with(".xml"))
-            {
+            if is_backup_of(&entry.file_name().to_string_lossy(), name) {
                 gone.push(entry.path());
             }
         }
@@ -533,6 +527,21 @@ pub fn forgotten_files(
         }
     }
     Ok(gone)
+}
+
+/// The file in [`DOMAIN_BACKUPS`] that keeps `name`'s definition as it was
+/// before `vm add --fix-xml` changed it at `unix_millis`.
+fn backup_name(name: &str, unix_millis: u64) -> String {
+    format!("{name}-{unix_millis}.xml")
+}
+
+/// Whether `file` is one of `name`'s backups: not another VM's whose name
+/// starts with it (`web-2-...` for `web`).
+fn is_backup_of(file: &str, name: &str) -> bool {
+    file.strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| rest.strip_suffix(".xml"))
+        .is_some_and(|millis| !millis.is_empty() && millis.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The applied copy, current or running, that still manages `name`. Its
@@ -758,6 +767,16 @@ mod tests {
         assert!(!parked.exists());
         // The shared profile it named is kept: vm add didn't write it for web.
         assert!(draft.path().join("reviews/linux-standard.toml").exists());
+    }
+
+    #[test]
+    fn a_vms_backups_are_its_own() {
+        let backup = backup_name("web", 1_700_000_000_000);
+        assert!(is_backup_of(&backup, "web"));
+        assert!(!is_backup_of(&backup_name("web-2", 1_700_000_000_000), "web"));
+        assert!(!is_backup_of("web-notes.xml", "web"));
+        assert!(!is_backup_of("web-.xml", "web"));
+        assert!(!is_backup_of(&backup, "we"));
     }
 
     #[test]

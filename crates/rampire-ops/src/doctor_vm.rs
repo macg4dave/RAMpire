@@ -221,10 +221,7 @@ pub fn definition(
     }
     if let Some(live) = live {
         let running = crate::vm::inspect(live)?;
-        let behind = running.device().is_none()
-            || running.control_channel != inspection.control_channel
-            || running.balloon.as_deref() != inspection.balloon.as_deref();
-        findings.push(if behind {
+        findings.push(if inspection.runs_behind(&running) {
             Finding::problem(
                 "running definition",
                 format!("{vm} isn't running its saved definition"),
