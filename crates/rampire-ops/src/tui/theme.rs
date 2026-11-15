@@ -490,6 +490,17 @@ impl Theme {
         }
     }
 
+    /// A table's chosen row: the selection's background, with each cell
+    /// keeping its own colours, so a bar still shows how full it is.
+    pub fn selected_row(&self) -> Style {
+        match self.colours() {
+            Some(colours) => Style::new()
+                .bg(self.colour(colours.selected))
+                .add_modifier(Modifier::BOLD),
+            None => Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        }
+    }
+
     pub fn tone(&self, tone: Tone) -> Style {
         match tone {
             Tone::Normal => self.text(),

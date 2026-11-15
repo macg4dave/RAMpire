@@ -626,6 +626,77 @@ fn remove_lines(text: &mut String, start: usize, end: usize) {
     text.replace_range(from..to, "");
 }
 
+/// The definition with its virtio-mem device holding `size` bytes, and
+/// `<memory>` and `<maxMemory>` raised to fit it. A device's size changes
+/// only when the VM next starts.
+pub fn grow_device(xml: &str, size: u64) -> Result<String, String> {
+    let inspection = inspect(xml)?;
+    let old = inspection
+        .device()
+        .ok_or("the domain has no virtio-mem device")?
+        .size_bytes;
+    let total = inspection.memory_bytes.saturating_sub(old) + size;
+    let mut text = xml.to_owned();
+    let start = text
+        .find("<memory model='virtio-mem'")
+        .ok_or("can't find the virtio-mem device's text")?;
+    let end = start
+        + text[start..]
+            .find("</memory>")
+            .ok_or("the virtio-mem device has no end")?;
+    let device = &text[start..end];
+    let open = device.find("<size").ok_or("no <size> in the device")?;
+    let close = open
+        + device[open..]
+            .find("</size>")
+            .ok_or("no </size> in the device")?
+        + "</size>".len();
+    let grown = format!(
+        "{}<size unit='KiB'>{}</size>{}",
+        &device[..open],
+        size / 1024,
+        &device[close..]
+    );
+    text.replace_range(start..end, &grown);
+    if let Some(start) = find_element(&text, "maxMemory") {
+        let tag_end = start + text[start..].find('>').ok_or("<maxMemory> has no end")?;
+        let end = start
+            + text[start..]
+                .find("</maxMemory>")
+                .ok_or("<maxMemory> has no end")?
+            + "</maxMemory>".len();
+        let tag = &text[start..tag_end];
+        let quoted = |key: &str| {
+            let at = tag.find(&format!("{key}='"))? + key.len() + 2;
+            Some(tag[at..at + tag[at..].find('\'')?].to_owned())
+        };
+        let value = text[tag_end + 1..end - "</maxMemory>".len()].trim();
+        let current = libvirt_bytes(value, quoted("unit").as_deref())?;
+        if current < total {
+            let slots = quoted("slots").unwrap_or_else(|| "1".to_owned());
+            text.replace_range(
+                start..end,
+                &format!(
+                    "<maxMemory slots='{slots}' unit='KiB'>{}</maxMemory>",
+                    total / 1024
+                ),
+            );
+        }
+    }
+    if let Some(start) = find_element(&text, "memory") {
+        let end = start
+            + text[start..]
+                .find("</memory>")
+                .ok_or("<memory> has no end")?
+            + "</memory>".len();
+        text.replace_range(
+            start..end,
+            &format!("<memory unit='KiB'>{}</memory>", total / 1024),
+        );
+    }
+    Ok(text)
+}
+
 /// `<maxMemory>`, on its own line before the domain's `<memory>`.
 fn insert_max_memory(text: &mut String, slots: usize, total: u64) -> Result<(), String> {
     let at = text
@@ -942,6 +1013,17 @@ mod tests {
         let fixed = inspect(&text).unwrap();
         assert_eq!(fixed.numa_cells, 1);
         assert!(fixed.problems().is_empty(), "{:?}", fixed.problems());
+    }
+
+    #[test]
+    fn a_grown_device_fits_in_max_memory_and_memory() {
+        let web = inspect(MANAGED).unwrap();
+        let old = web.device().unwrap().size_bytes;
+        let grown = inspect(&grow_device(MANAGED, old + 4 * GIB).unwrap()).unwrap();
+        assert_eq!(grown.device().unwrap().size_bytes, old + 4 * GIB);
+        assert_eq!(grown.memory_bytes, web.memory_bytes + 4 * GIB);
+        assert!(grown.problems().is_empty(), "{:?}", grown.problems());
+        assert!(grow_device(PLAIN, GIB).is_err(), "no device to grow");
     }
 
     #[test]

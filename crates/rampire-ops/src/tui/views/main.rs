@@ -378,7 +378,7 @@ fn vm_list(
         .header(Row::new(header).style(theme.dim()))
         .block(block)
         .style(theme.card())
-        .row_highlight_style(theme.selected())
+        .row_highlight_style(theme.selected_row())
         .highlight_symbol(Line::styled(theme.icon(Icon::Pointer), theme.accent()))
         .highlight_spacing(HighlightSpacing::Always);
     let mut state = TableState::new().with_selected(selected);

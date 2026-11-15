@@ -168,7 +168,7 @@ logged as `event=operator_change action=tui_failed`.
 | `rampire diff` | Shows the draft against the applied copy |
 | `rampire apply [--detailed-exitcode]` | Copies the draft, checks the copy while the controller runs, shows the difference, asks, then makes it current and reloads or restarts the controller. A failing draft changes nothing |
 | `rampire rollback` | Returns to the applied copy before the current one, through the same checks |
-| `rampire set TARGET KEY=VALUE... [--no-apply]` | Changes settings in a VM's file, or in `global.toml` with `global`, keeping comments, then applies |
+| `rampire set TARGET KEY=VALUE... [--no-apply]` | Changes settings in a VM's file, or in `global.toml` with `global`, keeping comments, then applies. The controller takes a change at once; a `max_ram` more than the VM's virtio-mem device holds also grows the device in its definition, which takes a restart: asked whether now, or at the VM's next start |
 
 ### VMs
 

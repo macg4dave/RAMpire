@@ -821,11 +821,67 @@ pub fn set(
         (target != crate::set::GLOBAL).then_some(target),
         &[("changes", &described.join(","))],
     );
+    if target != crate::set::GLOBAL {
+        grow_for_max_ram(context, ui, target)?;
+    }
     if no_apply {
         ui.say("not applied: run rampire apply when ready");
         return Ok(false);
     }
     apply(context, ui)
+}
+
+/// When a VM's `max_ram` is more than its virtio-mem device holds, grow the
+/// device in its definition. That takes a restart, so ask whether now; else
+/// it takes effect at the VM's next start. Within the device, a change needs
+/// nothing here: the controller takes it at once.
+fn grow_for_max_ram(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(), String> {
+    use std::time::Duration;
+    let settings = crate::attest::vm_settings(&context.draft(), vm)?;
+    let libvirt = context.libvirt()?;
+    let xml = libvirt.virsh(&["dumpxml", "--inactive", vm])?;
+    let inspection = crate::vm::inspect(&xml)?;
+    let Some(device) = inspection.device() else {
+        return Ok(());
+    };
+    let boot = inspection.memory_bytes.saturating_sub(device.size_bytes);
+    if settings.max_ram <= boot + device.size_bytes {
+        return Ok(());
+    }
+    let block = device.block_bytes.max(2 * 1024 * 1024);
+    let size = (settings.max_ram - boot).div_ceil(block) * block;
+    let grown = crate::vm::grow_device(&xml, size)?;
+    let backup = redefine(&libvirt, vm, &xml, &grown)?;
+    crate::audit::record(
+        context,
+        "fix_xml",
+        Some(vm),
+        &[("backup", &backup.display().to_string())],
+    );
+    ui.say(&format!(
+        "{vm}'s memory device grows from {} to {} for maximum RAM {}; the old definition is in {}",
+        format_byte_size(device.size_bytes),
+        format_byte_size(size),
+        format_byte_size(settings.max_ram),
+        backup.display()
+    ));
+    if libvirt.state(vm)? != "running" {
+        ui.say(&format!("it takes effect when {vm} starts"));
+        return Ok(());
+    }
+    if ui.confirm(&format!(
+        "The bigger device takes a restart. Restart {vm} now? (No: it grows at its next start)"
+    ))? {
+        crate::attest::cold_restart(vm, &libvirt, Duration::from_secs(300))?;
+        ui.say(&format!("{vm} restarted"));
+    } else {
+        ui.say(&format!(
+            "{vm} grows to {} at its next start; until then it stays within {}",
+            format_byte_size(settings.max_ram),
+            format_byte_size(boot + device.size_bytes)
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
