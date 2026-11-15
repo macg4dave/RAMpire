@@ -309,8 +309,8 @@ pub static BINDINGS: &[Binding] = &[
     bind(Only(L::List), &[ch('v')], C::Letter('v'), "its details, live"),
     bind(Only(L::List), &[ch('s')], C::Letter('s'), "its settings: priority and its RAM limits"),
     bind(Only(L::List), &[ch('o')], C::Letter('o'), "its doctor"),
+    bind(Only(L::List), &[ch('x')], C::Letter('x'), "remove RAMpire from it"),
     bind(Only(L::List), &[ch('a')], C::Letter('a'), "install RAMpire on it, or finish installing"),
-    bind(Only(L::List), &[ch('c')], C::Letter('c'), "restart it, so its saved definition takes effect"),
     hinted(Only(L::List), &[ch('d')], C::Doctor, "the doctor, for the host and every VM", "doctor"),
     bind(Only(L::List), &[ch('l')], C::Logs, "the logs"),
     bind(Only(L::List), &[ch(','), ch('o')], C::Sort(SortBy::Pool, false), "sort: as the pool lists them"),
@@ -337,8 +337,7 @@ pub static BINDINGS: &[Binding] = &[
     hinted(Only(L::Details), &[ch('s')], C::Letter('s'), "its settings", "settings"),
     bind(Only(L::Details), &[ch('o')], C::Letter('o'), "its doctor"),
     bind(Only(L::Details), &[ch('l')], C::Letter('l'), "its logs"),
-    bind(Only(L::Details), &[ch('c')], C::Letter('c'), "restart it, so its saved definition takes effect"),
-    bind(Only(L::Details), &[ch('k')], C::Letter('k'), "remove it: stop managing it and delete what RAMpire kept for it"),
+    bind(Only(L::Details), &[ch('x')], C::Letter('x'), "remove RAMpire from it"),
     // The doctor.
     hinted(Only(L::Doctor), &[of(K::Enter)], C::RunFix, "run the chosen fix, when RAMpire can run it", "run the fix"),
     hinted(Only(L::Doctor), &[ch('/')], C::Filter, "show only the findings with what is typed", "filter"),
@@ -546,8 +545,8 @@ mod tests {
             "k moves in the list; removing is in the menu"
         );
         assert_eq!(
-            lookup(Layer::Details, Key::ch('k')),
-            Lookup::Run(Cmd::Letter('k'))
+            lookup(Layer::Details, Key::ch('x')),
+            Lookup::Run(Cmd::Letter('x'))
         );
         let Lookup::Chord(chords) = lookup(Layer::List, Key::ch('g')) else {
             panic!("g starts chords");

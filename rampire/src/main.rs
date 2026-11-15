@@ -299,10 +299,11 @@ enum VmCommand {
         #[arg(long, value_name = "SIZE", help_heading = SCRIPTS)]
         free_ram: Option<String>,
     },
-    /// Stop managing a VM at once, and remove everything RAMpire kept for
-    /// it: its settings, recorded setup, request state, definition backups
-    /// and the review `vm add` wrote for it. It keeps the memory it has
-    /// until its next cold start, which begins on boot RAM alone.
+    /// Remove RAMpire from a VM: stop managing it at once, put its
+    /// definition back to plain RAM (its boot RAM, without the virtio-mem
+    /// device, control channel, `maxMemory` or single NUMA cell, and with
+    /// the balloon it had), and remove everything RAMpire kept for it. The
+    /// definition takes effect at the VM's next start.
     Remove {
         /// The VM.
         vm: String,

@@ -341,11 +341,33 @@ fn redefine(
     std::fs::create_dir_all(backups).map_err(|error| error.to_string())?;
     let backup = backups.join(backup_name(name, process::unix_millis()?));
     std::fs::write(&backup, xml).map_err(|error| format!("keep {}: {error}", backup.display()))?;
-    let temporary = TempDir::new(name)?;
-    let path = temporary.path().join("fixed.xml");
-    std::fs::write(&path, fixed).map_err(|error| error.to_string())?;
-    libvirt.virsh(&["define", &path_text(&path)?])?;
+    define(libvirt, name, fixed)?;
     Ok(backup)
+}
+
+/// Save `xml` as `name`'s definition.
+fn define(libvirt: &crate::attest::Libvirt, name: &str, xml: &str) -> Result<(), String> {
+    let temporary = TempDir::new(name)?;
+    let path = temporary.path().join("definition.xml");
+    std::fs::write(&path, xml).map_err(|error| error.to_string())?;
+    libvirt.virsh(&["define", &path_text(&path)?])?;
+    Ok(())
+}
+
+/// `name`'s definition before `vm add` first changed it: its oldest backup.
+fn original_definition(name: &str) -> Option<String> {
+    let oldest = std::fs::read_dir(DOMAIN_BACKUPS)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|file| is_backup_of(file, name))
+        .min_by_key(|file| {
+            file.trim_start_matches(name)
+                .trim_matches(|c: char| !c.is_ascii_digit())
+                .parse::<u64>()
+                .unwrap_or(u64::MAX)
+        })?;
+    std::fs::read_to_string(Path::new(DOMAIN_BACKUPS).join(oldest)).ok()
 }
 
 /// Wait for the guest service to report in, and say how it is.
@@ -590,37 +612,37 @@ fn write_vm_settings(
     Ok(())
 }
 
-/// `rampire vm remove`: stop managing a VM and remove everything RAMpire
-/// kept for it.
+/// `rampire vm remove`: stop managing a VM, put its definition back to
+/// plain RAM, and remove everything RAMpire kept for it.
 pub fn vm_remove(context: &Context, ui: &mut dyn Ui, name: &str) -> Result<(), String> {
     use rampire_core::settings;
     let directory = context.draft();
     let path = settings_path(&directory, name)?;
     let vm = settings::load_vm(&path)?;
     if !ui.confirm(&format!(
-        "Stop managing {name} and remove everything RAMpire keeps for it? It keeps its memory until its next cold start."
+        "Remove RAMpire from {name}? It stops managing it, and from {name}'s next start its \
+         definition has plain RAM again, its boot RAM, for Cockpit or virsh to change."
     ))? {
         ui.say("nothing changed");
         return Ok(());
     }
     let libvirt = context.libvirt()?;
-    // The next cold start begins on boot RAM alone: the saved requested
-    // size goes to 0.
-    if libvirt.state(name).is_ok() {
-        libvirt.virsh(&[
-            "update-memory-device",
-            name,
-            "--alias",
-            &vm.alias,
-            "--requested-size",
-            "0",
-            "--config",
-        ])?;
-    }
     std::fs::remove_file(&path).map_err(|error| format!("remove {}: {error}", path.display()))?;
     crate::audit::record(context, "vm_remove", Some(name), &[]);
     // The controller lets go of the VM first; then what it kept goes.
     super::apply::apply_agreed(context, ui)?;
+    if libvirt.state(name).is_ok() {
+        let xml = libvirt.virsh(&["dumpxml", "--inactive", name])?;
+        let plain = crate::vm::plain_xml(&xml, original_definition(name).as_deref())?;
+        if plain != xml {
+            define(&libvirt, name, &plain)?;
+            let ram = crate::vm::inspect(&plain)?.memory_bytes;
+            ui.say(&format!(
+                "{name}'s definition has plain RAM again, {}, from its next start",
+                format_byte_size(ram)
+            ));
+        }
+    }
     if let Some(copy) = still_managed_in(name)? {
         ui.say(&format!(
             "{name} is still managed by {}, so what RAMpire keeps for it stays",

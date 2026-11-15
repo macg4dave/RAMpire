@@ -444,7 +444,7 @@ mod tests {
                 "v  Live details",
                 "s  Settings",
                 "o  Doctor: check everything about it",
-                "Remove it",
+                "Remove RAMpire",
                 "same as: rampire",
             ] {
                 assert!(

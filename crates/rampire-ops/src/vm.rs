@@ -517,6 +517,115 @@ fn find_element(text: &str, name: &str) -> Option<usize> {
     None
 }
 
+/// The definition without what RAMpire needs, as `vm remove` leaves it:
+/// no virtio-mem device or control channel, no `<maxMemory>` when no
+/// other memory device is left, no NUMA cell when there is one (a single
+/// cell only fixes the memory's size), `<memory>` and `<currentMemory>` the
+/// boot RAM, and the memory balloon `original` (the definition before
+/// `vm add`) had. The guest agent's channel stays: it is libvirt's own.
+pub fn plain_xml(xml: &str, original: Option<&str>) -> Result<String, String> {
+    let inspection = inspect(xml)?;
+    let boot = inspection.boot();
+    let mut text = xml.to_owned();
+    while let Some(start) = text.find("<memory model='virtio-mem'") {
+        let end = start
+            + text[start..]
+                .find("</memory>")
+                .ok_or("the virtio-mem device has no end")?
+            + "</memory>".len();
+        remove_lines(&mut text, start, end);
+    }
+    if let Some(name) = text.find(&format!("name='{MEMORY_CONTROL_CHANNEL_NAME}'")) {
+        let start = text[..name]
+            .rfind("<channel")
+            .ok_or("the control channel has no start")?;
+        let end = name
+            + text[name..]
+                .find("</channel>")
+                .ok_or("the control channel has no end")?
+            + "</channel>".len();
+        remove_lines(&mut text, start, end);
+    }
+    if inspection.other_memory_devices == 0 {
+        if let Some(start) = find_element(&text, "maxMemory") {
+            let end = start
+                + text[start..]
+                    .find("</maxMemory>")
+                    .ok_or("<maxMemory> has no end")?
+                + "</maxMemory>".len();
+            remove_lines(&mut text, start, end);
+        }
+    }
+    if inspection.numa_cells == 1 {
+        if let Some(start) = find_element(&text, "numa") {
+            let end =
+                start + text[start..].find("</numa>").ok_or("<numa> has no end")? + "</numa>".len();
+            remove_lines(&mut text, start, end);
+        }
+        // A bare <cpu> left empty says nothing.
+        if let Some(start) = text.find("<cpu>") {
+            let rest = &text[start + "<cpu>".len()..];
+            if let Some(close) = rest.find("</cpu>") {
+                if rest[..close].trim().is_empty() {
+                    let end = start + "<cpu>".len() + close + "</cpu>".len();
+                    remove_lines(&mut text, start, end);
+                }
+            }
+        }
+    }
+    for name in ["memory", "currentMemory"] {
+        if let Some(start) = find_element(&text, name) {
+            let close = format!("</{name}>");
+            let end = start
+                + text[start..]
+                    .find(&close)
+                    .ok_or_else(|| format!("<{name}> has no end"))?
+                + close.len();
+            text.replace_range(
+                start..end,
+                &format!("<{name} unit='KiB'>{}</{name}>", boot / 1024),
+            );
+        }
+    }
+    if let Some(balloon) = original.and_then(balloon_element) {
+        if !balloon.contains("model='none'") {
+            if let Some(current) = balloon_element(&text) {
+                text = text.replacen(&current, &balloon, 1);
+            }
+        }
+    }
+    Ok(text)
+}
+
+/// The `<memballoon>` element's whole text.
+fn balloon_element(text: &str) -> Option<String> {
+    let start = text.find("<memballoon")?;
+    let tag_end = start + text[start..].find('>')?;
+    let end = if text[..tag_end].ends_with('/') {
+        tag_end + 1
+    } else {
+        start + text[start..].find("</memballoon>")? + "</memballoon>".len()
+    };
+    Some(text[start..end].to_owned())
+}
+
+/// Remove `start..end` with the indentation before it and the line break
+/// after it, when it stands on lines of its own.
+fn remove_lines(text: &mut String, start: usize, end: usize) {
+    let line_start = text[..start].rfind('\n').map_or(0, |index| index + 1);
+    let from = if text[line_start..start].trim().is_empty() {
+        line_start
+    } else {
+        start
+    };
+    let to = if text[end..].starts_with('\n') {
+        end + 1
+    } else {
+        end
+    };
+    text.replace_range(from..to, "");
+}
+
 /// `<maxMemory>`, on its own line before the domain's `<memory>`.
 fn insert_max_memory(text: &mut String, slots: usize, total: u64) -> Result<(), String> {
     let at = text
@@ -833,6 +942,29 @@ mod tests {
         let fixed = inspect(&text).unwrap();
         assert_eq!(fixed.numa_cells, 1);
         assert!(fixed.problems().is_empty(), "{:?}", fixed.problems());
+    }
+
+    #[test]
+    fn a_plain_definition_has_nothing_of_rampires_and_its_boot_ram() {
+        // What vm add makes of a plain domain, back to what it was.
+        let desk = inspect(PLAIN).unwrap();
+        let added = fix_xml(PLAIN, &desk).unwrap().unwrap();
+        let plain = plain_xml(&added, Some(PLAIN)).unwrap();
+        for gone in ["virtio-mem", "org.rampire.control.0", "<maxMemory", "<numa"] {
+            assert!(!plain.contains(gone), "{gone}:\n{plain}");
+        }
+        let back = inspect(&plain).unwrap();
+        assert!(back.device().is_none() && !back.control_channel);
+        assert_eq!(back.memory_bytes, desk.boot());
+        assert_eq!(back.balloon, desk.balloon, "the balloon it had");
+        assert!(back.guest_agent_channel, "the guest agent's channel stays");
+        // A managed VM's own definition loses its device too.
+        let managed = plain_xml(MANAGED, None).unwrap();
+        assert!(
+            !managed.contains("virtio-mem") && !managed.contains("<maxMemory"),
+            "{managed}"
+        );
+        assert_eq!(inspect(&managed).unwrap().memory_bytes, 1024 * MIB);
     }
 
     #[test]

@@ -747,8 +747,8 @@ impl App {
             Pick::Open(View::Doctor(Some(vm.to_owned()))),
         );
         let remove = item(
-            'k',
-            "Remove it: stop managing it and delete what RAMpire kept for it",
+            'x',
+            "Remove RAMpire",
             line(&["vm", "remove", vm]),
             Pick::Run(Action::Remove(vm.to_owned())),
         );
@@ -777,12 +777,6 @@ impl App {
                     "Logs",
                     line(&["logs", "--vm", vm]),
                     Pick::Open(View::Logs(Some(vm.to_owned()))),
-                ),
-                item(
-                    'c',
-                    "Restart it, so its saved definition takes effect",
-                    line(&["vm", "restart", vm]),
-                    Pick::Run(Action::Restart(vm.to_owned())),
                 ),
                 remove,
             ],
