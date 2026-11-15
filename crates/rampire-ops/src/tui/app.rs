@@ -708,6 +708,20 @@ impl App {
     /// Queue `action` as a task.
     pub fn start(&mut self, action: Action) -> TaskId {
         let title = action.command_line(&self.context);
+        // The same command already queued or running isn't started again,
+        // as when Add is pressed twice: that one goes on.
+        if let Some(task) = self.tasks.list.iter().find(|task| {
+            !task.state.finished()
+                && (task.title == title
+                    || matches!(
+                        (&task.action, &action),
+                        (Action::Add { vm: one, .. }, Action::Add { vm: other, .. }) if one == other
+                    ))
+        }) {
+            let id = task.id;
+            self.notify(format!("Already under way: {title}"), Tone::Dim);
+            return id;
+        }
         let waiting = self.tasks.active() > 0;
         let id = self.tasks.add(action, title.clone());
         if waiting {
@@ -998,9 +1012,22 @@ impl App {
     /// A menu's letter for `entry`, from the list or its details: the same
     /// as choosing it in the menu.
     pub(super) fn shortcut(&mut self, entry: &Entry, letter: char) {
-        let (_, choices) = self.menu(entry);
-        if let Some(choice) = choices.into_iter().find(|choice| choice.key == letter) {
-            self.pick(choice.pick);
+        let (text, choices) = self.menu(entry);
+        match choices.into_iter().find(|choice| choice.key == letter) {
+            Some(choice) => self.pick(choice.pick),
+            // A key that does nothing would look like a TUI that didn't
+            // hear it: say why, with what the menu says about the VM.
+            None => {
+                let why = text
+                    .iter()
+                    .find(|line| line.starts_with("Problem:") || line.contains("is offered once"))
+                    .cloned()
+                    .unwrap_or_else(|| "Enter shows what its menu offers.".to_owned());
+                self.notify(
+                    format!("{letter} isn't offered for {}: {why}", entry.name),
+                    Tone::Warn,
+                );
+            }
         }
     }
 

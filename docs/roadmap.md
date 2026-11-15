@@ -23,6 +23,17 @@ Work that is done goes in the [changelog](../CHANGELOG.md), not here.
   opens a terminal, that `pkexec` keeps the terminal's colours (`TERM`),
   and that the polkit prompt shows.
 
+## Testing
+
+- **The simulated host.** Whole workflows (a `vm add` with its
+  questions, waits and failures; a VM restarting with the TUI open) are
+  checked only by the live suite, which needs a host set up for it and
+  takes minutes. Done looks like: the flows and the TUI run in the gate
+  against a fake libvirt, guest agent and journal that can fail as real
+  ones do ([testing](testing.md#the-simulated-host)). The flows' system
+  paths (`/etc/rampire`, `/var/lib/rampire`, `/run/rampire`) need to come
+  from the context first, so a test can give them a folder of its own.
+
 ## Building
 
 - **Install checks over a slow network.** `tools/build.sh install-check`

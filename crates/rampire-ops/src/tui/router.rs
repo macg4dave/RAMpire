@@ -322,11 +322,13 @@ impl App {
             Cmd::Letter(letter) if !self.list.marks.is_empty() && "asxubc".contains(letter) => {
                 self.for_marked(letter)
             }
-            Cmd::Letter(letter) => {
-                if let Some(entry) = hovered {
-                    self.shortcut(&entry, letter);
-                }
-            }
+            Cmd::Letter(letter) => match hovered {
+                Some(entry) => self.shortcut(&entry, letter),
+                None => self.notify(
+                    format!("{letter} is for a VM: choose one in the list first"),
+                    Tone::Warn,
+                ),
+            },
             Cmd::Sort(by, reverse) => {
                 self.list.sort = by;
                 self.list.reverse = reverse;
@@ -781,8 +783,18 @@ impl App {
                 if actions.is_empty() {
                     self.notify("Nothing changed.", Tone::Dim);
                 }
-                for action in actions {
-                    self.start(action);
+                let started: Vec<_> = actions
+                    .into_iter()
+                    .map(|action| self.start(action))
+                    .collect();
+                // What was asked for is under way: its window opens at
+                // once, rather than the list coming back with no sign of it
+                // until its first question.
+                if let Some(first) = started.first() {
+                    self.overlay = Some(Overlay::Task {
+                        id: *first,
+                        from_list: false,
+                    });
                 }
             }
             _ => {}
@@ -1268,6 +1280,36 @@ mod tests {
         press(&mut app, KeyCode::Char('y'));
         assert_eq!(app.tasks.list.len(), 2);
         assert_eq!(app.tasks.active(), 2);
+    }
+
+    #[test]
+    fn a_letter_not_offered_says_so_rather_than_nothing() {
+        let (mut app, _rx) = app();
+        // vm0 is managed: it has no Add.
+        press(&mut app, KeyCode::Char('a'));
+        let shown = format!("{:?}", app.notices);
+        assert!(shown.contains("a isn't offered for vm0"), "{shown}");
+        assert!(app.dialog.is_none());
+    }
+
+    #[test]
+    fn adding_opens_its_window_at_once_and_only_once() {
+        let (mut app, _rx) = app();
+        app.add_form(&["newvm".to_owned()]);
+        // A setting changed, so its command line has an option.
+        typed(&mut app, "5");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.layer(), Layer::Task, "the task's window, not the list");
+        assert_eq!(app.tasks.list.len(), 1);
+        assert!(
+            app.tasks.list[0].title.contains("--priority"),
+            "{}",
+            app.tasks.list[0].title
+        );
+        // Add again while it is under way: the same task, not a second one.
+        let again = app.start(Action::add("newvm"));
+        assert_eq!(app.tasks.list.len(), 1);
+        assert_eq!(Some(again), app.tasks.list.first().map(|task| task.id));
     }
 
     #[test]

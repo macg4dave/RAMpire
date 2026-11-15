@@ -2,84 +2,40 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Windows: build service on the build VM",
-      "type": "process",
-      "command": "make",
-      "args": ["windows-build"],
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: native gate on the build VM",
-      "type": "process",
-      "command": "make",
-      "args": ["windows-native-gate"],
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: installed build status",
-      "type": "process",
-      "command": "make",
-      "args": ["windows-status"],
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "RHEL: local gate",
+      "label": "Gate",
       "type": "shell",
       "command": "cargo",
-      "args": ["xtask", "gate", "local"],
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: native gate",
-      "type": "shell",
-      "command": "cargo",
-      "args": ["xtask", "windows", "all"],
-      "options": {
-        "env": {
-          "RAMPIRE_WINDOWS_SSH": "${input:windowsSshTarget}",
-          "RAMPIRE_WINDOWS_DIR": "${input:windowsWorkspace}",
-          "RAMPIRE_WINDOWS_ARTIFACTS": "${input:windowsArtifacts}",
-          "RAMPIRE_WINDOWS_CONNECT_TIMEOUT_SECONDS": "${input:windowsConnectTimeout}",
-          "RAMPIRE_WINDOWS_OPERATION_TIMEOUT_SECONDS": "${input:windowsOperationTimeout}"
-        }
+      "args": [
+        "xtask",
+        "gate",
+        "local"
+      ],
+      "group": {
+        "kind": "test",
+        "isDefault": true
       },
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "Live suite (rampire-test-* VMs on this host)",
+      "type": "shell",
+      "command": "cargo",
+      "args": [
+        "xtask",
+        "live"
+      ],
       "problemMatcher": []
     },
     {
-      "label": "Build: all non-mutating gates",
-      "dependsOrder": "sequence",
-      "dependsOn": ["RHEL: local gate", "Windows: native gate"],
+      "label": "Packages",
+      "type": "shell",
+      "command": "tools/build.sh",
+      "args": [
+        "package"
+      ],
       "problemMatcher": []
-    }
-  ],
-  "inputs": [
-    {
-      "id": "windowsSshTarget",
-      "type": "promptString",
-      "description": "Configured SSH target for the Windows build guest"
-    },
-    {
-      "id": "windowsWorkspace",
-      "type": "promptString",
-      "description": "Absolute Windows workspace path"
-    },
-    {
-      "id": "windowsArtifacts",
-      "type": "promptString",
-      "description": "Local directory for verified Windows artifacts"
-    },
-    {
-      "id": "windowsConnectTimeout",
-      "type": "promptString",
-      "description": "SSH connection timeout in seconds"
-    },
-    {
-      "id": "windowsOperationTimeout",
-      "type": "promptString",
-      "description": "Per-operation timeout in seconds"
     }
   ]
 }

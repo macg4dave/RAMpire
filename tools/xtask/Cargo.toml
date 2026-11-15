@@ -4,7 +4,7 @@ version = "0.5.0"
 edition = "2021"
 authors = ["macg4dave"]
 license = "GPL-3.0-or-later"
-description = "Repository build tooling: the gate and the packages"
+description = "Repository build and test tooling: the gate, the packages and the live suite"
 publish = false
 
 [dependencies]

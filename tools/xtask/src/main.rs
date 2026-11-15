@@ -1,12 +1,13 @@
 mod build_identity;
 mod licenses;
+mod live;
 mod local;
 mod package;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const HELP: &str = r#"Repository build tooling
+const HELP: &str = r#"Repository build and test tooling
 
 The gate and the packages: tools/build.sh runs these in the build
 container.
@@ -32,10 +33,11 @@ fn execute(arguments: &[String]) -> Result<(), String> {
     let repo = repo_root()?;
     match arguments.first().map(String::as_str) {
         Some("help" | "--help" | "-h") | None => {
-            print!("{HELP}\n{}", package::HELP);
+            print!("{HELP}\n{}{}", package::HELP, live::HELP);
             Ok(())
         }
         Some("gate") => gate(&arguments[1..], &repo),
+        Some("live") => live::run(&arguments[1..], &repo),
         Some("package") => package::run(&package::parse(&arguments[1..])?, &repo),
         Some("fixtures") if arguments.len() == 1 => fixtures(&repo),
         Some("licenses") => match &arguments[1..] {

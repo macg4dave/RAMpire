@@ -47,6 +47,15 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   mark, what it is doing now and for how long, where the buttons were, so
   a long step no longer looks finished; the status bar offers only the
   keys that do something then.
+- Saving the Add form (and the other settings forms) opens the task's
+  window at once, instead of going back to the list until its first
+  question. Adding a VM that is already being added doesn't start a
+  second add (which asked everything twice); the one under way goes on.
+- When the guest service runs but hasn't reported in, the wait says why
+  from the controller's side: the reason it can't reach the VM's control
+  channel, from its own log, rather than its error about the control
+  files a guest on the channel never writes. The guest service's last
+  log lines are shown too.
 - Installing the guest service through the guest agent no longer fails
   with "Argument list too long": each part of a file sent is small
   enough for one argument.

@@ -619,8 +619,8 @@ fn why_not_reported(context: &Context, libvirt: &crate::attest::Libvirt, vm: &st
             "{vm} still runs its old definition, without RAMpire's device and channel: it needs a restart (rampire vm restart {vm})"
         );
     }
-    match crate::guest::service_state(libvirt, vm) {
-        Some(state) if state.starts_with("active") => {}
+    let service = match crate::guest::service_state(libvirt, vm) {
+        Some(state) if state.starts_with("active") => state,
         Some(state) => {
             return format!(
                 "its guest service isn't running: {state}. In {vm}: systemctl status rampire-guest"
@@ -631,6 +631,24 @@ fn why_not_reported(context: &Context, libvirt: &crate::attest::Libvirt, vm: &st
                 "its guest agent doesn't run commands, so RAMpire can't see inside {vm}. In {vm}: systemctl status rampire-guest"
             )
         }
+    };
+    // The guest is up: what is missing is between it and the controller.
+    // The controller says why it can't reach the channel; a guest without
+    // one writes control files instead, which the controller reads through
+    // the agent, so its error about those files says nothing here.
+    match crate::journal::channel_event(vm, Path::new("/")) {
+        Some(event) if event.starts_with("unavailable") => {
+            return format!(
+                "its guest service runs ({service}), but the controller can't reach {vm}'s control channel: {}",
+                event.trim_start_matches("unavailable: ")
+            )
+        }
+        Some(_) => {
+            return format!(
+                "its guest service runs ({service}) and the controller is connected to its control channel, but nothing has come over it yet"
+            )
+        }
+        None => {}
     }
     match crate::inventory::read_status(context, vm) {
         Ok(status) => {
@@ -641,8 +659,7 @@ fn why_not_reported(context: &Context, libvirt: &crate::attest::Libvirt, vm: &st
                 .collect();
             if problems.is_empty() {
                 format!(
-                    "its guest service runs, but the controller has nothing from it yet ({})",
-                    crate::reports::status_line(&status)
+                    "its guest service runs ({service}), but the controller has had nothing from it yet and hasn't said why: rampire logs --vm {vm}"
                 )
             } else {
                 problems.join("; ")

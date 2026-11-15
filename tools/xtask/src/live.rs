@@ -1,0 +1,1041 @@
+//! `cargo xtask live`: the live suite ([testing](../../../docs/testing.md)).
+//!
+//! It installs this checkout's build on this host, makes its own small VMs
+//! named `rampire-test-*` from cloud images, and works through what a
+//! person does with RAMpire, in the TUI and with the commands, each run in
+//! tmux and read off the screen as a person would see it. Every question
+//! asked is checked against what is expected, and the screen against what
+//! must never be on it. At the end it says what failed, with the screens,
+//! in `target/live/report.md`, and takes its VMs out again.
+//!
+//! It only ever changes `rampire-test-*` VMs. It answers No to changing the
+//! pool, so the host's own settings stay as they are.
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant};
+
+pub const HELP: &str = r#"
+The live suite, on this host (docs/testing.md):
+  cargo xtask live [--no-install] [--keep] [SCENARIO...]
+                                   installs this build, makes rampire-test-*
+                                   VMs, runs every scenario (or those named)
+                                   and writes target/live/report.md.
+                                   --keep leaves the VMs for a look after.
+  Scenarios: add-running, add-off, restart-open, settings, upgrade, remove
+  RAMPIRE_LIVE_DIR (or site/build.env) names a folder for the VMs' disks.
+"#;
+
+const PREFIX: &str = "rampire-test-";
+const SCENARIOS: [&str; 6] = [
+    "add-running",
+    "add-off",
+    "restart-open",
+    "settings",
+    "upgrade",
+    "remove",
+];
+
+/// The systems the test VMs run, from their cloud images.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum System {
+    /// Debian 13: apt, and a guest agent that runs commands.
+    Debian,
+    /// Rocky Linux 10: dnf, and a guest agent that doesn't run commands, as
+    /// RHEL ships it, so the disk way is used.
+    Rocky,
+}
+
+impl System {
+    fn url(self) -> &'static str {
+        match self {
+            Self::Debian => {
+                "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+            }
+            Self::Rocky => {
+                "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2"
+            }
+        }
+    }
+
+    fn base(self) -> &'static str {
+        match self {
+            Self::Debian => "debian-13.qcow2",
+            Self::Rocky => "rocky-10.qcow2",
+        }
+    }
+
+    fn osinfo(self) -> &'static str {
+        match self {
+            Self::Debian => "debian13",
+            Self::Rocky => "rocky9",
+        }
+    }
+
+    fn vm(self) -> String {
+        match self {
+            Self::Debian => format!("{PREFIX}debian"),
+            Self::Rocky => format!("{PREFIX}rocky"),
+        }
+    }
+}
+
+struct Options {
+    install: bool,
+    keep: bool,
+    only: Vec<String>,
+}
+
+fn parse(arguments: &[String]) -> Result<Options, String> {
+    let mut options = Options {
+        install: true,
+        keep: false,
+        only: Vec::new(),
+    };
+    for argument in arguments {
+        match argument.as_str() {
+            "--no-install" => options.install = false,
+            "--keep" => options.keep = true,
+            name if SCENARIOS.contains(&name) => options.only.push(name.to_owned()),
+            other => return Err(format!("unknown live argument {other}{HELP}")),
+        }
+    }
+    Ok(options)
+}
+
+/// A failure the suite found: where, what, and the screen at the time.
+struct Failure {
+    scenario: String,
+    what: String,
+    screen: Option<String>,
+}
+
+/// What the run found, and where it is in the suite.
+struct Run {
+    repo: PathBuf,
+    dir: PathBuf,
+    scenario: String,
+    failures: Vec<Failure>,
+    log: String,
+}
+
+impl Run {
+    fn fail(&mut self, what: impl Into<String>, screen: Option<String>) {
+        let what = what.into();
+        println!("  FAIL {what}");
+        self.failures.push(Failure {
+            scenario: self.scenario.clone(),
+            what,
+            screen,
+        });
+    }
+
+    fn note(&mut self, line: impl Into<String>) {
+        let line = line.into();
+        println!("  {line}");
+        let _ = writeln!(self.log, "[{}] {line}", self.scenario);
+    }
+}
+
+pub fn run(arguments: &[String], repo: &Path) -> Result<(), String> {
+    let options = parse(arguments)?;
+    let dir = live_dir(repo)?;
+    preflight(&dir)?;
+    if options.install {
+        println!("==> installing this build on this host");
+        rampire_ops::process::run("bash", &["tools/build.sh", "install"], repo)?;
+    }
+    let mut run = Run {
+        repo: repo.to_path_buf(),
+        dir,
+        scenario: "setup".to_owned(),
+        failures: Vec::new(),
+        log: String::new(),
+    };
+    clean_up(&mut run);
+    let chosen: Vec<&str> = SCENARIOS
+        .iter()
+        .copied()
+        .filter(|name| options.only.is_empty() || options.only.iter().any(|only| only == name))
+        .collect();
+    for scenario in &chosen {
+        println!("==> {scenario}");
+        run.scenario = (*scenario).to_owned();
+        let result = match *scenario {
+            "add-running" => add_running(&mut run),
+            "add-off" => add_off(&mut run),
+            "restart-open" => restart_open(&mut run),
+            "settings" => settings(&mut run),
+            "upgrade" => upgrade(&mut run),
+            "remove" => remove(&mut run),
+            _ => Ok(()),
+        };
+        if let Err(error) = result {
+            run.fail(format!("stopped: {error}"), None);
+        }
+    }
+    run.scenario = "cleanup".to_owned();
+    if !options.keep {
+        clean_up(&mut run);
+    }
+    let report = write_report(&run)?;
+    if run.failures.is_empty() {
+        println!(
+            "==> live suite passed ({} scenarios); {}",
+            chosen.len(),
+            report.display()
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "{} failure(s) in the live suite: {}",
+            run.failures.len(),
+            report.display()
+        ))
+    }
+}
+
+/// The folder for the VMs' disks: RAMPIRE_LIVE_DIR, from the environment or
+/// site/build.env.
+fn live_dir(repo: &Path) -> Result<PathBuf, String> {
+    let from_site = std::fs::read_to_string(repo.join("site/build.env"))
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .filter_map(|line| line.trim().strip_prefix("RAMPIRE_LIVE_DIR="))
+                .map(|value| value.trim().trim_matches('"').to_owned())
+                .next_back()
+        });
+    std::env::var("RAMPIRE_LIVE_DIR")
+        .ok()
+        .or(from_site)
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            "set RAMPIRE_LIVE_DIR (or put it in site/build.env): a folder you own for the test VMs' disks, which libvirt can read (docs/testing.md)".to_owned()
+        })
+}
+
+/// Everything the suite needs, checked before anything is changed.
+fn preflight(dir: &Path) -> Result<(), String> {
+    for tool in ["tmux", "curl", "qemu-img", "xorriso"] {
+        if !Command::new("sh")
+            .args(["-c", &format!("command -v {tool}")])
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            return Err(format!("the live suite needs {tool}"));
+        }
+    }
+    for (command, args) in [
+        ("rampire", vec!["--version"]),
+        ("virsh", vec!["-c", "qemu:///system", "version"]),
+        ("virt-install", vec!["--version"]),
+        ("journalctl", vec!["-n", "0"]),
+    ] {
+        sudo(command, &args).map_err(|error| {
+            format!("sudo {command} without a password: {error}. The setup is in docs/testing.md")
+        })?;
+    }
+    let probe = dir.join(".rampire-live");
+    std::fs::create_dir_all(dir.join("base"))
+        .and_then(|()| std::fs::write(&probe, b""))
+        .map_err(|error| format!("{} isn't writable: {error}", dir.display()))?;
+    let _ = std::fs::remove_file(probe);
+    // The VMs reach the network through libvirt's default network.
+    if !sudo("virsh", &["-c", "qemu:///system", "net-info", "default"]).is_ok_and(|info| {
+        info.lines()
+            .any(|line| line.starts_with("Active:") && line.ends_with("yes"))
+    }) {
+        sudo("virsh", &["-c", "qemu:///system", "net-start", "default"])
+            .map_err(|error| format!("libvirt's default network isn't running: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Run `program` as root with sudo, never asking for a password.
+fn sudo(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("sudo")
+        .arg("-n")
+        .arg(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("run sudo {program}: {error}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+    }
+}
+
+fn virsh(args: &[&str]) -> Result<String, String> {
+    let mut all = vec!["-c", "qemu:///system"];
+    all.extend_from_slice(args);
+    sudo("virsh", &all)
+}
+
+fn local(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("run {program}: {error}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(format!(
+            "{program}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------
+// The test VMs
+
+/// The test VM running `system`, made if it isn't there, running and with
+/// its guest agent answering.
+fn test_vm(run: &mut Run, system: System) -> Result<String, String> {
+    let name = system.vm();
+    if virsh(&["domstate", &name]).is_err() {
+        make_vm(run, system)?;
+    } else if virsh(&["domstate", &name])?.trim() != "running" {
+        virsh(&["start", &name])?;
+    }
+    wait_for_agent(run, &name, Duration::from_secs(600))?;
+    Ok(name)
+}
+
+fn make_vm(run: &mut Run, system: System) -> Result<(), String> {
+    let name = system.vm();
+    let base = run.dir.join("base").join(system.base());
+    if !base.exists() {
+        run.note(format!("downloading {}", system.url()));
+        let partial = base.with_extension("part");
+        local(
+            "curl",
+            &[
+                "-fsSL",
+                "--retry",
+                "5",
+                "-o",
+                &text(&partial)?,
+                system.url(),
+            ],
+        )?;
+        std::fs::rename(&partial, &base).map_err(|error| error.to_string())?;
+    }
+    let disk = run.dir.join(format!("{name}.qcow2"));
+    let _ = std::fs::remove_file(&disk);
+    local(
+        "qemu-img",
+        &[
+            "create",
+            "-q",
+            "-f",
+            "qcow2",
+            "-F",
+            "qcow2",
+            "-b",
+            &text(&base)?,
+            &text(&disk)?,
+            "12G",
+        ],
+    )?;
+    // cloud-init's NoCloud seed, a CD labelled cidata: the guest agent, and
+    // nothing else. Made here, beside the disk, rather than by
+    // virt-install, which keeps its own in a folder this host may not have.
+    let seed_dir = run.dir.join(format!("{name}.seed"));
+    std::fs::create_dir_all(&seed_dir).map_err(|error| error.to_string())?;
+    std::fs::write(
+        seed_dir.join("user-data"),
+        "#cloud-config\npackages: [qemu-guest-agent]\nruncmd:\n  - [systemctl, enable, --now, qemu-guest-agent]\n",
+    )
+    .and_then(|()| {
+        std::fs::write(
+            seed_dir.join("meta-data"),
+            format!("instance-id: {name}\nlocal-hostname: {name}\n"),
+        )
+    })
+    .map_err(|error| error.to_string())?;
+    let seed = run.dir.join(format!("{name}.seed.iso"));
+    let _ = std::fs::remove_file(&seed);
+    local(
+        "xorriso",
+        &[
+            "-as",
+            "mkisofs",
+            "-quiet",
+            "-output",
+            &text(&seed)?,
+            "-volid",
+            "cidata",
+            "-joliet",
+            "-rock",
+            &text(&seed_dir.join("user-data"))?,
+            &text(&seed_dir.join("meta-data"))?,
+        ],
+    )?;
+    run.note(format!("making {name}"));
+    sudo(
+        "virt-install",
+        &[
+            "--connect",
+            "qemu:///system",
+            "--name",
+            &name,
+            "--memory",
+            "1536",
+            "--vcpus",
+            "2",
+            "--cpu",
+            "host-passthrough",
+            "--import",
+            "--disk",
+            &format!("path={},format=qcow2,bus=virtio", text(&disk)?),
+            "--network",
+            "network=default,model=virtio",
+            "--osinfo",
+            &format!("name={}", system.osinfo()),
+            "--disk",
+            &format!("path={},device=cdrom", text(&seed)?),
+            "--graphics",
+            "none",
+            "--noautoconsole",
+        ],
+    )?;
+    Ok(())
+}
+
+fn wait_for_agent(run: &mut Run, name: &str, limit: Duration) -> Result<(), String> {
+    let started = Instant::now();
+    while started.elapsed() < limit {
+        if virsh(&["qemu-agent-command", name, r#"{"execute":"guest-ping"}"#]).is_ok() {
+            run.note(format!("{name}'s guest agent answers"));
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+    Err(format!(
+        "{name}'s guest agent didn't answer in {} s",
+        limit.as_secs()
+    ))
+}
+
+/// Take every test VM out of RAMpire and off the host.
+fn clean_up(run: &mut Run) {
+    let Ok(names) = virsh(&["list", "--all", "--name"]) else {
+        return;
+    };
+    for name in names
+        .lines()
+        .map(str::trim)
+        .filter(|name| name.starts_with(PREFIX))
+    {
+        if management(name).is_some_and(|state| state != "not_managed") {
+            let mut term = Term::start(&format!("rampire vm remove {name}"));
+            let _ = term.answer_until_exit(run, &answers_remove(), Duration::from_secs(300));
+        }
+        let _ = virsh(&["destroy", name]);
+        match virsh(&["undefine", name, "--remove-all-storage", "--nvram"]) {
+            Ok(_) => run.note(format!("deleted {name}")),
+            Err(error) => run.fail(format!("couldn't delete {name}: {error}"), None),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// What RAMpire says about a VM
+
+fn vm_list() -> Option<serde_json::Value> {
+    serde_json::from_str(&sudo("rampire", &["vm", "list", "--json"]).ok()?).ok()
+}
+
+fn listed(name: &str) -> Option<serde_json::Value> {
+    vm_list()?["vms"]
+        .as_array()?
+        .iter()
+        .find(|vm| vm["vm_name"] == name)
+        .cloned()
+}
+
+fn management(name: &str) -> Option<String> {
+    listed(name)?["management"].as_str().map(str::to_owned)
+}
+
+/// After a change: the VM is managed, its guest publishes, and its doctor
+/// finds nothing wrong.
+fn check_healthy(run: &mut Run, name: &str) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut last = None;
+    while Instant::now() < deadline {
+        last = listed(name);
+        let published = last
+            .as_ref()
+            .is_some_and(|vm| vm["guest"]["state"] == "published");
+        if published {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+    match &last {
+        Some(vm) if vm["management"] == "managed" && vm["guest"]["state"] == "published" => {
+            run.note(format!("{name} is managed and its guest publishes"));
+        }
+        Some(vm) => run.fail(format!("{name} isn't managed and publishing: {vm}"), None),
+        None => run.fail(format!("vm list has no {name}"), None),
+    }
+    // doctor exits non-zero when it finds a problem; its JSON says which.
+    let output = Command::new("sudo")
+        .args(["-n", "rampire", "doctor", name, "--json"])
+        .output();
+    let Ok(output) = output else {
+        run.fail("couldn't run rampire doctor", None);
+        return;
+    };
+    let report: Option<serde_json::Value> = serde_json::from_slice(&output.stdout).ok();
+    let problems: Vec<String> = report
+        .as_ref()
+        .and_then(|report| report["findings"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|finding| finding["ok"] == false)
+        .map(|finding| format!("{}: {}", finding["check"], finding["detail"]))
+        .collect();
+    if report.is_none() {
+        run.fail(
+            format!(
+                "rampire doctor {name} --json gave no report: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            None,
+        );
+    } else if !problems.is_empty() {
+        run.fail(format!("doctor {name}: {}", problems.join("; ")), None);
+    }
+}
+
+// ---------------------------------------------------------------------
+// The screen, through tmux
+
+/// A command in its own tmux session, read and typed into as a person
+/// would.
+struct Term {
+    session: String,
+    /// Each question seen, and how often.
+    asked: BTreeMap<String, usize>,
+}
+
+/// How the suite answers a question, found by how it starts.
+#[derive(Clone, Copy)]
+enum Answer {
+    Yes,
+    No,
+    /// Yes, but asking it at all is a fault.
+    YesButWrong(&'static str),
+}
+
+type Answers = Vec<(&'static str, Answer)>;
+
+/// The review questions a VM without RDMA, NVMe or vhost-user passthrough
+/// may be asked, and the pool: never changed.
+fn answers_common() -> Answers {
+    vec![
+        ("Is this VM never live-migrated over RDMA", Answer::Yes),
+        ("Is none of the VM's passed-through devices", Answer::Yes),
+        ("Do all the VM's vhost-user devices", Answer::Yes),
+        ("Is the VM's memory balloon never used", Answer::Yes),
+        ("Change the pool", Answer::No),
+    ]
+}
+
+fn answers_add() -> Answers {
+    let mut answers = vec![
+        ("Add ", Answer::Yes),
+        (
+            "Shut ",
+            Answer::YesButWrong(
+                "vm add asked for a restart after applying: the plan should have restarted it",
+            ),
+        ),
+    ];
+    answers.extend(answers_common());
+    answers
+}
+
+fn answers_remove() -> Answers {
+    let mut answers = vec![("Remove RAMpire from", Answer::Yes)];
+    answers.extend(answers_common());
+    answers
+}
+
+/// Lines that must never be on the screen: what something wrote to the
+/// terminal over the TUI, or a crash.
+const NEVER: [&str; 5] = [
+    "libvirt: ",
+    "panicked at",
+    "Argument list too long",
+    "RUST_BACKTRACE",
+    "Segmentation fault",
+];
+
+impl Term {
+    fn start(command: &str) -> Self {
+        let session = format!("rampire-live-{}", std::process::id());
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session])
+            .output();
+        let _ = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session,
+                "-x",
+                "150",
+                "-y",
+                "45",
+                &format!("sudo -n {command}; echo; echo \"EXITED $?\"; sleep 600"),
+            ])
+            .output();
+        std::thread::sleep(Duration::from_secs(2));
+        Self {
+            session,
+            asked: BTreeMap::new(),
+        }
+    }
+
+    fn screen(&self) -> String {
+        local("tmux", &["capture-pane", "-p", "-t", &self.session]).unwrap_or_default()
+    }
+
+    /// Keys as tmux names them: "Enter", "Escape", "y", or text.
+    fn keys(&self, keys: &[&str]) {
+        let mut args = vec!["send-keys", "-t", self.session.as_str()];
+        args.extend_from_slice(keys);
+        let _ = local("tmux", &args);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    fn text(&self, text: &str) {
+        let _ = local("tmux", &["send-keys", "-t", &self.session, "-l", text]);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    /// Fail when the screen has what must never be on it. A row of a
+    /// full-screen TUI starts with a frame, a space or the header; a row
+    /// starting with anything else was written over it.
+    fn check_clean(&self, run: &mut Run, tui: bool) -> bool {
+        let screen = self.screen();
+        if let Some(bad) = NEVER.iter().find(|never| screen.contains(*never)) {
+            run.fail(format!("the screen shows \"{bad}\""), Some(screen));
+            return false;
+        }
+        if tui {
+            let rows: Vec<&str> = screen.lines().collect();
+            let stray = rows.iter().enumerate().skip(1).find(|(index, row)| {
+                *index + 1 < rows.len()
+                    && row
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphanumeric())
+            });
+            if let Some((index, row)) = stray {
+                run.fail(
+                    format!("row {index} was written over the TUI: {}", row.trim()),
+                    Some(screen),
+                );
+                return false;
+            }
+        }
+        true
+    }
+
+    fn wait_for(&self, run: &mut Run, needle: &str, limit: Duration, tui: bool) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < limit {
+            if self.screen().contains(needle) {
+                return true;
+            }
+            if !self.check_clean(run, tui) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        run.fail(
+            format!("\"{needle}\" didn't show in {} s", limit.as_secs()),
+            Some(self.screen()),
+        );
+        false
+    }
+
+    /// The question on the screen now, if one is: the TUI's (a line marked
+    /// ▍ above the No and Yes buttons) or a command's ([y/N]).
+    fn question(&self) -> Option<(String, bool)> {
+        let screen = self.screen();
+        if screen.contains("Yes (y)") {
+            let line = screen.lines().rev().find(|line| line.contains("▍ "))?;
+            let text = line.split("▍ ").nth(1)?;
+            return Some((text.trim_end_matches(['│', ' ']).trim().to_owned(), true));
+        }
+        let line = screen.lines().rev().find(|line| !line.trim().is_empty())?;
+        line.contains("[y/N]").then(|| {
+            (
+                line.trim().trim_end_matches("[y/N]").trim().to_owned(),
+                false,
+            )
+        })
+    }
+
+    /// Answer what is asked now, from `answers`; whether a question was
+    /// there. One asked twice, or not in `answers`, is a failure.
+    fn answer(&mut self, run: &mut Run, answers: &Answers) -> bool {
+        let Some((question, tui)) = self.question() else {
+            return false;
+        };
+        let count = self.asked.entry(question.clone()).or_default();
+        *count += 1;
+        if *count == 2 {
+            run.fail(format!("asked twice: {question}"), Some(self.screen()));
+        }
+        let answer = answers
+            .iter()
+            .find(|(start, _)| question.starts_with(start))
+            .map(|(_, answer)| *answer);
+        let yes = match answer {
+            Some(Answer::Yes) => true,
+            Some(Answer::No) => false,
+            Some(Answer::YesButWrong(why)) => {
+                run.fail(format!("{why}: {question}"), Some(self.screen()));
+                true
+            }
+            None => {
+                run.fail(
+                    format!("unexpected question: {question}"),
+                    Some(self.screen()),
+                );
+                false
+            }
+        };
+        run.note(format!(
+            "asked \"{question}\": {}",
+            if yes { "yes" } else { "no" }
+        ));
+        if tui {
+            self.keys(&[if yes { "y" } else { "n" }]);
+        } else {
+            self.keys(&[if yes { "y" } else { "n" }, "Enter"]);
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        true
+    }
+
+    /// A command: answer its questions until it exits; its exit code.
+    fn answer_until_exit(
+        &mut self,
+        run: &mut Run,
+        answers: &Answers,
+        limit: Duration,
+    ) -> Result<i32, String> {
+        let started = Instant::now();
+        while started.elapsed() < limit {
+            let screen = self.screen();
+            if let Some(code) = screen
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("EXITED "))
+            {
+                return code.trim().parse().map_err(|_| "no exit code".to_owned());
+            }
+            self.check_clean(run, false);
+            if !self.answer(run, answers) {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+        Err(format!("still running after {} s", limit.as_secs()))
+    }
+
+    /// A TUI task: answer its questions until its window says how it ended.
+    /// The task window must stay open the whole time.
+    fn answer_task(
+        &mut self,
+        run: &mut Run,
+        title: &str,
+        answers: &Answers,
+        limit: Duration,
+    ) -> Option<String> {
+        let started = Instant::now();
+        while started.elapsed() < limit {
+            if !self.check_clean(run, true) {
+                return None;
+            }
+            let screen = self.screen();
+            let Some(header) = screen.lines().find(|line| line.contains(title)) else {
+                run.fail(
+                    format!("the task window for \"{title}\" closed while it ran"),
+                    Some(screen),
+                );
+                return None;
+            };
+            for end in ["Done in", "Not done", "Failed after"] {
+                if header.contains(end) {
+                    return Some(end.to_owned());
+                }
+            }
+            if !self.answer(run, answers) {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+        run.fail(
+            format!("\"{title}\" still running after {} s", limit.as_secs()),
+            Some(self.screen()),
+        );
+        None
+    }
+
+    /// The TUI's errors list must be empty of what was written to stderr.
+    fn check_errors_list(&self, run: &mut Run) {
+        self.keys(&["Escape"]);
+        self.keys(&["Escape"]);
+        self.keys(&["e"]);
+        let screen = self.screen();
+        if screen.contains("a message on stderr") {
+            run.fail(
+                "something wrote to stderr while the TUI was open",
+                Some(screen),
+            );
+        }
+        self.keys(&["Escape"]);
+    }
+}
+
+impl Drop for Term {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &self.session])
+            .output();
+    }
+}
+
+/// Choose `vm` in the TUI's list, by filtering for its name, once the list
+/// has it. Each key goes alone: Escape and the key after it, sent
+/// together, read as Alt and that key.
+fn choose(run: &mut Run, term: &Term, vm: &str) -> bool {
+    if !term.wait_for(run, &format!(" {vm} "), Duration::from_secs(60), true) {
+        return false;
+    }
+    term.keys(&["Escape"]);
+    term.keys(&["/"]);
+    term.text(vm);
+    term.keys(&["Enter"]);
+    true
+}
+
+/// Add `vm` in the TUI as a person does: its menu's Add, the form, then
+/// the questions. The task's window must open at once.
+fn add_in_tui(run: &mut Run, vm: &str) -> Result<(), String> {
+    let mut tui = Term::start("rampire");
+    if !tui.wait_for(run, "VMS", Duration::from_secs(30), true) {
+        return Err("the TUI didn't open".to_owned());
+    }
+    if !choose(run, &tui, vm) {
+        return Err(format!("the TUI's list never showed {vm}"));
+    }
+    tui.keys(&["a"]);
+    if !tui.wait_for(run, &format!("Add {vm}"), Duration::from_secs(10), true) {
+        return Err("the Add form didn't open".to_owned());
+    }
+    tui.keys(&["Enter"]);
+    let title = format!("rampire vm add {vm}");
+    if !tui.wait_for(run, &title, Duration::from_secs(3), true) {
+        return Err("the task's window didn't open after the form".to_owned());
+    }
+    match tui
+        .answer_task(run, &title, &answers_add(), Duration::from_secs(900))
+        .as_deref()
+    {
+        Some("Done in") => run.note(format!("{vm} added")),
+        Some(end) => run.fail(format!("vm add {vm} ended {end}"), Some(tui.screen())),
+        None => {}
+    }
+    tui.check_errors_list(run);
+    tui.keys(&["q"]);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------
+// The scenarios
+
+fn add_running(run: &mut Run) -> Result<(), String> {
+    let vm = test_vm(run, System::Debian)?;
+    add_in_tui(run, &vm)?;
+    check_healthy(run, &vm);
+    Ok(())
+}
+
+fn add_off(run: &mut Run) -> Result<(), String> {
+    let vm = test_vm(run, System::Rocky)?;
+    virsh(&["shutdown", &vm])?;
+    let deadline = Instant::now() + Duration::from_secs(180);
+    while virsh(&["domstate", &vm])?.trim() != "shut off" {
+        if Instant::now() > deadline {
+            virsh(&["destroy", &vm])?;
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    add_in_tui(run, &vm)?;
+    check_healthy(run, &vm);
+    Ok(())
+}
+
+/// A managed VM restarted from outside while the TUI is open: nothing is
+/// written over the screen, and it reports in again.
+fn restart_open(run: &mut Run) -> Result<(), String> {
+    let vm = System::Debian.vm();
+    if management(&vm).as_deref() != Some("managed") {
+        return Err(format!("{vm} isn't managed: run add-running first"));
+    }
+    let tui = Term::start("rampire");
+    tui.wait_for(run, "VMS", Duration::from_secs(30), true);
+    virsh(&["reboot", &vm])?;
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(120) {
+        if !tui.check_clean(run, true) {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    tui.check_errors_list(run);
+    tui.keys(&["q"]);
+    check_healthy(run, &vm);
+    Ok(())
+}
+
+/// A setting changed with the command, applied, taken by the controller.
+fn settings(run: &mut Run) -> Result<(), String> {
+    let vm = System::Debian.vm();
+    let mut term = Term::start(&format!("rampire set {vm} max_ram=3GB"));
+    let mut answers = vec![("Apply", Answer::Yes)];
+    answers.extend(answers_common());
+    let code = term.answer_until_exit(run, &answers, Duration::from_secs(600))?;
+    if code != 0 {
+        run.fail(
+            format!("set {vm} max_ram=3GB exited {code}"),
+            Some(term.screen()),
+        );
+    }
+    check_healthy(run, &vm);
+    Ok(())
+}
+
+/// The guest service upgraded to this build in a VM that has it: already
+/// so, nothing asked that shouldn't be.
+fn upgrade(run: &mut Run) -> Result<(), String> {
+    let vm = System::Debian.vm();
+    let mut term = Term::start(&format!("rampire vm upgrade {vm}"));
+    let mut answers = vec![("Upgrade", Answer::Yes)];
+    answers.extend(answers_common());
+    let code = term.answer_until_exit(run, &answers, Duration::from_secs(600))?;
+    if code != 0 {
+        run.fail(
+            format!("vm upgrade {vm} exited {code}"),
+            Some(term.screen()),
+        );
+    }
+    check_healthy(run, &vm);
+    Ok(())
+}
+
+/// Each test VM removed in the TUI: not managed after, its definition
+/// plain again.
+fn remove(run: &mut Run) -> Result<(), String> {
+    for system in [System::Debian, System::Rocky] {
+        let vm = system.vm();
+        if management(&vm).as_deref() != Some("managed") {
+            continue;
+        }
+        let mut tui = Term::start("rampire");
+        tui.wait_for(run, "VMS", Duration::from_secs(30), true);
+        if !choose(run, &tui, &vm) {
+            continue;
+        }
+        tui.keys(&["Enter"]);
+        tui.keys(&["x"]);
+        let title = format!("rampire vm remove {vm}");
+        if tui.wait_for(run, &title, Duration::from_secs(10), true) {
+            match tui
+                .answer_task(run, &title, &answers_remove(), Duration::from_secs(300))
+                .as_deref()
+            {
+                Some("Done in") => run.note(format!("{vm} removed")),
+                Some(end) => run.fail(format!("vm remove {vm} ended {end}"), Some(tui.screen())),
+                None => {}
+            }
+        }
+        tui.check_errors_list(run);
+        tui.keys(&["q"]);
+        match management(&vm).as_deref() {
+            Some("not_managed") => {}
+            other => run.fail(format!("{vm} is {other:?} after remove"), None),
+        }
+        let xml = virsh(&["dumpxml", "--inactive", &vm])?;
+        if xml.contains("virtio-mem") || xml.contains("org.rampire.control") {
+            run.fail(format!("{vm}'s definition still has RAMpire's parts"), None);
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------
+
+fn write_report(run: &Run) -> Result<PathBuf, String> {
+    let dir = run.repo.join("target/live");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join("report.md");
+    let mut text = format!("# Live suite\n\n{} failure(s)\n\n", run.failures.len());
+    for failure in &run.failures {
+        let _ = writeln!(text, "## {}: {}\n", failure.scenario, failure.what);
+        if let Some(screen) = &failure.screen {
+            let _ = writeln!(text, "```text\n{}\n```\n", screen.trim_end());
+        }
+    }
+    let _ = writeln!(text, "## Log\n\n```text\n{}```", run.log);
+    std::fs::write(&path, text).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn text(path: &Path) -> Result<String, String> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{} isn't UTF-8", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scenarios_and_options_are_read() {
+        let options = parse(&["--keep".to_owned(), "add-running".to_owned()]).unwrap();
+        assert!(options.keep && options.install);
+        assert_eq!(options.only, ["add-running"]);
+        assert!(parse(&["nonsense".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn a_tui_question_is_read_off_the_screen() {
+        // As capture-pane gives the task window.
+        let screen = "│ │ ▍ Add rampire-test-debian? RAMpire then grows it.     │ │\n\
+                      │ │    ▶ No (n) ◀       Yes (y)      Enter answers No    │ │";
+        let line = screen
+            .lines()
+            .rev()
+            .find(|line| line.contains("▍ "))
+            .unwrap();
+        let text = line.split("▍ ").nth(1).unwrap();
+        assert_eq!(
+            text.trim_end_matches(['│', ' ']).trim(),
+            "Add rampire-test-debian? RAMpire then grows it."
+        );
+    }
+}

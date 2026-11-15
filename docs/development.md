@@ -1,7 +1,8 @@
 # Development
 
 For developers. How to build, check and test this repository, and which checks need which
-platform. Open work is in [the roadmap](roadmap.md);
+platform. Open work is in [the roadmap](roadmap.md); how it is tested, and the
+live suite, in [testing](testing.md);
 [the Rust standards](../.github/prompts/rust.md) hold coding rules;
 [administration](administration.md) covers installing and running the
 product. The rule for importing third-party code is in the previous

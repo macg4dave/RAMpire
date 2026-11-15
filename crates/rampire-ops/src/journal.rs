@@ -131,6 +131,41 @@ pub fn read_log(vm: Option<&str>, lines: usize, cwd: &Path) -> Result<String, St
     }
 }
 
+/// What the controller last said about `vm`'s control channel in the last
+/// hour: `connected`, or `unavailable` with its reason. `None` when it said
+/// nothing, or the journal can't be read.
+pub fn channel_event(vm: &str, cwd: &Path) -> Option<String> {
+    let unit = crate::systemd_unit::CONTROLLER_UNIT;
+    let arguments: Vec<OsString> = [
+        "--no-pager".to_owned(),
+        format!("_SYSTEMD_UNIT={unit}"),
+        "--since".to_owned(),
+        "-1h".to_owned(),
+        "-o".to_owned(),
+        "cat".to_owned(),
+        "--grep".to_owned(),
+        format!("{}.*event=control_channel_", vm_pattern(vm)),
+    ]
+    .iter()
+    .map(process::os)
+    .collect();
+    let text = process::bounded_text("journalctl", &arguments, cwd, COMMAND_TIMEOUT).ok()?;
+    channel_event_in(&text)
+}
+
+/// The newest control-channel event among `text`'s lines, oldest first.
+fn channel_event_in(text: &str) -> Option<String> {
+    let line = text
+        .lines()
+        .rev()
+        .find(|line| line.contains("event=control_channel_"))?;
+    let event = field(line, "event")?.trim_start_matches("control_channel_");
+    Some(match line.split_once(" reason=") {
+        Some((_, reason)) => format!("{event}: {}", reason.trim()),
+        None => event.to_owned(),
+    })
+}
+
 /// The lines in time order. `journalctl` prints matches newest first when
 /// `--grep` and `-n` go together on some systemd versions, so the order it
 /// used is not relied on: microsecond timestamps sort as text, and the sort
@@ -172,6 +207,21 @@ pub fn collapse_repeats<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_newest_channel_event_says_why_with_its_reason() {
+        let text = "rampire: vm=tv101 event=control_channel_connected\n\
+            rampire: vm=tv101 event=control_channel_unavailable reason=connect: Permission denied (os error 13)\n";
+        assert_eq!(
+            channel_event_in(text).as_deref(),
+            Some("unavailable: connect: Permission denied (os error 13)")
+        );
+        assert_eq!(
+            channel_event_in("rampire: vm=tv101 event=control_channel_connected").as_deref(),
+            Some("connected")
+        );
+        assert_eq!(channel_event_in(""), None);
+    }
 
     #[test]
     fn events_come_back_oldest_first_whatever_order_journalctl_used() {
