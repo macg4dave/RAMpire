@@ -46,14 +46,36 @@ pub fn render(
     let events = (2 + snapshot.command.events.clamp(1, 8) as u16)
         .min(spare.saturating_sub(4).max(3))
         .min(spare);
-    let [settings, device, guest, history, journal] = Layout::vertical([
-        Constraint::Length(SETTINGS_HEIGHT),
-        Constraint::Length(DEVICE_HEIGHT),
-        Constraint::Length(GUEST_HEIGHT),
-        Constraint::Min(0),
-        Constraint::Length(events),
-    ])
-    .areas(area);
+    let (settings, device, guest, history, journal) = if area.width >= 140 {
+        // Wide: the VM and its device on the left, its guest on the right.
+        let top_height = SETTINGS_HEIGHT + DEVICE_HEIGHT;
+        let [top, history, journal] = Layout::vertical([
+            Constraint::Length(top_height),
+            Constraint::Min(0),
+            Constraint::Length(events),
+        ])
+        .areas(area);
+        let [left, guest] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .spacing(1)
+                .areas(top);
+        let [settings, device] = Layout::vertical([
+            Constraint::Length(SETTINGS_HEIGHT),
+            Constraint::Min(DEVICE_HEIGHT),
+        ])
+        .areas(left);
+        (settings, device, guest, history, journal)
+    } else {
+        let [settings, device, guest, history, journal] = Layout::vertical([
+            Constraint::Length(SETTINGS_HEIGHT),
+            Constraint::Length(DEVICE_HEIGHT),
+            Constraint::Length(GUEST_HEIGHT),
+            Constraint::Min(0),
+            Constraint::Length(events),
+        ])
+        .areas(area);
+        (settings, device, guest, history, journal)
+    };
     settings_panel(settings, buf, theme, snapshot, details);
     device_panel(device, buf, theme, snapshot);
     guest_panel(guest, buf, theme, snapshot);
@@ -145,17 +167,12 @@ fn settings_panel(
 }
 
 fn device_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapshot) {
-    let block = panel(
-        theme,
-        Icon::Device,
-        "VIRTIO-MEM DEVICE",
-        "requested / plugged",
-    );
+    let block = panel(theme, Icon::Device, "DEVICE", "virtio-mem");
     let inner = block.inner(area);
     block.render(area, buf);
     let width = (inner.width as usize)
         .saturating_sub(12 + 8 + 24)
-        .clamp(8, 40);
+        .clamp(8, 160);
     let mut lines = Vec::new();
     match snapshot.device {
         None => lines.push(widgets::line(
@@ -236,7 +253,7 @@ fn guest_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsho
     block.render(area, buf);
     let width = (inner.width as usize)
         .saturating_sub(12 + 8 + 24)
-        .clamp(8, 40);
+        .clamp(8, 160);
     let lines = match &snapshot.guest.telemetry {
         None if !snapshot.command.guest => {
             vec![widgets::line(
@@ -326,7 +343,7 @@ fn history_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnaps
     let block = panel(
         theme,
         Icon::Device,
-        "PLUGGED HISTORY",
+        "HISTORY",
         &format!("last {} samples, 0..{} GiB", points.len(), scale / GIB),
     );
     Sparkline::default()
@@ -342,7 +359,7 @@ fn events_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &VmSnapsh
     let block = panel(
         theme,
         Icon::Vm,
-        "CONTROLLER EVENTS",
+        "EVENTS",
         &format!("{}, newest first", snapshot.command.unit),
     );
     let inner = block.inner(area);

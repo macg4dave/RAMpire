@@ -323,24 +323,40 @@ fn main_screen(area: Rect, buf: &mut Buffer, app: &App) {
         _ => None,
     };
     let tall = area.height >= 36;
-    let [pool_area, list_area, history_area, events_area] = Layout::vertical([
-        Constraint::Length(if pool.is_some() { 6 } else { 3 }),
-        Constraint::Min(5),
-        Constraint::Length(if tall { 5 } else { 3 }),
-        Constraint::Length(if tall { 7 } else { 4 }),
-    ])
-    .areas(area);
+    let (pool_area, list_area, history_area, events_area) = if area.width >= 140 {
+        // Wide: the pool on the left, its history over its events on the
+        // right, and the VMs across the whole width beneath.
+        let top_height = if tall { 9 } else { 7 };
+        let [top, list] =
+            Layout::vertical([Constraint::Length(top_height), Constraint::Min(5)]).areas(area);
+        let [left, right] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .spacing(1)
+                .areas(top);
+        let [history, events] = Layout::vertical([
+            Constraint::Length(if tall { 4 } else { 3 }),
+            Constraint::Min(3),
+        ])
+        .areas(right);
+        (left, list, history, events)
+    } else {
+        let [pool_area, list_area, history_area, events_area] = Layout::vertical([
+            Constraint::Length(match (pool.is_some(), tall) {
+                (false, _) => 3,
+                (true, false) => 6,
+                (true, true) => super::pool::POOL_HEIGHT_ROOMY,
+            }),
+            Constraint::Min(5),
+            Constraint::Length(if tall { 5 } else { 3 }),
+            Constraint::Length(if tall { 7 } else { 4 }),
+        ])
+        .areas(area);
+        (pool_area, list_area, history_area, events_area)
+    };
     match &app.pool {
         Some(Ok(snapshot)) => super::pool::pool_panel(pool_area, buf, theme, snapshot),
         Some(Err(error)) => message(pool_area, buf, theme, "POOL", error, Tone::Warn),
-        None => message(
-            pool_area,
-            buf,
-            theme,
-            "POOL",
-            "reading the pool...",
-            Tone::Dim,
-        ),
+        None => message(pool_area, buf, theme, "POOL", "reading...", Tone::Dim),
     }
     vm_list(list_area, buf, app, &app.entries(), pool);
     match pool {
@@ -349,8 +365,8 @@ fn main_screen(area: Rect, buf: &mut Buffer, app: &App) {
             super::pool::events_panel(events_area, buf, theme, snapshot);
         }
         None => {
-            message(history_area, buf, theme, "POOL HISTORY", "", Tone::Dim);
-            message(events_area, buf, theme, "POOL EVENTS", "", Tone::Dim);
+            message(history_area, buf, theme, "HISTORY", "", Tone::Dim);
+            message(events_area, buf, theme, "EVENTS", "", Tone::Dim);
         }
     }
 }
@@ -366,12 +382,7 @@ fn vm_list(
     use crate::reports::Management;
     use ratatui::widgets::{Cell, HighlightSpacing, Row, StatefulWidget, Table, TableState};
     let theme = &app.theme;
-    let block = panel(
-        theme,
-        Icon::Vm,
-        "VMS",
-        "Enter on a VM: details, settings, doctor, add, remove",
-    );
+    let block = panel(theme, Icon::Vm, "VMS", "Enter: actions");
     let wide = area.width >= super::pool::WIDE;
     let name_width = entries
         .iter()
@@ -383,16 +394,23 @@ fn vm_list(
     let mut header = vec!["VM", "STATE", "PRI", "PLUGGED"];
     let mut widths = vec![
         Constraint::Length(name_width),
-        Constraint::Length(13),
+        Constraint::Length(14),
         Constraint::Length(4),
         Constraint::Length(8),
     ];
     if wide {
-        header.push("RAM LIMITS");
-        widths.push(Constraint::Length(13));
+        header.push("LIMITS");
+        widths.push(Constraint::Length(12));
     }
+    // The guest's gauge takes the width the fixed columns leave, so a
+    // wide window shows it long rather than gaps between columns.
+    let fixed = name_width + 14 + 4 + 8 + if wide { 12 } else { 0 };
+    let spare = area.width.saturating_sub(
+        fixed + 4 /* borders, padding */ + 2 /* marker */ + 6 /* gaps */ + 14, /* note */
+    );
+    let gauge = spare.saturating_sub(13).clamp(4, 60) as usize;
     header.extend(["GUEST", "NOTE"]);
-    widths.extend([Constraint::Length(17), Constraint::Min(6)]);
+    widths.extend([Constraint::Length(gauge as u16 + 13), Constraint::Fill(1)]);
     let dash = || Cell::from(Span::styled("-", theme.dim()));
     let rows: Vec<Row> = entries
         .iter()
@@ -429,10 +447,11 @@ fn vm_list(
                             theme.dim(),
                         )));
                     }
-                    let (guest, request) = super::pool::guest_cells(
+                    let (guest, request) = super::pool::guest_cells_sized(
                         theme,
                         sample.guest.as_ref(),
                         pool.now_unix_millis,
+                        gauge,
                     );
                     cells.push(Cell::from(guest));
                     // A pending request, or a stale publication; nothing when quiet.
@@ -520,9 +539,7 @@ fn guest_short<'a>(theme: &Theme, guest: &Published) -> Span<'a> {
         Published::Installed => {
             widgets::marked(theme, Icon::Ok, "installed".to_owned(), Tone::Good)
         }
-        Published::No => {
-            widgets::marked(theme, Icon::Problem, "not installed".to_owned(), Tone::Warn)
-        }
+        Published::No => Span::styled("no guest service", theme.dim()),
         Published::Unknown => Span::styled("unknown", theme.dim()),
     }
 }
@@ -543,12 +560,8 @@ fn history_strip(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &crate::
     let block = panel(
         theme,
         Icon::Pool,
-        "POOL HISTORY",
-        &format!(
-            "charged, last {} samples, 0..{:.1} GiB",
-            totals.len(),
-            scale as f64 / crate::dashboard::GIB as f64
-        ),
+        "HISTORY",
+        &format!("0-{:.0} GiB", scale as f64 / crate::dashboard::GIB as f64),
     );
     Sparkline::default()
         .block(block)
@@ -1041,7 +1054,7 @@ fn help(area: Rect, buf: &mut Buffer, app: &App) {
         ("Esc", "back, or close a dialog"),
         ("r", "read again"),
         ("e", "the errors list"),
-        ("t", "next theme: midnight, midnight 256, light, terminal"),
+        ("t", "next theme: terminal, midnight, midnight 256, light"),
         ("i", "Unicode or ASCII icons"),
         ("q, Ctrl+C", "quit"),
         ("", ""),
@@ -1153,8 +1166,8 @@ mod tests {
     fn every_view_draws_at_every_size_in_every_theme() {
         let mut app = app();
         let expected = [
-            (View::Main, "POOL EVENTS"),
-            (View::Details("vm0".to_owned()), "VIRTIO-MEM DEVICE"),
+            (View::Main, "EVENTS"),
+            (View::Details("vm0".to_owned()), "DEVICE"),
             (View::Doctor(None), "drifted"),
             (View::Logs(None), "operator_change"),
         ];
@@ -1188,8 +1201,8 @@ mod tests {
                 "bring",
                 "newvm",
                 "not managed",
-                "not installed",
-                "POOL HISTORY",
+                "no guest service",
+                "HISTORY",
             ] {
                 assert!(
                     text.contains(needle),

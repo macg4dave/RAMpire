@@ -56,24 +56,24 @@ impl Depth {
 /// The palettes a person can choose between with `t`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Palette {
-    /// The default: the mascot's midnight purple, white and green.
+    /// The mascot's colours on near-black.
     Midnight,
     /// Midnight in the 256 colours every terminal has, for one without
     /// true colour.
     Midnight256,
     /// Dark text on a light background.
     Light,
-    /// The terminal's own 16 colours on its own background, so it matches
-    /// a person's terminal theme.
+    /// The default: the terminal's own 16 colours on its own background,
+    /// so it matches a person's terminal theme.
     Terminal,
 }
 
 impl Palette {
     pub const ALL: [Self; 4] = [
+        Self::Terminal,
         Self::Midnight,
         Self::Midnight256,
         Self::Light,
-        Self::Terminal,
     ];
 
     pub fn name(self) -> &'static str {
@@ -129,25 +129,25 @@ struct Colours {
 }
 
 const MIDNIGHT: Colours = Colours {
-    background: (0x0d, 0x07, 0x14),
-    card: (0x17, 0x0d, 0x24),
-    raised: (0x22, 0x13, 0x36),
-    text: (0xd9, 0xcc, 0xea),
+    background: (0x05, 0x03, 0x07),
+    card: (0x0b, 0x08, 0x10),
+    raised: (0x16, 0x10, 0x1e),
+    text: (0xec, 0xe8, 0xf2),
     value: (0xff, 0xff, 0xff),
-    dim: (0x86, 0x6f, 0xa0),
+    dim: (0xb4, 0xaa, 0xc2),
     frame: (0x9b, 0x45, 0xd6),
     chip: (0xb8, 0x3b, 0xe0),
     chip_text: (0xff, 0xff, 0xff),
-    bar: (0x24, 0x10, 0x3a),
-    bar_text: (0xe9, 0xde, 0xf7),
-    key: (0x6d, 0x2a, 0x9e),
-    track: (0x33, 0x22, 0x47),
+    bar: (0x12, 0x0c, 0x19),
+    bar_text: (0xec, 0xe8, 0xf2),
+    key: (0x5a, 0x24, 0x80),
+    track: (0x2c, 0x26, 0x34),
     good: (0x9c, 0xe0, 0x5a),
     warn: (0xf5, 0xc8, 0x42),
     bad: (0xf0, 0x3e, 0x6a),
     info: (0xd4, 0x7d, 0xff),
     accent: (0xe0, 0x4c, 0xe8),
-    selected: (0x3d, 0x1c, 0x63),
+    selected: (0x2c, 0x18, 0x44),
     series: [
         (0xe0, 0x4c, 0xe8),
         (0x9c, 0xe0, 0x5a),
@@ -275,7 +275,7 @@ impl Theme {
         }
         Some(match named {
             Named::Text => Color::Reset,
-            Named::Dim => Color::DarkGray,
+            Named::Dim => Color::Gray,
             Named::Frame | Named::Info => Color::Magenta,
             Named::Good => Color::Green,
             Named::Warn => Color::Yellow,
@@ -342,6 +342,43 @@ impl Theme {
 
     pub fn title(&self) -> Style {
         self.value()
+    }
+
+    /// The colour of a kind of panel, named by its icon, so panels stand
+    /// apart: the pool green, VMs magenta, a device blue, a guest cyan,
+    /// settings gold, problems red.
+    pub fn hue(&self, icon: Icon) -> Option<Color> {
+        let (rgb, named) = match icon {
+            Icon::Pool | Icon::Ok => ((0x9c, 0xe0, 0x5a), Color::LightGreen),
+            Icon::Vm | Icon::Pointer => ((0xe0, 0x4c, 0xe8), Color::LightMagenta),
+            Icon::Device | Icon::Host => ((0x7c, 0x9c, 0xff), Color::LightBlue),
+            Icon::Guest => ((0x5c, 0xd8, 0xe0), Color::LightCyan),
+            Icon::Settings => ((0xf5, 0xc8, 0x42), Color::LightYellow),
+            Icon::Problem | Icon::Latched => ((0xf0, 0x3e, 0x6a), Color::LightRed),
+            _ => ((0xb0, 0x8c, 0xff), Color::LightMagenta),
+        };
+        match (self.depth, self.colours()) {
+            (Depth::None, _) => None,
+            (_, Some(_)) => Some(self.colour(rgb)),
+            (_, None) => Some(named),
+        }
+    }
+
+    /// A panel's border, in its kind's colour.
+    pub fn frame_of(&self, icon: Icon) -> Style {
+        self.hue(icon)
+            .map_or_else(|| self.frame(), |hue| Style::new().fg(hue))
+    }
+
+    /// A panel's title, as a block of its kind's colour.
+    pub fn chip_of(&self, icon: Icon) -> Style {
+        match self.hue(icon) {
+            Some(hue) => Style::new()
+                .fg(Color::Black)
+                .bg(hue)
+                .add_modifier(Modifier::BOLD),
+            None => self.chip(),
+        }
     }
 
     /// A panel's title, as a pill: white on magenta.
@@ -637,7 +674,7 @@ mod tests {
         // The midnight background stays a near-black, not a bright purple.
         assert!(matches!(nearest_256(MIDNIGHT.background), 16 | 232 | 233));
         let midnight = Theme::new(Palette::Midnight, Depth::TrueColor, Icons { unicode: true });
-        assert_eq!(midnight.base().bg, Some(Color::Rgb(0x0d, 0x07, 0x14)));
+        assert_eq!(midnight.base().bg, Some(Color::Rgb(0x05, 0x03, 0x07)));
         let indexed = Theme::new(
             Palette::Midnight256,
             Depth::TrueColor,

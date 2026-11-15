@@ -25,6 +25,9 @@ pub fn fixed_height(snapshot: &PoolSnapshot) -> u16 {
 
 const POOL_HEIGHT: u16 = 6;
 
+/// The pool panel with a blank line between its bar and its figures.
+pub const POOL_HEIGHT_ROOMY: u16 = 7;
+
 fn table_height(snapshot: &PoolSnapshot) -> u16 {
     3 + snapshot.command.vms.len().max(1) as u16
 }
@@ -62,12 +65,7 @@ pub fn render(
 }
 
 pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
-    let block = panel(
-        theme,
-        Icon::Pool,
-        "POOL",
-        "charge = max(requested, plugged) per VM",
-    );
+    let block = panel(theme, Icon::Pool, "POOL", "");
     let inner = block.inner(area);
     block.render(area, buf);
     let charges = snapshot.charges();
@@ -89,8 +87,11 @@ pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: 
         legend.push(Span::styled(format!(" {}  ", vm.name), theme.text()));
     }
 
-    let session = &snapshot.session;
-    let sizes = match (snapshot.command.pool_bytes, snapshot.free()) {
+    // Figures in short blocks: a dim label, then the figure in colour.
+    let label = |text: &str| Span::styled(format!("{text} "), theme.dim());
+    let gap = || Span::styled("    ", theme.text());
+    let mut sizes = Vec::new();
+    match (snapshot.command.pool_bytes, snapshot.free()) {
         (Some(pool), Some(free)) => {
             let free_tone = if free == 0 {
                 Tone::Bad
@@ -99,34 +100,39 @@ pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: 
             } else {
                 Tone::Good
             };
-            Line::from(vec![
-                Span::styled("Pool ", theme.text()),
+            sizes.extend([
+                label("pool"),
                 Span::styled(one_place(pool), theme.value()),
-                Span::styled("   charged ", theme.text()),
-                Span::styled(one_place(charged), theme.tone(tone::load(fraction))),
+                gap(),
+                label("used"),
                 Span::styled(
-                    format!(" peak {}", one_place(session.peak_charged)),
-                    theme.dim(),
+                    one_place(charged),
+                    theme
+                        .tone(tone::load(fraction))
+                        .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
-                Span::styled("   free ", theme.text()),
-                Span::styled(one_place(free), theme.tone(free_tone)),
+                gap(),
+                label("free"),
                 Span::styled(
-                    format!(" low {}", one_place(session.low_free.unwrap_or(free))),
-                    theme.dim(),
+                    one_place(free),
+                    theme
+                        .tone(free_tone)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
-            ])
+            ]);
         }
-        _ => Line::from(vec![
-            Span::styled("Charged ", theme.text()),
+        _ => sizes.extend([
+            label("used"),
             Span::styled(one_place(charged), theme.value()),
-            Span::styled("   single-VM controller: no pool", theme.dim()),
+            gap(),
+            Span::styled("no pool: one VM", theme.dim()),
         ]),
-    };
+    }
 
     let (moving, growing, shrinking) = snapshot.resizing();
     let host = snapshot.host;
     let floor = snapshot.command.host_floor_bytes;
-    let mut state = vec![Span::styled("Resizing ", theme.text())];
+    let mut state = vec![label("resizing")];
     if moving == 0 {
         state.push(widgets::marked(
             theme,
@@ -157,28 +163,24 @@ pub(crate) fn pool_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: 
             Tone::Info,
         ));
     }
-    let floor_tone = tone::floor(host.available, floor);
     state.extend([
-        Span::styled("   host available ", theme.text()),
-        Span::styled(one_place(host.available), theme.tone(floor_tone)),
+        gap(),
+        label("host free"),
         Span::styled(
-            format!(
-                " floor {} ({:+.1}) low {}",
-                one_place(floor),
-                (host.available as f64 - floor as f64) / GIB as f64,
-                one_place(session.low_host_available.unwrap_or(host.available))
-            ),
-            theme.dim(),
+            one_place(host.available),
+            theme
+                .tone(tone::floor(host.available, floor))
+                .add_modifier(ratatui::style::Modifier::BOLD),
         ),
+        Span::styled(format!("  floor {}", one_place(floor)), theme.dim()),
     ]);
-    Paragraph::new(vec![
-        Line::from(bar),
-        Line::from(legend),
-        sizes,
-        Line::from(state),
-    ])
-    .style(theme.card())
-    .render(inner, buf);
+    // A blank line between the bar and the figures, where there is room.
+    let mut lines = vec![Line::from(bar), Line::from(legend)];
+    if inner.height >= 5 {
+        lines.push(Line::default());
+    }
+    lines.extend([Line::from(sizes), Line::from(state)]);
+    Paragraph::new(lines).style(theme.card()).render(inner, buf);
 }
 
 /// GiB to one place, for the dashboard's summary lines.
@@ -310,6 +312,16 @@ pub(crate) fn guest_cells<'a>(
     guest: Option<&RawTelemetryEnvelope>,
     now_unix_millis: u64,
 ) -> (Line<'a>, Line<'a>) {
+    guest_cells_sized(theme, guest, now_unix_millis, 4)
+}
+
+/// The guest's in-use gauge `gauge` cells wide, and its pending request.
+pub(crate) fn guest_cells_sized<'a>(
+    theme: &Theme,
+    guest: Option<&RawTelemetryEnvelope>,
+    now_unix_millis: u64,
+    gauge: usize,
+) -> (Line<'a>, Line<'a>) {
     let Some(guest) = guest else {
         return (
             widgets::line(theme, "no publication", Tone::Dim),
@@ -319,7 +331,7 @@ pub(crate) fn guest_cells<'a>(
     let memory = &guest.memory;
     let total = memory.physical_total_bytes.max(1);
     let fraction = 1.0 - memory.physical_available_bytes as f64 / total as f64;
-    let mut meter = widgets::bar(theme, fraction, 4, tone::load(fraction));
+    let mut meter = widgets::bar(theme, fraction, gauge, tone::load(fraction));
     meter.push(Span::styled(
         format!(
             " {:3.0}% of {}",
@@ -373,7 +385,7 @@ fn history_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSna
 }
 
 pub(crate) fn events_panel(area: Rect, buf: &mut Buffer, theme: &Theme, snapshot: &PoolSnapshot) {
-    let block = panel(theme, Icon::Pool, "POOL EVENTS", "every VM, newest first");
+    let block = panel(theme, Icon::Problem, "EVENTS", "");
     let inner = block.inner(area);
     block.render(area, buf);
     let lines: Vec<Line> = match &snapshot.events {
@@ -510,7 +522,7 @@ pub(crate) mod tests {
                 assert!(text.contains("off"), "{text}");
                 assert!(text.contains("steady"), "{text}");
                 assert!(text.contains("a-very-long-vm-name"), "{text}");
-                assert!(text.contains("POOL EVENTS"), "{text}");
+                assert!(text.contains("EVENTS"), "{text}");
                 assert_eq!(text.contains("RAM LIMITS"), width >= WIDE, "{text}");
             }
         }

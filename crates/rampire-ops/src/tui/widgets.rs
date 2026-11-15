@@ -14,9 +14,12 @@ use crate::tone::{self, Tone};
 /// icon and name, and a dim note after it.
 pub fn panel<'a>(theme: &Theme, icon: Icon, title: &str, detail: &str) -> Block<'a> {
     let mut spans = vec![
-        Span::styled(" ", theme.frame()),
-        Span::styled(format!(" {} {} ", theme.icon(icon), title), theme.chip()),
-        Span::styled(" ", theme.frame()),
+        Span::styled(" ", theme.frame_of(icon)),
+        Span::styled(
+            format!(" {} {} ", theme.icon(icon), title),
+            theme.chip_of(icon),
+        ),
+        Span::styled(" ", theme.frame_of(icon)),
     ];
     if !detail.is_empty() {
         spans.push(Span::styled(format!("{detail} "), theme.dim()));
@@ -24,8 +27,9 @@ pub fn panel<'a>(theme: &Theme, icon: Icon, title: &str, detail: &str) -> Block<
     Block::new()
         .borders(Borders::ALL)
         .border_set(theme.border_set())
-        .border_style(theme.frame())
+        .border_style(theme.frame_of(icon))
         .style(theme.card())
+        .padding(ratatui::widgets::Padding::horizontal(1))
         .title(Line::from(spans))
 }
 

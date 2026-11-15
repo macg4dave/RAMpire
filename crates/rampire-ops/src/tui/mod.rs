@@ -31,7 +31,7 @@ use theme::{Depth, Icons, Palette, Theme};
 /// with Unicode icons where the locale allows.
 pub fn theme_from_environment() -> Theme {
     Theme::new(
-        Palette::Midnight,
+        Palette::Terminal,
         Depth::from_environment(),
         Icons::from_environment(),
     )

@@ -752,19 +752,13 @@ impl App {
         let doctor = item(
             'o',
             "Doctor",
-            format!(
-                "everything that can be checked about it: {}",
-                line(&["doctor", vm])
-            ),
+            line(&["doctor", vm]),
             Pick::Open(View::Doctor(Some(vm.to_owned()))),
         );
         let forget = item(
             'f',
             "Forget it",
-            format!(
-                "removes its settings, attestation, request state, definition backups and its review: {}",
-                line(&["vm", "remove", vm, "--forget"])
-            ),
+            line(&["vm", "remove", vm, "--forget"]),
             Pick::Run(Action::Remove {
                 vm: vm.to_owned(),
                 forget: true,
@@ -780,35 +774,26 @@ impl App {
                 item(
                     'v',
                     "Details, live",
-                    format!(
-                        "its device, guest, history and events: {}",
-                        line(&["watch", vm])
-                    ),
+                    line(&["watch", vm]),
                     Pick::Open(View::Details(vm.to_owned())),
                 ),
                 item(
                     's',
                     "Settings",
-                    format!(
-                        "priority, min_ram, max_ram, free_ram: {}",
-                        line(&["set", vm, "KEY=VALUE"])
-                    ),
+                    line(&["set", vm, "KEY=VALUE"]),
                     Pick::Settings(vm.to_owned()),
                 ),
                 doctor,
                 item(
                     'l',
                     "Logs",
-                    format!("its lines in the journal: {}", line(&["logs", "--vm", vm])),
+                    line(&["logs", "--vm", vm]),
                     Pick::Open(View::Logs(Some(vm.to_owned()))),
                 ),
                 item(
                     'a',
                     "Attest again",
-                    format!(
-                        "after a change to its definition: {}",
-                        line(&["vm", "attest", vm])
-                    ),
+                    line(&["vm", "attest", vm]),
                     Pick::Run(Action::Attest {
                         vm: vm.to_owned(),
                         restart: false,
@@ -817,10 +802,7 @@ impl App {
                 item(
                     'c',
                     "Restart it, then attest",
-                    format!(
-                        "a cold restart, so a changed definition takes effect: {}",
-                        line(&["vm", "attest", vm, "--restart"])
-                    ),
+                    line(&["vm", "attest", vm, "--restart"]),
                     Pick::Run(Action::Attest {
                         vm: vm.to_owned(),
                         restart: true,
@@ -829,10 +811,7 @@ impl App {
                 item(
                     'k',
                     "Remove it, keeping its settings",
-                    format!(
-                        "it keeps its memory until its next cold start; vm add brings it back: {}",
-                        line(&["vm", "remove", vm])
-                    ),
+                    line(&["vm", "remove", vm]),
                     Pick::Run(Action::Remove {
                         vm: vm.to_owned(),
                         forget: false,
@@ -844,7 +823,7 @@ impl App {
                 item(
                     'b',
                     "Bring it back",
-                    format!("with the settings it had: {}", line(&["vm", "add", vm])),
+                    line(&["vm", "add", vm]),
                     Pick::Run(Action::Add(vm.to_owned())),
                 ),
                 doctor,
@@ -854,10 +833,7 @@ impl App {
                 item(
                     'a',
                     "Finish adding it",
-                    format!(
-                        "an earlier vm add didn't apply: {}",
-                        line(&["vm", "add", vm])
-                    ),
+                    line(&["vm", "add", vm]),
                     Pick::Run(Action::Add(vm.to_owned())),
                 ),
                 doctor,
@@ -876,7 +852,7 @@ impl App {
                     }
                     if listed.guest == crate::reports::Published::No {
                         text.push(format!(
-                            "Its guest service isn't installed. In the VM: {}",
+                            "Guest service: {}",
                             install_command(listed.os_id.as_deref())
                         ));
                     }
@@ -885,10 +861,7 @@ impl App {
                     item(
                         'a',
                         "Add it",
-                        format!(
-                            "shows each change, asks the review question, then applies: {}",
-                            line(&["vm", "add", vm, "--fix-xml"])
-                        ),
+                        line(&["vm", "add", vm, "--fix-xml"]),
                         Pick::Run(Action::Add(vm.to_owned())),
                     ),
                     doctor,
