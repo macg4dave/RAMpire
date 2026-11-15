@@ -23,6 +23,9 @@ pub const GUEST_PACKAGES: &str = "/usr/share/rampire/guest";
 /// RAMpire's SSH key for logging in to guests; `.pub` beside it.
 pub const GUEST_KEY: &str = "/var/lib/rampire/ssh/id_ed25519";
 
+/// The SSH option naming the guests' host keys RAMpire has seen.
+const KNOWN_HOSTS_OPTION: &str = "UserKnownHostsFile=/var/lib/rampire/ssh/known_hosts";
+
 /// RAMpire's public SSH key, made the first time it is needed.
 pub fn public_key() -> Result<String, String> {
     let key = Path::new(GUEST_KEY);
@@ -526,6 +529,13 @@ fn ssh(login: &str, command: &[&str], input: &[u8]) -> Result<String, String> {
             "StrictHostKeyChecking=accept-new",
             "-o",
             "ServerAliveInterval=15",
+            // Its own host keys, beside its key, not root's; and only
+            // errors, so a notice such as "Permanently added" doesn't end
+            // up in what RAMpire says.
+            "-o",
+            KNOWN_HOSTS_OPTION,
+            "-o",
+            "LogLevel=ERROR",
             "--",
             login,
         ])
