@@ -208,6 +208,7 @@ logged as `event=operator_change action=tui_failed`.
 | `/var/lib/rampire/state/` | Each VM's durable request state |
 | `/var/lib/rampire/domain-backups/` | Definitions `vm add` replaced |
 | `/usr/share/rampire/guest/` | The guest packages of the host's build, which `vm add` installs |
+| `/var/lib/rampire/ssh/id_ed25519` | RAMpire's SSH key for logging in to guests, made the first time `vm add` needs it |
 | `/run/rampire/metrics.prom` | Metrics, every round |
 
 ## Sizes

@@ -1,6 +1,7 @@
 //! Reaching inside a VM from the host, so `vm add` can install or upgrade
 //! its guest package: through the QEMU guest agent when it runs commands,
-//! else over SSH, as the host's root, with root's own keys.
+//! else over SSH with RAMpire's own key ([`GUEST_KEY`], made on first use)
+//! beside root's.
 //!
 //! The host package carries the guest packages of its own build in
 //! [`GUEST_PACKAGES`]: the guest always gets the build the host runs.
@@ -14,6 +15,35 @@ use crate::attest::Libvirt;
 
 /// Where the host package keeps `rampire-guest.deb` and `rampire-guest.rpm`.
 pub const GUEST_PACKAGES: &str = "/usr/share/rampire/guest";
+
+/// RAMpire's SSH key for logging in to guests; `.pub` beside it.
+pub const GUEST_KEY: &str = "/var/lib/rampire/ssh/id_ed25519";
+
+/// RAMpire's public SSH key, made the first time it is needed.
+pub fn public_key() -> Result<String, String> {
+    let key = Path::new(GUEST_KEY);
+    if !key.exists() {
+        let parent = key.parent().ok_or("the key has no folder")?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+        let output = Command::new("ssh-keygen")
+            .args([
+                "-q", "-t", "ed25519", "-N", "", "-C", "rampire", "-f", GUEST_KEY,
+            ])
+            .output()
+            .map_err(|error| format!("run ssh-keygen: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "ssh-keygen: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+    let public = format!("{GUEST_KEY}.pub");
+    std::fs::read_to_string(&public)
+        .map(|text| text.trim().to_owned())
+        .map_err(|error| format!("read {public}: {error}"))
+}
 
 /// How the host gets in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,10 +130,14 @@ impl<'a> Guest<'a> {
                     let Route::Ssh(login) = &self.route else {
                         return Err(error);
                     };
+                    let user = login.split('@').next().unwrap_or("root");
                     return Err(format!(
-                        "can't log in to {} as {login}: {error}. Authorize the host root's SSH key \
-                         there, or give a login that works with --guest-login USER@HOST",
-                        self.vm
+                        "can't log in to {} as {login} ({}). Let RAMpire in once: add this line to \
+                         ~{user}/.ssh/authorized_keys in {}, then add it again:\n{}",
+                        self.vm,
+                        error.trim_end_matches('.'),
+                        self.vm,
+                        public_key()?
                     ));
                 }
             }
@@ -293,8 +327,11 @@ fn first_ipv4(table: &str) -> Option<String> {
 
 /// Run `command` over SSH as `login`, feeding it `input`; its output.
 fn ssh(login: &str, command: &[&str], input: &[u8]) -> Result<String, String> {
+    public_key()?;
     let mut child = Command::new("ssh")
         .args([
+            "-i",
+            GUEST_KEY,
             "-o",
             "BatchMode=yes",
             "-o",

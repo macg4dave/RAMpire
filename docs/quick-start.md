@@ -72,7 +72,10 @@ rampire vm add webserver
 
 To install the guest service, RAMpire logs in to the VM: through its QEMU
 guest agent when that runs commands, else over SSH as root at the address
-libvirt has for it, with the host root's SSH key. Give another login with
+libvirt has for it, with RAMpire's own key. The first time a VM doesn't
+let it in, `vm add` prints the one line to add to that user's
+`~/.ssh/authorized_keys` in the VM (the key is
+`/var/lib/rampire/ssh/id_ed25519.pub`). Give another login with
 `--guest-login USER@HOST`, or in the form. The guest service needs
 systemd 253 or later: Debian 13, RHEL 10, current Fedora.
 

@@ -272,7 +272,8 @@ enum VmCommand {
         vm: String,
         /// How to log in to the guest to install its package, USER@HOST.
         /// Default: its guest agent when it runs commands, else root at the
-        /// address libvirt knows for it, with root's SSH key.
+        /// address libvirt knows for it, with RAMpire's SSH key
+        /// (/var/lib/rampire/ssh/id_ed25519).
         #[arg(long, value_name = "USER@HOST")]
         guest_login: Option<String>,
         /// Don't install rampire-guest: it is installed some other way.

@@ -61,7 +61,7 @@ fn about(key: &str) -> (&'static str, &'static str, Kind) {
         ),
         "guest_login" => (
             "Guest login",
-            "How RAMpire logs in to the VM to install rampire-guest, as USER@HOST. Left empty: its guest agent, or root at the address libvirt has for it, with the host root's SSH key.",
+            "How RAMpire logs in to the VM to install rampire-guest, as USER@HOST. Left empty: its guest agent, or root at the address libvirt has for it, with RAMpire's SSH key.",
             Kind::Login,
         ),
         _ => ("Setting", "", Kind::Size),
