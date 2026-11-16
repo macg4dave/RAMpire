@@ -32,6 +32,10 @@ type ConnectOpen = unsafe extern "C" fn(*const c_char) -> Ptr;
 type HandleCall = unsafe extern "C" fn(Ptr) -> c_int;
 type LookupByName = unsafe extern "C" fn(Ptr, *const c_char) -> Ptr;
 type GetXmlDesc = unsafe extern "C" fn(Ptr, c_uint) -> *mut c_char;
+type GetState = unsafe extern "C" fn(Ptr, *mut c_int, *mut c_int, c_uint) -> c_int;
+type ListAllDomains = unsafe extern "C" fn(Ptr, *mut *mut Ptr, c_uint) -> c_int;
+type GetName = unsafe extern "C" fn(Ptr) -> *const c_char;
+type GetId = unsafe extern "C" fn(Ptr) -> c_uint;
 type AgentCommand = unsafe extern "C" fn(Ptr, *const c_char, c_int, c_uint) -> *mut c_char;
 type MonitorCommand = unsafe extern "C" fn(Ptr, *const c_char, *mut *mut c_char, c_uint) -> c_int;
 type UpdateDeviceFlags = unsafe extern "C" fn(Ptr, *const c_char, c_uint) -> c_int;
@@ -53,6 +57,10 @@ struct Api {
     lookup_by_name: LookupByName,
     domain_free: HandleCall,
     get_xml_desc: GetXmlDesc,
+    get_state: GetState,
+    list_all_domains: ListAllDomains,
+    get_name: GetName,
+    get_id: GetId,
     agent_command: AgentCommand,
     monitor_command: MonitorCommand,
     update_device_flags: UpdateDeviceFlags,
@@ -88,6 +96,13 @@ impl Api {
                     libvirt,
                     c"virDomainGetXMLDesc",
                 )?),
+                get_state: transmute::<Ptr, GetState>(symbol(libvirt, c"virDomainGetState")?),
+                list_all_domains: transmute::<Ptr, ListAllDomains>(symbol(
+                    libvirt,
+                    c"virConnectListAllDomains",
+                )?),
+                get_name: transmute::<Ptr, GetName>(symbol(libvirt, c"virDomainGetName")?),
+                get_id: transmute::<Ptr, GetId>(symbol(libvirt, c"virDomainGetID")?),
                 agent_command: transmute::<Ptr, AgentCommand>(symbol(
                     qemu,
                     c"virDomainQemuAgentCommand",
@@ -172,8 +187,19 @@ fn take_string(value: *mut c_char) -> String {
 }
 
 enum Request {
+    /// The live definition, or the saved one when `inactive`.
     DumpXml {
         vm: String,
+        inactive: bool,
+    },
+    /// The domain's state, as `virsh domstate` names it.
+    State {
+        vm: String,
+    },
+    /// The domains' names, as `virsh list --name` prints them, with
+    /// `virConnectListAllDomains` flags: 0 for every domain.
+    List {
+        flags: c_uint,
     },
     Agent {
         vm: String,
@@ -249,7 +275,10 @@ impl Worker {
         unsafe { (self.api.reset_last_error)() };
         let connection = self.connect()?;
         let vm = match request {
-            Request::DumpXml { vm }
+            // Not about one domain: answered without looking one up.
+            Request::List { flags } => return self.list(connection, *flags),
+            Request::DumpXml { vm, .. }
+            | Request::State { vm }
             | Request::Agent { vm, .. }
             | Request::Monitor { vm, .. }
             | Request::UpdateDevice { vm, .. } => vm,
@@ -265,7 +294,25 @@ impl Worker {
         }
         let result = match request {
             // SAFETY: domain is live; flags 0 matches `virsh dumpxml`.
-            Request::DumpXml { .. } => self.owned(unsafe { (self.api.get_xml_desc)(domain, 0) }),
+            // SAFETY: domain is live; the flags are 0, or
+            // VIR_DOMAIN_XML_INACTIVE (2) as `virsh dumpxml --inactive` uses.
+            Request::List { .. } => Err("a list is answered without a domain".to_owned()),
+            // virsh prints the XML and a newline after it: the same bytes,
+            // since a setup's record is a hash of them.
+            Request::DumpXml { inactive, .. } => self
+                .owned(unsafe {
+                    (self.api.get_xml_desc)(domain, if *inactive { XML_INACTIVE } else { 0 })
+                })
+                .map(|xml| xml + "\n"),
+            Request::State { .. } => {
+                let mut state: c_int = 0;
+                let mut reason: c_int = 0;
+                // SAFETY: domain is live and both pointers are to locals.
+                match unsafe { (self.api.get_state)(domain, &mut state, &mut reason, 0) } {
+                    0 => Ok(format!("{}\n\n", state_name(state))),
+                    _ => Err(self.api.last_error()),
+                }
+            }
             Request::Agent { command, .. } => match CString::new(command.as_str()) {
                 // SAFETY: domain is live and command is NUL-terminated.
                 Ok(command) => self.owned(unsafe {
@@ -306,6 +353,49 @@ impl Worker {
         result
     }
 
+    /// The domains' names in `virsh list`'s order: running ones by their
+    /// ID, then the rest by name; one a line, and a blank line after, as
+    /// virsh prints them.
+    fn list(&self, connection: Ptr, flags: c_uint) -> Result<String, String> {
+        let mut domains: *mut Ptr = std::ptr::null_mut();
+        // SAFETY: connection is live; libvirt allocates the array and a
+        // reference to each domain, all freed below.
+        let count = unsafe { (self.api.list_all_domains)(connection, &mut domains, flags) };
+        if count < 0 {
+            return Err(self.api.last_error());
+        }
+        let mut named = Vec::with_capacity(count as usize);
+        for index in 0..count as usize {
+            // SAFETY: index is within the `count` domains libvirt returned.
+            let domain = unsafe { *domains.add(index) };
+            // SAFETY: domain is live; its name is owned by it, copied here
+            // before it is freed.
+            let name = unsafe { (self.api.get_name)(domain) };
+            if !name.is_null() {
+                let id = unsafe { (self.api.get_id)(domain) };
+                let name = unsafe { CStr::from_ptr(name) }
+                    .to_string_lossy()
+                    .into_owned();
+                named.push((id, name));
+            }
+            // SAFETY: each domain reference is freed exactly once.
+            unsafe { (self.api.domain_free)(domain) };
+        }
+        if !domains.is_null() {
+            // SAFETY: the array was allocated by libvirt with malloc.
+            unsafe { libc::free(domains.cast()) };
+        }
+        // An inactive domain's ID is (unsigned) -1, so it sorts last.
+        named.sort();
+        let mut text = String::new();
+        for (_, name) in named {
+            text.push_str(&name);
+            text.push('\n');
+        }
+        text.push('\n');
+        Ok(text)
+    }
+
     /// A libvirt-allocated result, or this thread's error when it is null.
     fn owned(&self, output: *mut c_char) -> Result<String, String> {
         if output.is_null() {
@@ -313,6 +403,26 @@ impl Worker {
         } else {
             Ok(take_string(output))
         }
+    }
+}
+
+/// `virConnectListAllDomains`'s VIR_CONNECT_LIST_DOMAINS_SHUTOFF.
+const LIST_SHUTOFF: c_uint = 1 << 6;
+
+/// `virDomainGetXMLDesc`'s VIR_DOMAIN_XML_INACTIVE: the saved definition.
+const XML_INACTIVE: c_uint = 2;
+
+/// A `virDomainState` as `virsh domstate` prints it.
+fn state_name(state: c_int) -> &'static str {
+    match state {
+        1 => "running",
+        2 => "idle",
+        3 => "paused",
+        4 => "in shutdown",
+        5 => "shut off",
+        6 => "crashed",
+        7 => "pmsuspended",
+        _ => "no state",
     }
 }
 
@@ -387,7 +497,30 @@ impl LibvirtSession {
     /// the caller run `virsh`.
     pub fn run(&self, arguments: &[String]) -> Option<Result<String, VirshError>> {
         let request = match arguments {
-            [operation, vm] if operation == "dumpxml" => Request::DumpXml { vm: vm.clone() },
+            [operation, vm] if operation == "dumpxml" => Request::DumpXml {
+                vm: vm.clone(),
+                inactive: false,
+            },
+            // Both orders virsh takes the flag in.
+            [operation, flag, vm] | [operation, vm, flag]
+                if operation == "dumpxml" && flag == "--inactive" =>
+            {
+                Request::DumpXml {
+                    vm: vm.clone(),
+                    inactive: true,
+                }
+            }
+            [operation, vm] if operation == "domstate" => Request::State { vm: vm.clone() },
+            [operation, all, name] if operation == "list" && all == "--all" && name == "--name" => {
+                Request::List { flags: 0 }
+            }
+            [operation, state, name]
+                if operation == "list" && state == "--state-shutoff" && name == "--name" =>
+            {
+                Request::List {
+                    flags: LIST_SHUTOFF,
+                }
+            }
             [operation, vm, command] if operation == "qemu-agent-command" => Request::Agent {
                 vm: vm.clone(),
                 command: command.clone(),
@@ -406,7 +539,12 @@ impl LibvirtSession {
                 // short of a complete element leaves the command to virsh, so
                 // nothing is attempted here that virsh would not attempt.
                 let requested_kib = kib.parse().ok()?;
-                let domain_xml = self.call(Request::DumpXml { vm: vm.clone() }).ok()?;
+                let domain_xml = self
+                    .call(Request::DumpXml {
+                        vm: vm.clone(),
+                        inactive: false,
+                    })
+                    .ok()?;
                 let xml = virtio_mem_update_xml(&domain_xml, alias, requested_kib)?;
                 Request::UpdateDevice {
                     vm: vm.clone(),
@@ -502,10 +640,73 @@ mod tests {
             arguments(&["version"]),
             arguments(&["domuuid", "guest"]),
             arguments(&["domxml-to-native", "qemu-argv", "--domain", "guest"]),
-            arguments(&["dumpxml", "guest", "--inactive"]),
+            arguments(&["dumpxml", "guest", "--security-info"]),
+            arguments(&["domstate", "guest", "--reason"]),
         ] {
             assert!(session.run(&other).is_none(), "{other:?}");
         }
+    }
+
+    #[test]
+    fn the_reads_the_operator_tools_make_are_served() {
+        // Served: answered by the session, here an error from a host
+        // without libvirt or without such a VM, never None.
+        let session = LibvirtSession::new("test:///default", Duration::from_secs(5));
+        for served in [
+            arguments(&["dumpxml", "guest", "--inactive"]),
+            arguments(&["dumpxml", "--inactive", "guest"]),
+            arguments(&["domstate", "guest"]),
+            arguments(&["list", "--all", "--name"]),
+            arguments(&["list", "--state-shutoff", "--name"]),
+        ] {
+            assert!(session.run(&served).is_some(), "{served:?}");
+        }
+        // Where libvirt is installed, they answer as virsh does, here on
+        // libvirt's test driver and its running domain "test".
+        // Byte for byte: a setup's record is a hash of what was read.
+        let virsh = |args: &[&str]| {
+            std::process::Command::new("virsh")
+                .args(["-c", "test:///default"])
+                .args(args)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        };
+        let installed = [
+            "/usr/lib64/libvirt.so.0",
+            "/usr/lib/x86_64-linux-gnu/libvirt.so.0",
+        ]
+        .iter()
+        .any(|path| std::path::Path::new(path).exists());
+        let answered = session.run(&arguments(&["domstate", "test"]));
+        assert!(
+            !installed || matches!(answered, Some(Ok(_))),
+            "libvirt is installed but the session didn't answer: {answered:?}"
+        );
+        if let Some(Ok(state)) = answered {
+            for list in [
+                ["list", "--all", "--name"],
+                ["list", "--state-shutoff", "--name"],
+            ] {
+                let served = session.run(&arguments(&list)).unwrap().unwrap();
+                assert_eq!(Some(served), virsh(&list), "{list:?}");
+            }
+            assert_eq!(Some(state), virsh(&["domstate", "test"]));
+            let inactive = session
+                .run(&arguments(&["dumpxml", "--inactive", "test"]))
+                .unwrap()
+                .unwrap();
+            assert_eq!(Some(inactive), virsh(&["dumpxml", "--inactive", "test"]));
+            let live = session
+                .run(&arguments(&["dumpxml", "test"]))
+                .unwrap()
+                .unwrap();
+            assert_eq!(Some(live), virsh(&["dumpxml", "test"]));
+        }
+        assert_eq!(state_name(1), "running");
+        assert_eq!(state_name(5), "shut off");
+        assert_eq!(state_name(99), "no state");
     }
 
     const DEVICE: &str = "    <memory model='virtio-mem'>

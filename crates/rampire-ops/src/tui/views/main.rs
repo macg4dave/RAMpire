@@ -197,10 +197,10 @@ fn vm_list(
     }
     // The guest's gauge takes the width the fixed columns leave, so a
     // wide window shows it long rather than gaps between columns. The note
-    // keeps room for "update available (u)".
+    // keeps room for a word: what to do next, which its menu says in full.
     let fixed = name_width + 14 + 4 + 8 + if guest_mode && wide { 12 } else { 0 };
     let spare = area.width.saturating_sub(
-        fixed + 4 /* borders, padding */ + 2 /* marker */ + 6 /* gaps */ + 21, /* note */
+        fixed + 4 /* borders, padding */ + 2 /* marker */ + 6 /* gaps */ + 8, /* note: "blocked", "update" */
     );
     let gauge = spare.saturating_sub(13).clamp(4, 60) as usize;
     match mode {
@@ -291,10 +291,7 @@ fn vm_list(
                             cells.push(Cell::from(if !quiet {
                                 request
                             } else if app.update_available(entry) {
-                                Line::from(Span::styled(
-                                    "update available (u)",
-                                    theme.tone(Tone::Warn),
-                                ))
+                                Line::from(Span::styled("update", theme.tone(Tone::Warn)))
                             } else {
                                 Line::default()
                             }));
@@ -363,7 +360,7 @@ fn vm_list(
                                 .as_ref()
                                 .is_some_and(|listed| !listed.problems.is_empty());
                             cells.push(Cell::from(if blocked {
-                                Span::styled("fix first", theme.tone(Tone::Warn))
+                                Span::styled("blocked", theme.tone(Tone::Warn))
                             } else {
                                 Span::styled(next, theme.tone(Tone::Info))
                             }));

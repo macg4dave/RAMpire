@@ -48,7 +48,7 @@ folder of the copy it runs and its state from the unit's `StateDirectory`.
 libvirt 10.1 or later and QEMU 8.2 or later, QEMU's `virtio-mem-pci`
 with `dynamic-memslots` and `unplugged-inaccessible`, the service
 account, the unit's socket group, the account's libvirt access (the
-polkit rule) and an applied configuration. It prints the fix for each
+polkit rule), an applied configuration and the controller running. It prints the fix for each
 problem.
 
 Requirements: an x86-64 Linux KVM host with systemd, libvirt and QEMU,
@@ -304,10 +304,11 @@ The service needs pressure stall information to give memory back. RHEL's
 kernels build it in but boot with it off (`CONFIG_PSI_DEFAULT_DISABLED`),
 so on such a kernel the package adds `psi=1` to every installed kernel with
 `grubby` (a static install leaves the kernel as it is: Fedora's kernels,
-CoreOS's among them, have it on). It takes effect when the VM next starts, which `rampire vm add`
-does when it changes the VM's definition; a VM added before the package
-was installed needs one restart (`rampire vm restart VM`). An
-explicit `psi=0` is left alone.
+CoreOS's among them, have it on). It takes effect when the VM next starts, and until then the package
+leaves the guest service stopped, so no memory request of its is cut off
+by that restart: `rampire vm add` restarts the VM itself, `vm upgrade`
+offers to, and otherwise `rampire vm restart VM` does it. An explicit
+`psi=0` is left alone.
 
 At start the service checks and logs its readiness: virtio-mem driver bound,
 pressure stall information and its trigger, how hot-plugged memory is
@@ -471,8 +472,10 @@ the unit again. `--yes` answers for a script.
 
 **A stopped controller.** The unit is fail-stop (`Restart=no`): a failure
 needs a person to look. Read `systemctl status` and the journal, fix the
-cause, then `systemctl start`. Durable state means a pending request is
-resumed, not lost.
+cause, then `rampire apply`, which starts it. Durable state means a pending
+request is resumed, not lost. `rampire doctor` says when it isn't running.
+One failure is tried again by itself, every 30 s: libvirt access refused at
+start (exit 75), before anything was done, as when polkit is restarting.
 
 **A guest service restart or guest reboot.** The guest's one unresolved
 request is durable and is sent again unchanged until the host resolves it.

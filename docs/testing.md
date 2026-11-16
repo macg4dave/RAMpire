@@ -33,12 +33,21 @@ that doesn't, as RHEL ships it), and works through what a person does:
 
 | Scenario | What a person does | What must hold |
 |---|---|---|
+| `add-declined` | Starts an add in the TUI and answers No | The task says Not done; the definition is as it was; the VM isn't managed |
+| `add-cancelled` | Starts an add and cancels it (`x`) as soon as it is working | However far it got, the VM is whole: managed and healthy, or not managed with its old definition back |
 | `add-running` | Adds a running VM in the TUI: its menu, the form, the questions | The task's window opens as the form closes and stays open; each question is one expected, asked once; the add ends Done; the guest publishes; `doctor` finds nothing |
 | `add-off` | Adds a VM that is shut off: the disk way | As above |
 | `restart-open` | The VM restarts while the TUI is open | Nothing is written over the screen; the errors list has nothing from stderr; it reports in again |
 | `settings` | `rampire set VM max_ram=3GB` | It exits 0 and the VM stays healthy |
 | `upgrade` | `rampire vm upgrade VM` | As above |
+| `vm-gone` | Deletes a managed test VM from libvirt behind RAMpire's back and restarts the controller | The controller runs and manages the others, logging `vm_setup_failed`; `vm remove` takes the gone VM out |
 | `remove` | Removes each test VM in the TUI | Not managed after; its definition has none of RAMpire's parts |
+
+After every scenario the controller must be running, and in
+`restart-open`'s two minutes of the TUI polkitd may open no more than 40
+descriptors: RAMpire asking polkit for every read once ran it out of
+them, and it then refused the controller (`ls` reads polkitd's
+descriptors).
 
 Each command and the TUI run in tmux, at 150x45, and are read off the
 screen as a person sees them. On every read the screen is checked for
@@ -57,7 +66,7 @@ The suite runs as an ordinary user with these commands allowed through
 sudo without a password, in `/etc/sudoers.d/rampire-live`:
 
 ```text
-USER ALL=(root) NOPASSWD: /usr/bin/rampire, /usr/bin/virsh, /usr/bin/virt-install, /usr/bin/qemu-img, /usr/bin/journalctl, /usr/bin/dnf
+USER ALL=(root) NOPASSWD: /usr/bin/rampire, /usr/bin/virsh, /usr/bin/virt-install, /usr/bin/qemu-img, /usr/bin/journalctl, /usr/bin/dnf, /usr/bin/ls, /usr/bin/systemctl
 ```
 
 (`dnf` installs the build; it is root in all but name.) The VMs' disks go

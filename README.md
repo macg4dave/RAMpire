@@ -166,7 +166,8 @@ Or edit the TOML, preview the change with `sudo rampire diff` and apply it with 
 | Operate, upgrade or recover a host | [Administration](docs/administration.md) |
 | Monitor or record memory behaviour | [Tools and metrics](docs/tools.md) |
 | Use automation or manage more than one host | [Fleet guide](docs/fleet.md) |
-| Build, test or contribute code | [Development](docs/development.md) |
+| Build or contribute code | [Development](docs/development.md) |
+| Test it, on a real host too | [Testing](docs/testing.md) |
 | See what changed in each release | [Changelog](CHANGELOG.md) |
 | Understand what is coming next | [Roadmap](docs/roadmap.md) |
 | Make a release | [Releasing](docs/releasing.md) |

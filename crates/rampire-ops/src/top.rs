@@ -214,17 +214,19 @@ pub struct PoolReader {
     host_history: VecDeque<u64>,
     session: Session,
     samples: u64,
+    events: journal::Recent<Result<Vec<PoolEvent>, String>>,
 }
 
 impl PoolReader {
     pub fn new(command: Command) -> Self {
         Self {
-            virsh: Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect),
+            virsh: Virsh::shared("virsh", COMMAND_TIMEOUT, &command.connect),
             command,
             history: VecDeque::new(),
             host_history: VecDeque::new(),
             session: Session::default(),
             samples: 0,
+            events: journal::Recent::default(),
         }
     }
 
@@ -271,7 +273,10 @@ impl PoolReader {
             session: self.session,
             history: self.history.iter().cloned().collect(),
             host_history: self.host_history.iter().copied().collect(),
-            events: read_events(&self.command, cwd),
+            events: {
+                let command = &self.command;
+                self.events.get(|| read_events(command, cwd))
+            },
         })
     }
 }

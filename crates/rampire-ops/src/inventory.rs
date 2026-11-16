@@ -104,9 +104,9 @@ pub fn domains(libvirt: &crate::attest::Libvirt) -> Result<Vec<String>, String> 
 
 /// What `vm add` would change in a definition, and the problems
 /// that would still stop RAMpire managing it afterwards.
-pub fn add_preview(xml: &str) -> Result<(Vec<String>, Vec<Problem>), String> {
+pub fn add_preview(xml: &str) -> Result<(Vec<String>, Vec<Problem>, bool), String> {
     let preview = preview(xml)?;
-    Ok((preview.to_fix, preview.problems))
+    Ok((preview.to_fix, preview.problems, preview.parts))
 }
 
 /// What `vm add` would do to a definition.
@@ -519,9 +519,31 @@ pub fn text(report: &VmListReport) -> String {
             vm.state,
             vm.detail
         ));
+        let note = |out: &mut String, text: String| {
+            out.push_str(&format!("{:width$}  {text}\n", ""));
+        };
+        if vm.management == Management::Unfinished {
+            note(
+                &mut out,
+                format!(
+                    "an add stopped part-way: rampire vm add {0} finishes it, rampire vm remove {0} undoes it",
+                    vm.vm_name
+                ),
+            );
+        }
         if vm.management == Management::NotManaged {
+            // What `vm add` does, not problems for a person to fix.
             for change in &vm.to_fix {
-                out.push_str(&format!("{:width$}  to fix: {change}\n", ""));
+                note(&mut out, format!("adding it will {change}"));
+            }
+            if vm.rampire_parts {
+                note(
+                    &mut out,
+                    format!(
+                        "its definition still has RAMpire's parts from an earlier add: rampire vm remove {} takes them out",
+                        vm.vm_name
+                    ),
+                );
             }
             for problem in &vm.problems {
                 out.push_str(&format!(
@@ -556,7 +578,8 @@ mod tests {
 
     #[test]
     fn a_plain_vm_shows_every_change_fix_xml_makes_and_nothing_left_to_stop_it() {
-        let (to_fix, problems) = add_preview(PLAIN).unwrap();
+        let (to_fix, problems, parts) = add_preview(PLAIN).unwrap();
+        assert!(!parts, "a plain definition has none of RAMpire's parts");
         assert!(to_fix
             .iter()
             .any(|change| change.contains("control channel")));
@@ -626,7 +649,23 @@ mod tests {
         };
         assert_eq!(
             text(&report),
-            "web  not managed  running   published 3s ago\n     to fix: add a 6144 MiB virtio-mem device\n     add it with: rampire vm add web\n"
+            "web  not managed  running   published 3s ago\n     adding it will add a 6144 MiB virtio-mem device\n     add it with: rampire vm add web\n"
+        );
+        // Left over from an earlier add, and an add that stopped part-way.
+        let mut leftover = report.clone();
+        leftover.vms[0].rampire_parts = true;
+        leftover.vms[0].to_fix.clear();
+        assert!(
+            text(&leftover).contains("rampire vm remove web takes them out"),
+            "{}",
+            text(&leftover)
+        );
+        let mut unfinished = report.clone();
+        unfinished.vms[0].management = Management::Unfinished;
+        assert!(
+            text(&unfinished).contains("rampire vm add web finishes it"),
+            "{}",
+            text(&unfinished)
         );
     }
 }

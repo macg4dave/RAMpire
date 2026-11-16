@@ -64,6 +64,7 @@ A request is described by `session_id`, `sequence`, `operation` (`Add` or
 | `control_channel_unavailable` | `reason` | A VM's control channel can't be used |
 | `metrics_unwritten` | `reason` | The metrics file couldn't be written; logged once until it can |
 | `no_vms` | | The configuration manages no VMs; the controller waits |
+| `vm_setup_failed` | `reason` | A VM couldn't be set up at start (libvirt no longer has it, or its definition lost RAMpire's parts): it is left alone and the others are managed. `rampire doctor VM` says what is wrong |
 | `config_reloaded` | | `systemctl reload rampire` took the new applied copy |
 | `reload_refused` | `reason` | The new copy changes more than a reload can; the controller keeps what it has |
 

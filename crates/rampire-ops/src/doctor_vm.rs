@@ -132,26 +132,48 @@ fn unmanaged(libvirt: &crate::attest::Libvirt, vm: &str, management: Management)
         )
         .runs(&["vm", "add", vm])],
         _ => {
-            let mut findings = vec![Finding::problem(
-                "managed",
-                format!("RAMpire doesn't manage {vm}"),
-                format!("rampire vm add {vm}"),
-            )
-            .runs(&["vm", "add", vm])];
+            // A system the guest service can't go in, read from its disk as
+            // `vm add` reads it: adding it would only be refused.
+            let read_only = crate::guest::offline_available()
+                .then(|| crate::guest::inspect_disk(vm).ok())
+                .flatten()
+                .filter(|system| !system.takes_guest());
+            let mut findings = vec![match &read_only {
+                Some(system) => Finding::problem(
+                    "managed",
+                    format!(
+                        "RAMpire doesn't manage {vm}, and can't: it runs {}, whose system is read only, so the guest service can't be installed",
+                        system.product.as_deref().unwrap_or("a system RAMpire doesn't recognise")
+                    ),
+                    "none: RAMpire manages VMs whose system can take its guest service",
+                ),
+                None => Finding::problem(
+                    "managed",
+                    format!("RAMpire doesn't manage {vm}"),
+                    format!("rampire vm add {vm}"),
+                )
+                .runs(&["vm", "add", vm]),
+            }];
             match libvirt
                 .virsh(&["dumpxml", "--inactive", vm])
                 .and_then(|xml| crate::inventory::add_preview(&xml))
             {
-                Ok((to_fix, problems)) => {
-                    for change in to_fix {
+                Ok((to_fix, problems, parts)) => {
+                    if parts {
                         findings.push(
                             Finding::problem(
-                                "definition",
-                                format!("vm add would {change}"),
-                                format!("rampire vm add {vm}"),
+                                "leftover parts",
+                                "its definition still has RAMpire's device or control channel from an earlier add",
+                                format!("rampire vm remove {vm} takes them out"),
                             )
-                            .runs(&["vm", "add", vm]),
+                            .runs(&["vm", "remove", vm]),
                         );
+                    }
+                    // What an add would do, for a person to know: not problems.
+                    if read_only.is_none() {
+                        for change in to_fix {
+                            findings.push(Finding::ok("vm add would", change));
+                        }
                     }
                     for problem in problems {
                         findings.push(Finding::problem("definition", problem.problem, problem.fix));
@@ -446,12 +468,14 @@ fn onlining(environment: &BTreeMap<String, String>) -> Finding {
             "auto_online_blocks is offline: hot-plugged memory stays unused",
             "boot the guest with memhp_default_state=online memory_hotplug.online_policy=auto-movable",
         ),
-        "online" if policy != "auto-movable" => Finding::problem(
+        // As RHEL's udev rule does, and as measured it gives memory back:
+        // fine, with what to do should removals come back partial
+        // (docs/administration.md, Linux guests).
+        "online" if policy != "auto-movable" => Finding::ok(
             check,
             format!(
-                "hot-plugged memory is onlined to kernel zones (online_policy={policy}): removal is guaranteed only from the movable zone"
+                "online, online_policy={policy}{movable}; if removals come back partial, boot the guest with memory_hotplug.online_policy=auto-movable"
             ),
-            "boot the guest with memory_hotplug.online_policy=auto-movable",
         ),
         "online_kernel" => Finding::problem(
             check,
@@ -664,10 +688,16 @@ mod tests {
 
         let mut unready = READY.to_vec();
         unready[1] = ("pressure_signal", "none");
-        unready[3] = ("online_policy", "contig-zones");
+        unready[2] = ("auto_online_blocks", "online_kernel");
         let unready = readiness(&publication(&unready), 4 << 30);
         assert_eq!(problems(&unready), ["pressure signal", "onlining"]);
         assert!(unready[1].fix.as_deref().unwrap().contains("psi=1"));
+
+        // Debian's default onlining gives memory back, as measured.
+        let mut debian = READY.to_vec();
+        debian[3] = ("online_policy", "contig-zones");
+        let debian = readiness(&publication(&debian), 4 << 30);
+        assert_eq!(problems(&debian), Vec::<&str>::new(), "{debian:?}");
 
         assert_eq!(
             problems(&readiness(&publication(&[]), 1)),

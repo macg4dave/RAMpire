@@ -126,7 +126,11 @@ pub fn init(
     // told why before anything is written.
     let problems: Vec<_> = crate::doctor::run(&connection, SERVICE_ACCOUNT, applied_root())
         .into_iter()
-        .filter(|finding| !finding.ok && finding.check != crate::doctor::APPLIED_CHECK)
+        .filter(|finding| {
+            !finding.ok
+                && finding.check != crate::doctor::APPLIED_CHECK
+                && finding.check != crate::doctor::CONTROLLER_CHECK
+        })
         .collect();
     if !problems.is_empty() {
         for finding in &problems {

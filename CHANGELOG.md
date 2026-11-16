@@ -47,6 +47,76 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   mark, what it is doing now and for how long, where the buttons were, so
   a long step no longer looks finished; the status bar offers only the
   keys that do something then.
+- `apply` starts the controller, and enables it at boot, when it isn't
+  running and the configuration manages VMs, even when nothing else
+  changed. A controller left stopped (removing and installing the
+  package again stops it) used to resize nothing while every VM's guest
+  looked as if it hadn't reported in. `doctor` checks that the
+  controller runs, with `rampire apply` as the fix, and `vm add`'s wait
+  says so first.
+- Putting the guest service on a shut-off VM's disk waits up to 40 s for
+  another reader of the disk to let go, such as the TUI reading what
+  system the VM runs, instead of failing with "Failed to get write lock".
+- `rampire doctor VM` for a VM RAMpire doesn't manage says when its
+  definition still has RAMpire's parts from an earlier add (`vm remove`
+  takes them out), and when its system is read only (Home Assistant OS),
+  rather than suggesting an add that would be refused. What an add would
+  change is listed as information, not as problems.
+- A command's question stands apart from the text it is about (the
+  difference to apply, the pool's reasoning) after a blank line.
+- The TUI says when the controller stops, once, with the key that starts
+  it again (**A**, apply); the header's "inactive" alone didn't say what
+  to do.
+- When `apply` or `vm add` can't re-check another managed VM's setup,
+  the error names that VM and says to run its doctor; it read as if
+  the VM being added were at fault.
+- A managed VM the controller can't set up as it starts (libvirt no
+  longer has it, or its definition lost RAMpire's parts) is left alone,
+  logged as `vm_setup_failed`, and the other VMs are managed. It used to
+  stop the controller, so no VM was resized.
+- `rampire vm list` says what adding a VM will change as "adding it will
+  ..." (it said "to fix:", as if a person had to), says when an earlier
+  add left RAMpire's parts in a definition and that `vm remove` takes
+  them out, and how to finish or undo an add that stopped part-way.
+- A VM with a USB or SCSI device passed through (a TV tuner, a disk) is
+  no longer asked whether its passed-through devices pin memory: QEMU
+  copies their transfers, so they pin none. PCI and mediated (VFIO)
+  devices are still asked about.
+- Installing the guest package on a RHEL-family guest whose kernel has
+  pressure stall information off no longer starts the guest service
+  before the restart that turns it on: started, it asked for memory and
+  the restart cut that request off, which latched the VM until a person
+  recovered it. It starts after the restart. `vm upgrade` offers that
+  restart.
+- The TUI, `top`, `watch` and the commands share one libvirt connection
+  as root instead of running `virsh` for every read. Each new connection
+  is a polkit check: with the TUI open that was several a second, and
+  polkit 125 leaks a file descriptor for each until it runs out, fails
+  every check, and refuses the controller. With the TUI open there are
+  now about 40 times fewer. They read the controller's journal every 5 s
+  instead of twice a second.
+- The controller tries again every 30 s when libvirt access is refused
+  as it starts (exit 75), rather than stopping for good. polkit refuses
+  while it restarts or is stuck; after a package upgrade restarted the
+  controller at such a moment, it stayed stopped. Every other failure is
+  still fail-stop.
+- `vm upgrade`, and a settings change that upgrades the guest, say what
+  they see every 20 s while they wait for the new build to report in,
+  and why when it doesn't, as `vm add` does.
+- The TUI no longer logs `tui_failed` when its terminal went away (a
+  closed window, a dropped SSH connection) and so couldn't be restored.
+- `doctor` no longer reports a guest that onlines hot-plugged memory as
+  `online` with `online_policy=contig-zones` (Debian's default) as a
+  problem: it gives memory back as RHEL's udev onlining does, and the
+  docs say so. It says to switch to `auto-movable` should removals come
+  back partial. `online_kernel` is still a problem.
+- A VM's events in the TUI and `rampire watch` leave out the
+  controller's "manages no VMs yet", from before the VM was added.
+- The VM list's NOTE says **update** and **blocked** (was "update
+  available (u)" and "fix first"), which fit when the VM's details are
+  beside the list; they were cut short there.
+- A VM's menu letter pressed in the list for a VM whose menu doesn't
+  offer it, or with no VM chosen, says why instead of doing nothing.
 - Saving the Add form (and the other settings forms) opens the task's
   window at once, instead of going back to the list until its first
   question. Adding a VM that is already being added doesn't start a

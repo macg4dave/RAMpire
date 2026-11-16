@@ -609,6 +609,14 @@ const WAIT_REPORT: std::time::Duration = std::time::Duration::from_secs(20);
 /// definition, the service in it isn't running (with its last log lines),
 /// or what the controller says.
 fn why_not_reported(context: &Context, libvirt: &crate::attest::Libvirt, vm: &str) -> String {
+    let controller = crate::doctor::controller_finding(&crate::systemd_unit::controller_state());
+    if !controller.ok {
+        return format!(
+            "{}. Fix: {}",
+            controller.detail,
+            controller.fix.unwrap_or_default()
+        );
+    }
     match libvirt.state(vm) {
         Ok(state) if state == "running" => {}
         Ok(state) => return format!("{vm} is {state}; it reports in once it runs"),
@@ -1176,12 +1184,11 @@ pub fn vm_upgrade(
     }
     crate::audit::record(context, "vm_upgrade", Some(vm), &[]);
     Ok(
-        if wait_for_build(ui, vm, host, std::time::Duration::from_secs(300)) {
-            Outcome::Done
-        } else {
-            Outcome::Partly(format!(
-                "the package is installed, but {vm}'s guest service hasn't reported in from the new build: rampire doctor {vm} says why"
-            ))
+        match wait_for_build(context, &libvirt, ui, vm, host, std::time::Duration::from_secs(300)) {
+            Ok(()) => Outcome::Done,
+            Err(why) => Outcome::Partly(format!(
+                "the package is installed, but {vm}'s guest service hasn't reported in from the new build {why}"
+            )),
         },
     )
 }
@@ -1239,9 +1246,22 @@ fn upgrade_guest(
         Ok(installed) => {
             ui.say(&format!("{vm} has rampire-guest {}", installed.build));
             if installed.restart_needed {
-                ui.say(&format!(
-                    "the package turned on what takes a restart: rampire vm restart {vm}"
-                ));
+                // The package turned pressure stall information on for the
+                // next start and leaves the service stopped until then.
+                ui.say(
+                    "the package turned on pressure stall information, which takes a restart; its guest service starts then",
+                );
+                if may_shut_down
+                    && ui.confirm(&format!(
+                        "Shut {vm} down and start it again now, so its guest service runs?"
+                    ))?
+                {
+                    ui.say(&format!("shutting {vm} down and starting it again"));
+                    crate::attest::cold_restart(vm, libvirt, Duration::from_secs(300))?;
+                    ui.say(&format!("{vm} restarted"));
+                } else {
+                    ui.say(&format!("rampire vm restart {vm} restarts it"));
+                }
             }
             Ok(true)
         }
@@ -1261,38 +1281,62 @@ fn upgrade_guest(
     }
 }
 
-/// Wait for `vm`'s guest service to publish from `build`, and say so;
-/// whether it did. Without a build to wait for, there is nothing to wait
-/// on.
+/// Wait for `vm`'s guest service to publish from `build`, saying what it
+/// sees every [`WAIT_REPORT`] as `vm add`'s wait does; when it doesn't,
+/// why. Without a build to wait for, there is nothing to wait on.
 fn wait_for_build(
+    context: &Context,
+    libvirt: &crate::attest::Libvirt,
     ui: &mut dyn Ui,
     vm: &str,
     build: Option<&str>,
     limit: std::time::Duration,
-) -> bool {
+) -> Result<(), String> {
+    use std::time::{Duration, Instant};
     let Some(build) = build else {
-        return true;
+        return Ok(());
     };
-    ui.say(&format!("waiting for {vm}'s guest service to report in"));
-    let started = std::time::Instant::now();
+    ui.say(&format!(
+        "waiting up to {} s for {vm}'s guest service to report in from build {build}",
+        limit.as_secs()
+    ));
+    let started = Instant::now();
+    let mut reported = started;
     let cancel = ui.cancel();
+    let running_now = || {
+        crate::guest::running_build(vm).map_or(String::new(), |old| {
+            format!("it still reports build {old}; ")
+        })
+    };
     while started.elapsed() < limit {
         if crate::guest::running_build(vm).as_deref() == Some(build) {
             ui.say(&format!("{vm} runs rampire-guest {build}"));
-            return true;
+            return Ok(());
         }
-        if cancel.sleep(std::time::Duration::from_secs(2)) {
+        if reported.elapsed() >= WAIT_REPORT {
+            reported = Instant::now();
             ui.say(&format!(
-                "stopped waiting for {vm}'s new build to report in"
+                "still waiting, {} s of {}: {}{}",
+                started.elapsed().as_secs(),
+                limit.as_secs(),
+                running_now(),
+                why_not_reported(context, libvirt, vm)
             ));
-            return false;
+        }
+        if cancel.sleep(Duration::from_secs(2)) {
+            return Err(format!(
+                "(you stopped waiting): {}{}",
+                running_now(),
+                why_not_reported(context, libvirt, vm)
+            ));
         }
     }
-    ui.say(&format!(
-        "{vm}'s guest service hasn't reported in from build {build} after {} s: rampire doctor {vm} says why",
-        limit.as_secs()
-    ));
-    false
+    Err(format!(
+        "after {} s: {}{}",
+        limit.as_secs(),
+        running_now(),
+        why_not_reported(context, libvirt, vm)
+    ))
 }
 
 /// After a VM's settings change: when its guest runs another build than
@@ -1316,7 +1360,18 @@ fn upgrade_if_behind(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(),
     match upgrade_guest(ui, &libvirt, vm, None, false) {
         Ok(_) => {
             crate::audit::record(context, "vm_upgrade", Some(vm), &[]);
-            wait_for_build(ui, vm, host, std::time::Duration::from_secs(120));
+            if let Err(why) = wait_for_build(
+                context,
+                &libvirt,
+                ui,
+                vm,
+                host,
+                std::time::Duration::from_secs(120),
+            ) {
+                ui.say(&format!(
+                    "{vm}'s guest service hasn't reported in from the new build {why}"
+                ));
+            }
         }
         Err(why) => ui.say(&format!(
             "{why}; rampire vm upgrade {vm} does it, shutting {vm} down for a moment if it must"

@@ -24,17 +24,21 @@ The live suite, on this host (docs/testing.md):
                                    VMs, runs every scenario (or those named)
                                    and writes target/live/report.md.
                                    --keep leaves the VMs for a look after.
-  Scenarios: add-running, add-off, restart-open, settings, upgrade, remove
+  Scenarios: add-declined, add-cancelled, add-running, add-off,
+             restart-open, settings, upgrade, vm-gone, remove
   RAMPIRE_LIVE_DIR (or site/build.env) names a folder for the VMs' disks.
 "#;
 
 const PREFIX: &str = "rampire-test-";
-const SCENARIOS: [&str; 6] = [
+const SCENARIOS: [&str; 9] = [
+    "add-declined",
+    "add-cancelled",
     "add-running",
     "add-off",
     "restart-open",
     "settings",
     "upgrade",
+    "vm-gone",
     "remove",
 ];
 
@@ -141,6 +145,7 @@ impl Run {
 
 pub fn run(arguments: &[String], repo: &Path) -> Result<(), String> {
     let options = parse(arguments)?;
+    let _lock = Lock::take(&repo.join("target/live/lock"))?;
     let dir = live_dir(repo)?;
     preflight(&dir)?;
     if options.install {
@@ -164,11 +169,14 @@ pub fn run(arguments: &[String], repo: &Path) -> Result<(), String> {
         println!("==> {scenario}");
         run.scenario = (*scenario).to_owned();
         let result = match *scenario {
+            "add-declined" => add_declined(&mut run),
+            "add-cancelled" => add_cancelled(&mut run),
             "add-running" => add_running(&mut run),
             "add-off" => add_off(&mut run),
             "restart-open" => restart_open(&mut run),
             "settings" => settings(&mut run),
             "upgrade" => upgrade(&mut run),
+            "vm-gone" => vm_gone(&mut run),
             "remove" => remove(&mut run),
             _ => Ok(()),
         };
@@ -194,6 +202,36 @@ pub fn run(arguments: &[String], repo: &Path) -> Result<(), String> {
             run.failures.len(),
             report.display()
         ))
+    }
+}
+
+/// One run at a time: two would drive the same VMs and the same
+/// controller at once, and each would see the other's changes as faults.
+struct Lock(PathBuf);
+
+impl Lock {
+    fn take(path: &Path) -> Result<Self, String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        if let Ok(pid) = std::fs::read_to_string(path) {
+            let pid = pid.trim();
+            if !pid.is_empty() && Path::new(&format!("/proc/{pid}")).exists() {
+                return Err(format!(
+                    "another live suite is running (process {pid}); wait for it, or remove {} if it isn't",
+                    path.display()
+                ));
+            }
+        }
+        std::fs::write(path, std::process::id().to_string())
+            .map_err(|error| format!("write {}: {error}", path.display()))?;
+        Ok(Self(path.to_path_buf()))
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -252,6 +290,13 @@ fn preflight(dir: &Path) -> Result<(), String> {
             .map_err(|error| format!("libvirt's default network isn't running: {error}"))?;
     }
     Ok(())
+}
+
+/// How many descriptors polkitd has open, or `None` without it.
+fn polkit_descriptors() -> Option<usize> {
+    let pid = local("pgrep", &["-x", "polkitd"]).ok()?;
+    let listing = sudo("ls", &[&format!("/proc/{}/fd", pid.trim())]).ok()?;
+    Some(listing.lines().count())
 }
 
 /// Run `program` as root with sudo, never asking for a password.
@@ -435,6 +480,17 @@ fn clean_up(run: &mut Run) {
         if management(name).is_some_and(|state| state != "not_managed") {
             let mut term = Term::start(&format!("rampire vm remove {name}"));
             let _ = term.answer_until_exit(run, &answers_remove(), Duration::from_secs(300));
+            // Deleting a VM RAMpire still has settings for would leave them
+            // naming a VM that is gone, for the next run to trip over.
+            if management(name).is_some_and(|state| state != "not_managed") {
+                run.fail(
+                    format!(
+                        "vm remove {name} didn't take it out of RAMpire; it is kept, not deleted"
+                    ),
+                    Some(term.screen()),
+                );
+                continue;
+            }
         }
         let _ = virsh(&["destroy", name]);
         match virsh(&["undefine", name, "--remove-all-storage", "--nvram"]) {
@@ -463,9 +519,20 @@ fn management(name: &str) -> Option<String> {
     listed(name)?["management"].as_str().map(str::to_owned)
 }
 
-/// After a change: the VM is managed, its guest publishes, and its doctor
-/// finds nothing wrong.
+/// After a change: the controller runs, the VM is managed, its guest
+/// publishes, and its doctor finds nothing wrong.
 fn check_healthy(run: &mut Run, name: &str) {
+    let active = local("systemctl", &["is-active", "rampire.service"]).unwrap_or_default();
+    if active.trim() != "active" {
+        run.fail(
+            format!("the controller isn't running ({})", active.trim()),
+            sudo(
+                "journalctl",
+                &["-u", "rampire.service", "-n", "15", "--no-pager"],
+            )
+            .ok(),
+        );
+    }
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut last = None;
     while Instant::now() < deadline {
@@ -572,7 +639,9 @@ fn answers_remove() -> Answers {
 /// Lines that must never be on the screen: what something wrote to the
 /// terminal over the TUI, or a crash.
 const NEVER: [&str; 5] = [
-    "libvirt: ",
+    // libvirt's own printing, "libvirt: QEMU Driver error : ...", not an
+    // error a task shows that quotes libvirt.
+    " error : ",
     "panicked at",
     "Argument list too long",
     "RUST_BACKTRACE",
@@ -592,7 +661,7 @@ impl Term {
                 "-s",
                 &session,
                 "-x",
-                "150",
+                &WIDTH.to_string(),
                 "-y",
                 "45",
                 &format!("sudo -n {command}; echo; echo \"EXITED $?\"; sleep 600"),
@@ -606,7 +675,8 @@ impl Term {
     }
 
     fn screen(&self) -> String {
-        local("tmux", &["capture-pane", "-p", "-t", &self.session]).unwrap_or_default()
+        // -J: lines the terminal wrapped come back joined, as written.
+        local("tmux", &["capture-pane", "-p", "-J", "-t", &self.session]).unwrap_or_default()
     }
 
     /// Keys as tmux names them: "Enter", "Escape", "y", or text.
@@ -674,17 +744,9 @@ impl Term {
     fn question(&self) -> Option<(String, bool)> {
         let screen = self.screen();
         if screen.contains("Yes (y)") {
-            let line = screen.lines().rev().find(|line| line.contains("▍ "))?;
-            let text = line.split("▍ ").nth(1)?;
-            return Some((text.trim_end_matches(['│', ' ']).trim().to_owned(), true));
+            return tui_question(&screen).map(|question| (question, true));
         }
-        let line = screen.lines().rev().find(|line| !line.trim().is_empty())?;
-        line.contains("[y/N]").then(|| {
-            (
-                line.trim().trim_end_matches("[y/N]").trim().to_owned(),
-                false,
-            )
-        })
+        cli_question(&screen).map(|question| (question, false))
     }
 
     /// Answer what is asked now, from `answers`; whether a question was
@@ -816,6 +878,33 @@ impl Drop for Term {
     }
 }
 
+/// A command's question on `screen`: its last line, ending `[y/N]`.
+/// The screen is captured with the lines the terminal wrapped joined, so a
+/// long question is one line, and what was printed before it isn't.
+fn cli_question(screen: &str) -> Option<String> {
+    let line = screen.lines().rev().find(|line| !line.trim().is_empty())?;
+    let line = line.trim();
+    line.ends_with("[y/N]")
+        .then(|| line.trim_end_matches("[y/N]").trim().to_owned())
+}
+
+/// The terminal's width in tmux, in columns.
+const WIDTH: usize = 150;
+
+/// The TUI's question on `screen`: the line marked ▍ nearest above the No
+/// and Yes buttons. The status bar's "▍ 1 asks (w)", below them, isn't it.
+fn tui_question(screen: &str) -> Option<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let buttons = lines.iter().rposition(|line| line.contains("Yes (y)"))?;
+    let line = lines[..buttons]
+        .iter()
+        .rev()
+        .find(|line| line.contains("▍ "))?;
+    // Up to the window's edge: the panel behind it goes on past.
+    let text = line.split("▍ ").nth(1)?.split('│').next()?;
+    Some(text.trim().to_owned())
+}
+
 /// Choose `vm` in the TUI's list, by filtering for its name, once the list
 /// has it. Each key goes alone: Escape and the key after it, sent
 /// together, read as Alt and that key.
@@ -833,7 +922,24 @@ fn choose(run: &mut Run, term: &Term, vm: &str) -> bool {
 /// Add `vm` in the TUI as a person does: its menu's Add, the form, then
 /// the questions. The task's window must open at once.
 fn add_in_tui(run: &mut Run, vm: &str) -> Result<(), String> {
-    let mut tui = Term::start("rampire");
+    let (mut tui, title) = start_add(run, vm)?;
+    match tui
+        .answer_task(run, &title, &answers_add(), Duration::from_secs(900))
+        .as_deref()
+    {
+        Some("Done in") => run.note(format!("{vm} added")),
+        Some(end) => run.fail(format!("vm add {vm} ended {end}"), Some(tui.screen())),
+        None => {}
+    }
+    tui.check_errors_list(run);
+    tui.keys(&["q"]);
+    Ok(())
+}
+
+/// Open the TUI, choose `vm`, press Add and save the form: the task's
+/// window must open at once. The TUI and the task's title.
+fn start_add(run: &mut Run, vm: &str) -> Result<(Term, String), String> {
+    let tui = Term::start("rampire");
     if !tui.wait_for(run, "VMS", Duration::from_secs(30), true) {
         return Err("the TUI didn't open".to_owned());
     }
@@ -849,21 +955,97 @@ fn add_in_tui(run: &mut Run, vm: &str) -> Result<(), String> {
     if !tui.wait_for(run, &title, Duration::from_secs(3), true) {
         return Err("the task's window didn't open after the form".to_owned());
     }
-    match tui
-        .answer_task(run, &title, &answers_add(), Duration::from_secs(900))
-        .as_deref()
-    {
-        Some("Done in") => run.note(format!("{vm} added")),
-        Some(end) => run.fail(format!("vm add {vm} ended {end}"), Some(tui.screen())),
-        None => {}
-    }
-    tui.check_errors_list(run);
-    tui.keys(&["q"]);
-    Ok(())
+    Ok((tui, title))
+}
+
+/// The VM's saved definition, to compare before and after.
+fn saved_definition(vm: &str) -> Result<String, String> {
+    virsh(&["dumpxml", "--inactive", vm])
 }
 
 // ---------------------------------------------------------------------
 // The scenarios
+
+/// No to adding: nothing changes, and the task says Not done.
+fn add_declined(run: &mut Run) -> Result<(), String> {
+    let vm = test_vm(run, System::Debian)?;
+    let before = saved_definition(&vm)?;
+    let (mut tui, title) = start_add(run, &vm)?;
+    let mut answers = vec![("Add ", Answer::No)];
+    answers.extend(answers_common());
+    match tui
+        .answer_task(run, &title, &answers, Duration::from_secs(300))
+        .as_deref()
+    {
+        Some("Not done") => run.note("No added nothing, and the task says Not done"),
+        Some(end) => run.fail(
+            format!("vm add answered No ended {end}"),
+            Some(tui.screen()),
+        ),
+        None => {}
+    }
+    tui.keys(&["q"]);
+    if saved_definition(&vm)? != before {
+        run.fail(
+            format!("{vm}'s definition changed though the add was declined"),
+            None,
+        );
+    }
+    if management(&vm).as_deref() != Some("not_managed") {
+        run.fail(format!("{vm} is managed though the add was declined"), None);
+    }
+    Ok(())
+}
+
+/// The add cancelled as soon as it is under way. However far it got, the
+/// VM ends whole: managed and healthy, or not managed with its old
+/// definition back and nothing of RAMpire's kept.
+fn add_cancelled(run: &mut Run) -> Result<(), String> {
+    let vm = test_vm(run, System::Debian)?;
+    let before = saved_definition(&vm)?;
+    let (mut tui, title) = start_add(run, &vm)?;
+    let mut answers = answers_add();
+    // Asked once the controller has the VM, when cancelling came too late.
+    answers.push(("Shut ", Answer::Yes));
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(60) {
+        if tui.answer(run, &answers) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    if !tui.wait_for(run, "Working:", Duration::from_secs(30), true) {
+        return Err("the add didn't start working after Yes".to_owned());
+    }
+    tui.keys(&["x"]);
+    run.note("cancelled the add while it was working");
+    let end = tui.answer_task(run, &title, &answers, Duration::from_secs(900));
+    tui.keys(&["q"]);
+    match (end.as_deref(), management(&vm).as_deref()) {
+        (Some(_), Some("managed")) => {
+            run.note(format!("the add got as far as managing {vm}"));
+            check_healthy(run, &vm);
+            let mut term = Term::start(&format!("rampire vm remove {vm}"));
+            term.answer_until_exit(run, &answers_remove(), Duration::from_secs(300))?;
+        }
+        (Some(_), Some("not_managed")) => {
+            if saved_definition(&vm)? != before {
+                run.fail(
+                    format!("{vm} isn't managed after the cancelled add, but its definition wasn't put back"),
+                    None,
+                );
+            } else {
+                run.note(format!("{vm} is as it was before the add"));
+            }
+        }
+        (Some(_), other) => run.fail(
+            format!("{vm} is {other:?} after the cancelled add: half-added"),
+            None,
+        ),
+        (None, _) => {}
+    }
+    Ok(())
+}
 
 fn add_running(run: &mut Run) -> Result<(), String> {
     let vm = test_vm(run, System::Debian)?;
@@ -897,6 +1079,10 @@ fn restart_open(run: &mut Run) -> Result<(), String> {
     }
     let tui = Term::start("rampire");
     tui.wait_for(run, "VMS", Duration::from_secs(30), true);
+    // Only RAMpire is at work here: with the TUI open it once asked polkit
+    // several times a second, which ran polkit out of descriptors, and it
+    // then refused the controller.
+    let polkit_before = polkit_descriptors();
     virsh(&["reboot", &vm])?;
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(120) {
@@ -904,6 +1090,18 @@ fn restart_open(run: &mut Run) -> Result<(), String> {
             break;
         }
         std::thread::sleep(Duration::from_secs(1));
+    }
+    if let (Some(before), Some(after)) = (polkit_before, polkit_descriptors()) {
+        let grown = after.saturating_sub(before);
+        run.note(format!(
+            "polkitd's open descriptors grew by {grown} in 2 minutes of the TUI"
+        ));
+        if grown > 40 {
+            run.fail(
+                format!("polkitd's open descriptors grew by {grown} in 2 minutes with the TUI open: it asks polkit far too often"),
+                None,
+            );
+        }
     }
     tui.check_errors_list(run);
     tui.keys(&["q"]);
@@ -943,6 +1141,63 @@ fn upgrade(run: &mut Run) -> Result<(), String> {
         );
     }
     check_healthy(run, &vm);
+    Ok(())
+}
+
+/// A managed VM deleted from libvirt behind RAMpire's back: the controller
+/// still starts and manages the others, and `vm remove` takes it out.
+fn vm_gone(run: &mut Run) -> Result<(), String> {
+    let vm = System::Rocky.vm();
+    if management(&vm).as_deref() != Some("managed") {
+        return Err(format!("{vm} isn't managed: run add-off first"));
+    }
+    let _ = virsh(&["destroy", &vm]);
+    virsh(&["undefine", &vm, "--remove-all-storage", "--nvram"])?;
+    run.note(format!(
+        "deleted {vm} from libvirt while RAMpire manages it"
+    ));
+    sudo("systemctl", &["restart", "rampire.service"])?;
+    std::thread::sleep(Duration::from_secs(10));
+    let active = local("systemctl", &["is-active", "rampire.service"]).unwrap_or_default();
+    if active.trim() != "active" {
+        run.fail(
+            "one VM libvirt no longer has stopped the controller for every VM",
+            sudo(
+                "journalctl",
+                &["-u", "rampire.service", "-n", "10", "--no-pager"],
+            )
+            .ok(),
+        );
+    }
+    let log = sudo(
+        "journalctl",
+        &[
+            "-u",
+            "rampire.service",
+            "-n",
+            "50",
+            "--no-pager",
+            "-o",
+            "cat",
+        ],
+    )
+    .unwrap_or_default();
+    if !log.contains(&format!("vm={vm} event=vm_setup_failed")) {
+        run.fail(
+            format!("the controller didn't log vm_setup_failed for {vm}"),
+            Some(log),
+        );
+    }
+    let mut term = Term::start(&format!("rampire vm remove {vm}"));
+    let code = term.answer_until_exit(run, &answers_remove(), Duration::from_secs(300))?;
+    if code != 0 || listed(&vm).is_some() {
+        run.fail(
+            format!("vm remove of {vm}, gone from libvirt, exited {code} and left it listed"),
+            Some(term.screen()),
+        );
+    } else {
+        run.note(format!("vm remove took {vm} out of RAMpire"));
+    }
     Ok(())
 }
 
@@ -1015,6 +1270,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_second_run_is_refused_while_one_runs() {
+        let dir = std::env::temp_dir().join(format!("rampire-live-lock-{}", std::process::id()));
+        let path = dir.join("lock");
+        let first = Lock::take(&path).unwrap();
+        // This process is alive: a second run is refused.
+        assert!(Lock::take(&path).is_err());
+        drop(first);
+        assert!(!path.exists());
+        // A lock left by a process that is gone is taken over.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "999999999").unwrap();
+        drop(Lock::take(&path).unwrap());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn scenarios_and_options_are_read() {
         let options = parse(&["--keep".to_owned(), "add-running".to_owned()]).unwrap();
         assert!(options.keep && options.install);
@@ -1023,19 +1294,26 @@ mod tests {
     }
 
     #[test]
-    fn a_tui_question_is_read_off_the_screen() {
-        // As capture-pane gives the task window.
-        let screen = "│ │ ▍ Add rampire-test-debian? RAMpire then grows it.     │ │\n\
-                      │ │    ▶ No (n) ◀       Yes (y)      Enter answers No    │ │";
-        let line = screen
-            .lines()
-            .rev()
-            .find(|line| line.contains("▍ "))
-            .unwrap();
-        let text = line.split("▍ ").nth(1).unwrap();
+    fn a_command_question_is_its_last_line() {
+        // capture-pane -J has joined what the terminal wrapped.
+        let screen = "  tv101: 1524 MiB (boot RAM)\nRemove RAMpire from web? It stops managing it, and its definition has plain RAM again, for Cockpit or virsh to change. [y/N] \n\n";
         assert_eq!(
-            text.trim_end_matches(['│', ' ']).trim(),
-            "Add rampire-test-debian? RAMpire then grows it."
+            cli_question(screen).as_deref(),
+            Some("Remove RAMpire from web? It stops managing it, and its definition has plain RAM again, for Cockpit or virsh to change.")
+        );
+        assert_eq!(cli_question("working...\n"), None);
+    }
+
+    #[test]
+    fn a_tui_question_is_read_off_the_screen() {
+        // As capture-pane gives the task window, with the status bar's
+        // gauge, marked the same way, below it.
+        let screen = "│ │ ▍ Add rampire-test-debian? RAMpire then grows it.     │ │───────╮\n\
+                      │ │    ▶ No (n) ◀       Yes (y)      Enter answers No    │ │\n\
+                        y  yes   n  no                       ━━━━ ▍ 1 asks (w)";
+        assert_eq!(
+            tui_question(screen).as_deref(),
+            Some("Add rampire-test-debian? RAMpire then grows it.")
         );
     }
 }

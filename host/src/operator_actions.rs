@@ -29,7 +29,7 @@ pub struct Target {
 fn load(target: &Target) -> Result<(HostConfig, Virsh), String> {
     let config =
         HostConfig::load_vm(&target.config, target.vm.as_deref()).map_err(|e| e.to_string())?;
-    let virsh = Virsh::with_connection(
+    let virsh = Virsh::shared(
         config.virsh_binary.clone(),
         config.command_timeout,
         target.connection.clone(),

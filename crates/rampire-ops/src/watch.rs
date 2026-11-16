@@ -150,11 +150,16 @@ fn read_journal(command: &Command, cwd: &Path) -> Journal {
     }
 }
 
-/// The lines about `vm`, and the controller's own that name no VM.
+/// The lines about `vm`, and the controller's own that name no VM, but
+/// not `no_vms`: "manages no VMs yet" is about a time before this VM, and
+/// beside a managed VM it reads as if it weren't.
 pub fn lines_for<'a>(journal: &'a str, vm: &str) -> Vec<&'a str> {
     journal
         .lines()
-        .filter(|line| field(line, "vm").is_none_or(|named| named == vm))
+        .filter(|line| match field(line, "vm") {
+            Some(named) => named == vm,
+            None => field(line, "event") != Some("no_vms"),
+        })
         .collect()
 }
 
@@ -375,11 +380,12 @@ pub struct VmReader {
     guest: GuestView,
     guest_read: Option<Instant>,
     samples: u64,
+    journal: journal::Recent<Journal>,
 }
 
 impl VmReader {
     pub fn new(command: Command) -> Self {
-        let virsh = Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
+        let virsh = Virsh::shared("virsh", COMMAND_TIMEOUT, &command.connect);
         Self {
             files: PublicationCopyFirst::new(
                 &command.vm,
@@ -392,6 +398,7 @@ impl VmReader {
             guest: GuestView::default(),
             guest_read: None,
             samples: 0,
+            journal: journal::Recent::default(),
         }
     }
 
@@ -436,7 +443,10 @@ impl VmReader {
             guest_age: self.guest_read.map(|read| started - read),
             history: self.history.iter().copied().collect(),
             guest_history: self.guest_history.iter().copied().collect(),
-            journal: read_journal(&self.command, cwd),
+            journal: {
+                let command = &self.command;
+                self.journal.get(|| read_journal(command, cwd))
+            },
             samples: self.samples,
         })
     }
@@ -501,6 +511,7 @@ mod tests {
         let journal = "2026-10-27T10:03:21+00:00 h rampire[1]: rampire: vm=w event=request_completed operation=Add bytes=1073741824 outcome=Completed actual_bytes=1073741824
 2026-10-27T10:03:22+00:00 h rampire[1]: rampire: vm=other event=request_completed operation=Remove bytes=1073741824 outcome=Rejected actual_bytes=0
 2026-10-27T10:03:23+00:00 h rampire[1]: rampire: event=reload_refused reason=bad file
+2026-10-27T10:03:24+00:00 h rampire[1]: event=no_vms rampire manages no VMs yet
 ";
         let lines = lines_for(journal, "w");
         assert_eq!(lines.len(), 2);

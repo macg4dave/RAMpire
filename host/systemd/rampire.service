@@ -29,8 +29,13 @@ ExecStart=/usr/bin/rampire daemon --config /var/lib/rampire/applied/current
 # controller logs reload_refused and keeps running what it has.
 ExecReload=/bin/kill -HUP $MAINPID
 # Failure is fail-stop. Deployment monitoring decides when a reviewed restart
-# is appropriate; the unit does not create an automatic restart loop.
+# is appropriate; the unit does not create an automatic restart loop. The one
+# exception is exit 75: libvirt access refused at start, before anything was
+# done (polkit restarting or reloading its rules, as a package upgrade makes
+# it), which is tried again every 30 s until it is granted.
 Restart=no
+RestartForceExitStatus=75
+RestartSec=30
 # Inherit the host manager's configured stop timeout rather than embedding a
 # test-derived deadline in the repository unit.
 # Holds each guest's latest publication (<vm_name>.publication.json) for

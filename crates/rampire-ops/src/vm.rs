@@ -35,6 +35,8 @@ pub struct Inspection {
     /// The QEMU guest agent's channel, through which `vm add` reads the
     /// guest's kernel release.
     pub guest_agent_channel: bool,
+    /// Passed-through devices that may pin guest memory: PCI and mediated
+    /// (VFIO) ones, not USB or SCSI.
     pub hostdevs: usize,
     pub vdpa: bool,
     pub vhost_user: bool,
@@ -361,7 +363,17 @@ fn look(
             Some(GUEST_AGENT_CHANNEL_NAME) => inspection.guest_agent_channel = true,
             _ => {}
         },
-        (b"hostdev", Some(b"devices")) => inspection.hostdevs += 1,
+        // USB and SCSI devices are passed through by QEMU, which copies each
+        // transfer: they map no guest memory, so they pin none. A PCI or
+        // mediated (VFIO) device maps guest memory for its own DMA.
+        (b"hostdev", Some(b"devices")) => {
+            if !matches!(
+                attribute(element, b"type")?.as_deref(),
+                Some("usb" | "scsi")
+            ) {
+                inspection.hostdevs += 1;
+            }
+        }
         (b"interface", Some(b"devices")) => match attribute(element, b"type")?.as_deref() {
             Some("vdpa") => inspection.vdpa = true,
             Some("vhostuser") => inspection.vhost_user = true,
@@ -998,6 +1010,12 @@ mod tests {
         let desk = inspect(PLAIN).unwrap();
         assert!(desk.device().is_none() && !desk.control_channel);
         assert_eq!(desk.hostdevs, 1);
+        // A USB device, a TV tuner say, pins no memory: nothing to ask.
+        let tuner = PLAIN.replace(
+            "<hostdev mode='subsystem' type='pci'/>",
+            "<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id='0x2040'/></source></hostdev>",
+        );
+        assert_eq!(inspect(&tuner).unwrap().hostdevs, 0);
         assert_eq!(desk.balloon.as_deref(), Some("virtio"));
     }
 

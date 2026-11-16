@@ -21,12 +21,25 @@ if [ ! -e /proc/pressure/memory ] \
     echo "rampire-guest: turned on pressure stall information (psi=1) for every kernel;" \
         "it takes effect when the VM next starts"
 fi
+# Pressure stall information is off until the VM restarts: the service is
+# started then, not now. Started now, it would ask the host for memory and
+# be cut off mid-request by that restart, which the host can't resolve by
+# itself.
+psi_pending=false
+if [ ! -e /proc/pressure/memory ] \
+    && grep -qs '^CONFIG_PSI=y' "/boot/config-$(uname -r)" \
+    && ! grep -qw 'psi=0' /proc/cmdline; then
+    psi_pending=true
+fi
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     if $first; then
         systemctl enable rampire-guest.service
     fi
-    if systemctl is-enabled --quiet rampire-guest.service; then
+    if $psi_pending; then
+        systemctl stop rampire-guest.service 2>/dev/null || true
+        echo "rampire-guest: starts when the VM next starts, with pressure stall information on"
+    elif systemctl is-enabled --quiet rampire-guest.service; then
         systemctl restart rampire-guest.service
     fi
 fi

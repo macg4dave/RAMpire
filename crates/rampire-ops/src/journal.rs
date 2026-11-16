@@ -166,6 +166,36 @@ fn channel_event_in(text: &str) -> Option<String> {
     })
 }
 
+/// A reading of the journal kept for [`Recent::EVERY`]: the readers draw
+/// every second, and running `journalctl --grep` that often for events
+/// that come seconds apart only loads the host.
+#[derive(Debug)]
+pub struct Recent<T> {
+    kept: Option<(std::time::Instant, T)>,
+}
+
+impl<T> Default for Recent<T> {
+    fn default() -> Self {
+        Self { kept: None }
+    }
+}
+
+impl<T: Clone> Recent<T> {
+    pub const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// What was read within [`Self::EVERY`], else `read`'s answer, kept.
+    pub fn get(&mut self, read: impl FnOnce() -> T) -> T {
+        if let Some((at, value)) = &self.kept {
+            if at.elapsed() < Self::EVERY {
+                return value.clone();
+            }
+        }
+        let value = read();
+        self.kept = Some((std::time::Instant::now(), value.clone()));
+        value
+    }
+}
+
 /// The lines in time order. `journalctl` prints matches newest first when
 /// `--grep` and `-n` go together on some systemd versions, so the order it
 /// used is not relied on: microsecond timestamps sort as text, and the sort
@@ -207,6 +237,21 @@ pub fn collapse_repeats<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recent_reading_is_reused_and_an_old_one_read_again() {
+        let mut recent = Recent::default();
+        let mut reads = 0;
+        for _ in 0..3 {
+            recent.get(|| {
+                reads += 1;
+                reads
+            });
+        }
+        assert_eq!(reads, 1, "read once while it is recent");
+        recent.kept = Some((std::time::Instant::now() - Recent::<u32>::EVERY, 1));
+        assert_eq!(recent.get(|| 7), 7, "read again once it is old");
+    }
 
     #[test]
     fn the_newest_channel_event_says_why_with_its_reason() {

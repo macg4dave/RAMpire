@@ -167,13 +167,23 @@ fn stage_and_apply(
     let current = crate::applied::current(root)?;
     if let Some(current) = &current {
         if crate::applied::same(current, staged)? {
+            // Nothing new, but a controller that stopped still has to run it.
+            let unit = controller_unit();
+            if let Refresh::Start = Refresh::plan(&unit, None, current, context.config.is_none()) {
+                ui.say(&format!(
+                    "nothing new to apply, but {unit} isn't running, so nothing is resized"
+                ));
+                Refresh::Start.run(ui, &unit)?;
+                return Ok(Outcome::Done);
+            }
             let same = "nothing to apply: the draft is what the controller runs";
             ui.say(same);
             return Ok(Outcome::AlreadySo(same.to_owned()));
         }
     }
     let unit = controller_unit();
-    let refresh = Refresh::plan(&unit, current.as_deref(), staged);
+    // The unit runs the default configuration: only that one starts it.
+    let refresh = Refresh::plan(&unit, current.as_deref(), staged, context.config.is_none());
     if ask {
         show_difference(ui, current.as_deref(), staged)?;
         if !ui.confirm(&format!("Apply this{}?", refresh.question(&unit)))? {
@@ -234,7 +244,7 @@ pub fn rollback(context: &Context, ui: &mut dyn Ui) -> Result<Outcome, String> {
     }
     show_difference(ui, Some(&current), &previous)?;
     let unit = controller_unit();
-    let refresh = Refresh::plan(&unit, Some(&current), &previous);
+    let refresh = Refresh::plan(&unit, Some(&current), &previous, context.config.is_none());
     if !ui.confirm(&format!(
         "Go back to {}{}?",
         previous.display(),
@@ -346,15 +356,26 @@ enum Refresh {
     Reload,
     /// Anything else, with the reason.
     Restart(String),
-    /// The unit isn't running: it starts on the new copy whenever it starts.
+    /// The unit isn't running and the copy manages VMs: it is started,
+    /// and enabled, so they are resized. A controller left stopped (a
+    /// package removed and installed again stops it) managed nothing while
+    /// `apply` and `vm add` said they were done.
+    Start,
+    /// The unit isn't running, and nothing calls for it: another
+    /// configuration than the one it runs, or no VMs yet.
     NotRunning,
 }
 
 impl Refresh {
     /// Plan moving a running controller from the copy `from` onto `to`.
-    fn plan(unit: &str, from: Option<&Path>, to: &Path) -> Self {
+    fn plan(unit: &str, from: Option<&Path>, to: &Path, starts: bool) -> Self {
         if !controller_active(unit) {
-            return Self::NotRunning;
+            let manages = HostSettings::load(to).is_ok_and(|settings| !settings.vms.is_empty());
+            return if starts && manages {
+                Self::Start
+            } else {
+                Self::NotRunning
+            };
         }
         let reload = from
             .ok_or_else(|| "nothing was applied before".to_owned())
@@ -374,6 +395,7 @@ impl Refresh {
         match self {
             Self::Reload => format!(" and reload {unit}"),
             Self::Restart(_) => format!(" and restart {unit}"),
+            Self::Start => format!(" and start {unit}, which isn't running"),
             Self::NotRunning => String::new(),
         }
     }
@@ -385,6 +407,14 @@ impl Refresh {
                     "{unit} isn't running; it uses this copy when it starts"
                 ));
                 Ok(Refreshed::NotRunning)
+            }
+            Self::Start => {
+                systemctl("enable", unit)?;
+                systemctl("start", unit)?;
+                ui.say(&format!(
+                    "started {unit}, which wasn't running; it also starts at boot"
+                ));
+                Ok(Refreshed::Restarted)
             }
             Self::Reload => {
                 systemctl("reload", unit)?;

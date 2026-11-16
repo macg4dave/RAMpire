@@ -519,7 +519,25 @@ impl App {
             Msg::Details(name, details) => {
                 self.details.insert(name, details);
             }
-            Msg::Controller(unit) => self.controller = Some(unit),
+            Msg::Controller(unit) => {
+                // Said once each time it stops, with the key that starts it:
+                // a stopped controller resizes nothing, and the header's
+                // "inactive" alone doesn't say what to do.
+                let was_running = self
+                    .controller
+                    .as_ref()
+                    .is_none_or(|before| before.active_state == "active");
+                if was_running && unit.active_state != "active" && self.setup.is_none() {
+                    self.notify(
+                        format!(
+                            "The controller isn't running ({}), so no VM is resized: A (apply) starts it.",
+                            unit.active_state
+                        ),
+                        Tone::Bad,
+                    );
+                }
+                self.controller = Some(unit);
+            }
             // A failed re-read keeps the list it had.
             Msg::Inventory(Err(error)) if self.inventory.ok().is_some() => {
                 self.notify(format!("Couldn't read the VMs: {error}"), Tone::Warn);
@@ -1467,6 +1485,47 @@ pub(crate) mod tests {
         })));
         app.inventory_read = Some(Instant::now());
         (app, rx)
+    }
+
+    #[test]
+    fn a_stopped_controller_is_told_once_with_how_to_start_it() {
+        let (mut app, _rx) = app();
+        let unit = |state: &str| ControllerUnit {
+            unit: "rampire.service".to_owned(),
+            active_state: state.to_owned(),
+            sub_state: "dead".to_owned(),
+            unit_file_state: "enabled".to_owned(),
+        };
+        app.on_msg(Msg::Controller(unit("failed")));
+        let told = |app: &App| {
+            format!("{:?}", app.notices)
+                .matches("A (apply) starts it")
+                .count()
+        };
+        assert_eq!(told(&app), 1);
+        app.on_msg(Msg::Controller(unit("failed")));
+        assert_eq!(told(&app), 1, "not again while it stays stopped");
+    }
+
+    #[test]
+    fn the_lists_note_fits_beside_a_vms_details() {
+        // 150 columns: the details pane beside the list leaves it narrow.
+        let (mut app, _rx) = app();
+        let mut blocked = listed("newvm", Management::NotManaged);
+        blocked.problems = vec![crate::reports::Problem {
+            problem: "it runs Home Assistant OS".to_owned(),
+            fix: "none".to_owned(),
+        }];
+        app.on_msg(Msg::Inventory(Ok(VmListReport {
+            schema: VmListSchema,
+            version: 1,
+            vms: vec![blocked, listed("vm0", Management::Managed)],
+        })));
+        let area = ratatui::layout::Rect::new(0, 0, 150, 45);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        crate::tui::views::render(area, &mut buf, &app);
+        let text = crate::tui::widgets::plain_text(&buf);
+        assert!(text.contains(" blocked "), "{text}");
     }
 
     #[test]

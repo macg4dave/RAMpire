@@ -62,9 +62,16 @@ impl Term {
             .map_err(|error| format!("resume: {error}"))
     }
 
+    /// Give the terminal back as it was. A terminal that has gone away (a
+    /// closed window, a dropped SSH connection) can't be given back, and
+    /// there is nothing to give it back to: that isn't a failure.
     pub fn close(self) -> Result<(), String> {
         drop(self.terminal);
-        ratatui::try_restore().map_err(|error| format!("restore the terminal: {error}"))
+        match ratatui::try_restore() {
+            Ok(()) => Ok(()),
+            Err(_) if hung_up() => Ok(()),
+            Err(error) => Err(format!("restore the terminal: {error}")),
+        }
     }
 }
 

@@ -26,9 +26,10 @@ pub struct Libvirt {
 }
 
 impl Libvirt {
-    /// The host's `virsh` runner on this connection.
+    /// The host's `virsh` runner on this connection: as root, the one
+    /// connection the process shares ([`Virsh::shared`]).
     pub fn runner(&self) -> Virsh {
-        Virsh::with_connection("virsh", self.timeout, &self.connection)
+        Virsh::shared("virsh", self.timeout, &self.connection)
     }
 
     /// Run `virsh` on this connection.
@@ -106,17 +107,21 @@ pub fn keep_current(
         if vm.review.is_none() || libvirt.state(name).ok().as_deref() != Some("running") {
             continue;
         }
+        // Whichever VM it is about: this runs while another is added.
+        let about =
+            |error: String| format!("{name}: {error}; rampire doctor {name} says what to do");
         let path = attestation_path(directory, name);
         if path.exists() {
             let live = VirshCompatibilityEvidenceSource::new(libvirt.runner(), name, &vm.alias)
-                .collect()?;
+                .collect()
+                .map_err(about)?;
             let unchanged = read_attestation(&path)
                 .is_ok_and(|attestation| attestation.validate_live(&live, vm.guest_os).is_ok());
-            if unchanged || !still_safe(libvirt, ui, name)? {
+            if unchanged || !still_safe(libvirt, ui, name).map_err(about)? {
                 continue;
             }
         }
-        attest(directory, name, libvirt)?;
+        attest(directory, name, libvirt).map_err(about)?;
         recorded.push(vm.vm_name);
     }
     Ok(recorded)

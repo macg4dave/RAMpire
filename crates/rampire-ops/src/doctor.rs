@@ -1,6 +1,7 @@
 //! `rampire doctor`: check what the host needs for RAMpire, and say how to
 //! fix each problem found. It reads; it changes nothing.
 
+use crate::reports::ControllerUnit;
 use std::path::Path;
 use std::time::Duration;
 
@@ -146,8 +147,41 @@ pub fn run(connection: &str, account: &str, applied_root: &Path) -> Vec<Finding>
         )
         .runs(&["init"])
     });
+    if current.exists() {
+        findings.push(controller_finding(&crate::systemd_unit::controller_state()));
+    }
     findings
 }
+
+/// Whether the controller runs. With something applied it must: a stopped
+/// one resizes nothing, and every VM's guest then looks as if it hasn't
+/// reported in. `rampire apply` starts it.
+pub fn controller_finding(unit: &ControllerUnit) -> Finding {
+    if unit.active_state == "active" {
+        let boot = if unit.unit_file_state == "enabled" {
+            ""
+        } else {
+            "; it isn't enabled, so it won't start at boot"
+        };
+        Finding::ok(
+            CONTROLLER_CHECK,
+            format!("{} is {}{boot}", unit.unit, unit.sub_state),
+        )
+    } else {
+        Finding::problem(
+            CONTROLLER_CHECK,
+            format!(
+                "{} is {}, so no VM is resized and no guest's publication is read",
+                unit.unit, unit.active_state
+            ),
+            "rampire apply: it starts the controller, and enables it at boot",
+        )
+        .runs(&["apply"])
+    }
+}
+
+/// The check that the controller runs; on a host not set up yet it can't.
+pub const CONTROLLER_CHECK: &str = "controller";
 
 /// Findings as `rampire doctor` prints them: `ok:` or `problem:` and the
 /// fix beneath.
@@ -376,6 +410,34 @@ fn getent(database: &str, key: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stopped_controller_is_a_problem_apply_fixes() {
+        let unit = |active: &str, file: &str| ControllerUnit {
+            unit: "rampire.service".to_owned(),
+            active_state: active.to_owned(),
+            sub_state: if active == "active" {
+                "running"
+            } else {
+                "dead"
+            }
+            .to_owned(),
+            unit_file_state: file.to_owned(),
+        };
+        let stopped = controller_finding(&unit("inactive", "disabled"));
+        assert!(!stopped.ok);
+        assert!(
+            stopped.detail.contains("rampire.service is inactive"),
+            "{}",
+            stopped.detail
+        );
+        assert_eq!(stopped.run.as_deref(), Some(&["apply".to_owned()][..]));
+        let running = controller_finding(&unit("active", "enabled"));
+        assert!(running.ok, "{}", running.detail);
+        assert!(controller_finding(&unit("active", "disabled"))
+            .detail
+            .contains("won't start at boot"));
+    }
 
     #[test]
     fn reads_libvirt_and_qemu_versions() {

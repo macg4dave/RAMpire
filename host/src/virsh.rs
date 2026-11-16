@@ -103,6 +103,44 @@ impl Virsh {
         virsh
     }
 
+    /// One libvirt connection per binary, URI and timeout, shared by the
+    /// whole process, for the operator commands and the TUI, which repeat
+    /// the same reads. Every new connection is a polkit check, and reads as
+    /// separate `virsh` runs were several a second with the TUI open:
+    /// polkit 125 leaks a descriptor for each until it fails, and then it
+    /// refuses the controller too. Only as root: the connection is
+    /// read-write, and `virsh --readonly`, which an unprivileged reader can
+    /// use, is what it falls back to. Anything the connection doesn't serve
+    /// still runs `virsh`.
+    pub fn shared(
+        binary: impl Into<String>,
+        timeout: Duration,
+        connection: impl Into<String>,
+    ) -> Self {
+        let (binary, connection) = (binary.into(), connection.into());
+        #[cfg(unix)]
+        {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } == 0 {
+                type Key = (String, Duration, String);
+                static SHARED: std::sync::OnceLock<
+                    std::sync::Mutex<std::collections::BTreeMap<Key, Virsh>>,
+                > = std::sync::OnceLock::new();
+                let mut shared = SHARED
+                    .get_or_init(Default::default)
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                return shared
+                    .entry((binary.clone(), timeout, connection.clone()))
+                    .or_insert_with(|| {
+                        Self::persistent_with_connection(binary, timeout, connection)
+                    })
+                    .clone();
+            }
+        }
+        Self::with_connection(binary, timeout, connection)
+    }
+
     /// Check the local RHEL polkit policy once, at daemon startup, without
     /// permitting a password dialog, so a missing grant fails with a clear
     /// message. libvirt authorizes every connection itself; repeating this

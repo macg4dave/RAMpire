@@ -507,10 +507,16 @@ else
 fi
 rm -rf "$dir"
 systemctl daemon-reload
+# The package turned on pressure stall information for the next start:
+# boot again first, and the service starts then, so no request of its is
+# cut off by the reboot.
+if ! $standalone && [ ! -e /proc/pressure/memory ]; then
+    systemctl reboot
+    exit 0
+fi
 if systemctl is-enabled --quiet rampire-guest.service; then
     systemctl restart rampire-guest.service
 fi
-$standalone || [ -e /proc/pressure/memory ] || systemctl reboot
 "#;
 
 /// [`FIRST_BOOT`] with its paths filled in.
@@ -684,35 +690,64 @@ fn put_on_disk(vm: &str) -> Result<String, String> {
         .to_str()
         .ok_or("the install script's path is not UTF-8")?
         .to_owned();
-    tool(
-        "virt-customize",
-        &[
-            "-q",
-            "-d",
-            vm,
-            "--no-network",
-            // An earlier install that never ran would run too, and could
-            // install an older build after this one: only this one stays.
-            "--delete",
-            OFFLINE_SCRIPTS,
-            "--delete",
-            OFFLINE_FOLDER,
-            "--mkdir",
-            OFFLINE_FOLDER,
-            "--upload",
-            &upload(package_path("deb")),
-            "--upload",
-            &upload(package_path("rpm")),
-            "--upload",
-            &upload(static_binary_path()),
-            "--upload",
-            &upload(local_unit_path()),
-            "--firstboot",
-            &script,
-            "--selinux-relabel",
-        ],
-    )?;
+    // Another reader of the disk (the TUI reading what system a VM runs, a
+    // backup) holds a lock for a few seconds: wait for it, a little.
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        match tool(
+            "virt-customize",
+            &[
+                "-q",
+                "-d",
+                vm,
+                "--no-network",
+                // An earlier install that never ran would run too, and could
+                // install an older build after this one: only this one stays.
+                "--delete",
+                OFFLINE_SCRIPTS,
+                "--delete",
+                OFFLINE_FOLDER,
+                "--mkdir",
+                OFFLINE_FOLDER,
+                "--upload",
+                &upload(package_path("deb")),
+                "--upload",
+                &upload(package_path("rpm")),
+                "--upload",
+                &upload(static_binary_path()),
+                "--upload",
+                &upload(local_unit_path()),
+                "--firstboot",
+                &script,
+                "--selinux-relabel",
+            ],
+        ) {
+            Ok(_) => break,
+            Err(error) if is_lock_error(&error) && tries < LOCK_TRIES => {
+                std::thread::sleep(Duration::from_secs(5));
+            }
+            Err(error) if is_lock_error(&error) => {
+                return Err(format!(
+                    "{error}\nsomething else had {vm}'s disk open for over {} s: try again once nothing else uses it",
+                    LOCK_TRIES * 5
+                ))
+            }
+            Err(error) => return Err(error),
+        }
+    }
     Ok(kernel)
+}
+
+/// How many times a disk tool tries for a disk another process has locked,
+/// 5 s apart.
+const LOCK_TRIES: u64 = 8;
+
+/// Whether a libguestfs tool failed because another process holds the
+/// disk's lock (QEMU's image locking).
+fn is_lock_error(error: &str) -> bool {
+    error.contains("Failed to get \"write\" lock")
+        || error.contains("Failed to get shared \"write\" lock")
 }
 
 /// Run a libguestfs tool; its output, or why it failed.
@@ -933,6 +968,16 @@ mod tests {
     }
 
     #[test]
+    fn a_disk_another_process_holds_is_told_apart() {
+        assert!(is_lock_error(
+            "virt-customize: error: libguestfs error: could not create appliance through libvirt. ... Failed to get \"write\" lockIs another process using the image"
+        ));
+        assert!(!is_lock_error(
+            "virt-customize: error: no operating systems found"
+        ));
+    }
+
+    #[test]
     fn a_file_chunk_fits_in_one_argument() {
         // Base64 and the guest-file-write JSON around it, under the 128 KiB
         // a single argument may have.
@@ -1013,5 +1058,32 @@ mod tests {
             );
         }
         assert!(local_install_script().contains("-lt 253"));
+    }
+
+    #[test]
+    fn the_scripts_run_in_the_guest_are_valid_shell() {
+        for (name, script) in [
+            ("probe", PROBE.to_owned()),
+            ("local install", local_install_script()),
+            ("first boot", first_boot_script()),
+        ] {
+            let checked = std::process::Command::new("sh")
+                .args(["-n", "-c", &script])
+                .output()
+                .unwrap();
+            assert!(
+                checked.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&checked.stderr)
+            );
+        }
+        // The reboot for pressure stall information comes before the
+        // service is started, so no request of its is cut off.
+        let first_boot = first_boot_script();
+        assert!(
+            first_boot.find("systemctl reboot")
+                < first_boot.find("systemctl restart rampire-guest"),
+            "{first_boot}"
+        );
     }
 }

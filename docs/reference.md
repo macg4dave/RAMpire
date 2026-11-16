@@ -49,7 +49,7 @@ offers only what fits that VM:
 | Half-added (an add that stopped and couldn't put the VM back by itself) | `a` finish adding it; `o` its doctor; `x` undo the add: `rampire vm remove VM` takes its settings out and puts its old definition back |
 
 A managed VM whose guest service runs another build than the host's
-shows **update available (u)** in the list's NOTE column: the host
+shows **update** in the list's NOTE column: the host
 package carries the guest package of its own build, and `u` installs it
 in the VM (`rampire vm upgrade VM`). Changing a VM's settings upgrades
 its guest service too, while the VM runs.
@@ -192,7 +192,7 @@ logged as `event=operator_change action=tui_failed`.
 | Command | What it does |
 |---|---|
 | `rampire init [--host-reserve SIZE]` | Checks the host as `doctor` does and stops on a problem; then asks the host reserve (the recommended one filled in; `--host-reserve` answers it), suggests `global.toml` from the host's memory and its VMs (never over an existing one), creates the configuration folders, applies, and enables and starts the controller |
-| `rampire doctor [VM]` | Checks libvirt 10.1+, QEMU 8.2+ with virtio-mem's options, the service account, the socket group, libvirt access and an applied configuration, with the fix for each problem, and gives one line per managed VM. With a VM, everything about it: its saved and running definition (device, control channel, balloon, memory slots), its recorded setup, a latch, the guest's publication and readiness report (driver, onlining, pressure signal, `max_ram` against the movable zone), and the last request and what held it back |
+| `rampire doctor [VM]` | Checks libvirt 10.1+, QEMU 8.2+ with virtio-mem's options, the service account, the socket group, libvirt access, an applied configuration and the controller running, with the fix for each problem, and gives one line per managed VM. With a VM, everything about it: its saved and running definition (device, control channel, balloon, memory slots), its recorded setup, a latch, the guest's publication and readiness report (driver, onlining, pressure signal, `max_ram` against the movable zone), and the last request and what held it back |
 | `rampire check` | Checks the draft and every VM against its recorded setup; changes nothing |
 
 ### Changing the configuration
@@ -200,7 +200,7 @@ logged as `event=operator_change action=tui_failed`.
 | Command | What it does |
 |---|---|
 | `rampire diff` | Shows the draft against the applied copy |
-| `rampire apply [--detailed-exitcode]` | Copies the draft, checks the copy while the controller runs, shows the difference, asks, then makes it current and reloads or restarts the controller. A failing draft changes nothing |
+| `rampire apply [--detailed-exitcode]` | Copies the draft, checks the copy while the controller runs, shows the difference, asks, then makes it current and reloads or restarts the controller. A controller that isn't running is started, and enabled at boot, when the configuration manages VMs, even with nothing new to apply. A failing draft changes nothing |
 | `rampire rollback` | Returns to the applied copy before the current one, through the same checks |
 | `rampire set TARGET KEY=VALUE... [--no-apply]` | Changes settings in a VM's file, or in `global.toml` with `global`, keeping comments, then applies. The controller takes a change at once; a `max_ram` more than the VM's virtio-mem device holds also grows the device in its definition, which takes a restart: asked whether now, or at the VM's next start. For a running VM whose guest service runs another build than the host's, it also upgrades the guest service, logged in to it as `vm upgrade` does; one it can't log in to is left for `vm upgrade` |
 

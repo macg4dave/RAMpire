@@ -228,6 +228,8 @@ pub fn make_current(root: &Path, target: &Path) -> Result<(), String> {
         .file_name()
         .ok_or_else(|| format!("{} has no name", target.display()))?;
     let next = root.join(format!(".{CURRENT}.next"));
+    // A link an interrupted switch left behind; usually there is none. If it
+    // can't be removed, making the new one says why.
     let _ = std::fs::remove_file(&next);
     symlink(Path::new(name), &next)?;
     std::fs::rename(&next, root.join(CURRENT))

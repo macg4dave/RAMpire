@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The exit status for a failure at start that is safe to try again later
+/// (EX_TEMPFAIL): rampire.service restarts on it, and on nothing else.
+pub const RETRY_LATER: u8 = 75;
+
 use rampire_host::attestation::{read_attestation, AttestedCompatibilitySource};
 use rampire_host::config::{HostConfig, HostSettings};
 use rampire_host::control_channel::ControlChannel;
@@ -84,26 +88,42 @@ pub fn run(config_path: &Path) -> ExitCode {
         settings.libvirt_uri.clone(),
     );
     if let Err(error) = virsh.require_management_access() {
-        eprintln!("rampire authorization error: {error}");
-        return ExitCode::FAILURE;
+        // Nothing has been done yet, so trying again is safe: polkit may be
+        // restarting or reloading its rules (a package upgrade does that).
+        // The unit restarts on this status alone; every other failure stays
+        // fail-stop.
+        eprintln!(
+            "rampire authorization error: {error}; trying again in 30 s (exit {RETRY_LATER})"
+        );
+        return ExitCode::from(RETRY_LATER);
     }
     // Device owners are held until the runtime ends.
     let mut owners = Vec::with_capacity(settings.vms.len());
     let mut vms = Vec::with_capacity(settings.vms.len());
     let mut controls = Vec::with_capacity(settings.vms.len());
     for config in settings.vms {
-        let control = ControlChannel::new(virsh.clone(), config.vm_name.clone());
+        let name = config.vm_name.clone();
+        let control = ControlChannel::new(virsh.clone(), name.clone());
         match vm_controller(&virsh, config, Arc::clone(&control)) {
             Ok((owner, vm)) => {
                 owners.push(owner);
                 vms.push(vm);
                 controls.push(control);
             }
+            // Nothing has been done to a VM that can't be set up (libvirt no
+            // longer has it, or it lost its device): it is left alone, and
+            // the others are still managed. One such VM used to stop the
+            // controller for every VM. `rampire doctor VM` says what is wrong.
             Err(error) => {
-                eprintln!("rampire controller setup error: {error}");
-                return ExitCode::FAILURE;
+                eprintln!("rampire: vm={name} event=vm_setup_failed reason={error}");
             }
         }
+    }
+    if vms.is_empty() {
+        // Nothing to manage, and nothing done: try again as a fixed
+        // configuration or libvirt may allow.
+        eprintln!("rampire: no VM could be set up; trying again in 30 s (exit {RETRY_LATER})");
+        return ExitCode::from(RETRY_LATER);
     }
     let mut runtime = match HostRuntime::new(vms, ProcMeminfoSource::new(), settings.pool_bytes) {
         Ok(runtime) => runtime,

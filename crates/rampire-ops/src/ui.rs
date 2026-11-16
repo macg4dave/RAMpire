@@ -155,8 +155,11 @@ impl<R: BufRead, W: Write> Ui for Terminal<R, W> {
         let _ = writeln!(self.output, "{line}");
     }
 
+    /// The text, then one blank line, so a question after it stands
+    /// apart from what it is about.
     fn show(&mut self, text: &str) {
-        let _ = write!(self.output, "{text}");
+        let text = text.trim_end_matches('\n');
+        let _ = write!(self.output, "{text}\n\n");
     }
 
     fn confirm(&mut self, question: &str) -> Result<bool, String> {
@@ -310,10 +313,15 @@ mod tests {
         let mut ui = terminal("", true, false);
         ui.say("changed /etc/rampire/vms.d/web.toml");
         ui.show("--- applied\n+++ draft\n");
+        // Shown text ends in one blank line, so a question after it stands
+        // apart, however the text ended.
         assert_eq!(
             written(ui),
-            "changed /etc/rampire/vms.d/web.toml\n--- applied\n+++ draft\n"
+            "changed /etc/rampire/vms.d/web.toml\n--- applied\n+++ draft\n\n"
         );
+        let mut ui = terminal("", true, false);
+        ui.show("Adding web\n\n");
+        assert_eq!(written(ui), "Adding web\n\n");
     }
 
     #[test]
