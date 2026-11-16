@@ -23,16 +23,12 @@ alias = "ua-virtiomem0"
 # Spacing the numbers out (100, 50, 10) leaves room for VMs in between.
 priority = 50
 
-# The smallest this VM is ever made. Memory below this is never taken back.
-# Usually the memory the VM starts with.
+# The smallest this VM will be: it starts with this, and memory below
+# it is never taken back.
 min_ram = "4GB"
 
-# The largest this VM may ever grow.
+# The biggest this VM may grow.
 max_ram = "16GB"
-
-# Spare memory the VM keeps ready. It asks for more when its spare falls
-# below this, and gives memory back when it has more spare than this.
-free_ram = "2GB"
 
 # Where the Windows service is installed, and the account it runs as.
 # Don't change these.

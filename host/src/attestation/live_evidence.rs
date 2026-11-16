@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use rampire_core::{
     parse_virtio_mem_xml_for_alias, settings::GuestOs, CompatibilityEvidence,
-    VirtioMemCompatibility,
+    VirtioMemCompatibility, VirtioMemXmlError,
 };
 use serde_json::{json, Value};
 
@@ -70,8 +70,15 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
     pub fn collect(&self) -> Result<LiveCompatibilityEvidence, String> {
         validate_alias(&self.alias)?;
         let domain_xml = self.run("live domain XML", &["dumpxml", &self.vm_name])?;
-        parse_virtio_mem_xml_for_alias(&domain_xml, &self.alias)
-            .map_err(|error| format!("validate live domain XML for attestation: {error}"))?;
+        // The device must be there and whole. Its `current` is allocation
+        // state, left out of the fingerprint, and libvirt shows it only once
+        // QEMU has reported the device's size: just after the host starts,
+        // a running VM may not have it yet. Refusing it then failed every
+        // VM's check, so no apply, add or remove could go through.
+        match parse_virtio_mem_xml_for_alias(&domain_xml, &self.alias) {
+            Ok(_) | Err(VirtioMemXmlError::MissingField("current")) => {}
+            Err(error) => return Err(format!("validate live domain XML for attestation: {error}")),
+        }
         let process = self.process_evidence(runtime_domain_id(&domain_xml))?;
         Ok(LiveCompatibilityEvidence {
             vm_name: self.vm_name.clone(),
@@ -248,6 +255,30 @@ mod tests {
         let evidence = source.collect().expect("complete evidence");
         assert!(evidence.dynamic_memslots && evidence.unplugged_inaccessible);
         assert_eq!(evidence.domain_xml_sha256.len(), 64);
+    }
+
+    #[test]
+    fn a_device_whose_current_size_libvirt_hasnt_shown_yet_is_whole() {
+        // Every managed VM on 2026-11-16, just after the host restarted:
+        // libvirt had no <current> for their devices yet, and every apply
+        // on the host failed until it did.
+        let evidence = |current: &str, requested: &str| {
+            VirshCompatibilityEvidenceSource::new(FakeVirsh::new([
+                format!("<domain><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block>{requested}{current}</target><alias name='memory0'/></memory></domain>"),
+                "qemu-system -machine q35".to_owned(),
+                "Compiled against library: libvirt 11.0.0".to_owned(),
+                r#"{"return":{"qemu":{"major":9,"minor":2,"micro":0},"package":"qemu-9.2"}}"#.to_owned(),
+                r#"{"return":true}"#.to_owned(), r#"{"return":true}"#.to_owned(),
+            ]), "guest", "memory0").collect()
+        };
+        let requested = "<requested unit='KiB'>0</requested>";
+        let without = evidence("", requested).expect("no current yet is whole");
+        let with = evidence("<current unit='KiB'>0</current>", requested).unwrap();
+        // The same fingerprint: current is left out of it either way.
+        assert_eq!(without.domain_xml_sha256, with.domain_xml_sha256);
+        // Anything else missing is still a broken device.
+        let error = evidence("<current unit='KiB'>0</current>", "").unwrap_err();
+        assert!(error.contains("missing requested"), "{error}");
     }
 
     #[test]

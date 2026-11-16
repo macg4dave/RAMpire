@@ -183,17 +183,6 @@ pub fn set_aside_lines(domains: &[DomainMemory]) -> Vec<String> {
         .collect()
 }
 
-/// The pool to offer after VMs were added or removed: the one `init` would
-/// suggest now with `reserve` kept, when it differs from `pool`.
-pub fn new_pool(
-    host_bytes: u64,
-    domains: &[DomainMemory],
-    reserve: u64,
-    pool: Option<u64>,
-) -> Option<u64> {
-    pool_after(host_bytes, set_aside(domains), reserve).filter(|new| Some(*new) != pool)
-}
-
 /// Read a domain's memory from its XML definition, as `vm add` reads it;
 /// `running` says whether it holds its memory now.
 pub fn parse_domain(name: &str, xml: &str, running: bool) -> Result<DomainMemory, String> {
@@ -243,51 +232,6 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("pool = \"14GB\""), "{text}");
-    }
-
-    #[test]
-    fn a_new_pool_is_offered_only_when_it_differs() {
-        let web = DomainMemory {
-            name: "web".to_owned(),
-            resizable: true,
-            memory_bytes: 8 * GIB,
-            boot_bytes: 2 * GIB,
-            running: true,
-        };
-        // 32 GiB, 4 kept, 2 for web's boot RAM: 26 left.
-        assert_eq!(
-            new_pool(
-                32 * GIB,
-                std::slice::from_ref(&web),
-                4 * GIB,
-                Some(20 * GIB)
-            ),
-            Some(26 * GIB)
-        );
-        assert_eq!(
-            new_pool(
-                32 * GIB,
-                std::slice::from_ref(&web),
-                4 * GIB,
-                Some(26 * GIB)
-            ),
-            None
-        );
-        assert_eq!(
-            new_pool(32 * GIB, std::slice::from_ref(&web), 4 * GIB, None),
-            Some(26 * GIB)
-        );
-        // Removed, it holds all its memory while it runs.
-        let plain = DomainMemory {
-            resizable: false,
-            ..web
-        };
-        assert_eq!(
-            new_pool(32 * GIB, &[plain], 4 * GIB, Some(26 * GIB)),
-            Some(20 * GIB)
-        );
-        // Nothing left: nothing to offer.
-        assert_eq!(new_pool(4 * GIB, &[], 4 * GIB, Some(GIB)), None);
     }
 
     #[test]

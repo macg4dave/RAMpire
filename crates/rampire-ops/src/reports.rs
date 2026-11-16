@@ -202,7 +202,6 @@ pub struct ListedVm {
 pub struct SuggestedSizes {
     pub min_ram: u64,
     pub max_ram: u64,
-    pub free_ram: u64,
 }
 
 /// One VM's status in a line a person can read, as `rampire status`

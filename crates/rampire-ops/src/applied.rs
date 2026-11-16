@@ -302,7 +302,7 @@ mod tests {
         std::fs::create_dir_all(draft.join("reviews")).unwrap();
         std::fs::write(
             draft.join("vms.d/web.toml"),
-            "# Web.\nalias = \"m\"\npriority = 1\nguest_os = \"linux\"\nmin_ram = \"1GB\"\nmax_ram = \"4GB\"\nfree_ram = \"512MB\"\nreview = \"std\"\n",
+            "# Web.\nalias = \"m\"\npriority = 1\nguest_os = \"linux\"\nmin_ram = \"1GB\"\nmax_ram = \"4GB\"\nreview = \"std\"\n",
         )
         .unwrap();
         std::fs::write(draft.join("vms.d/web.toml~"), "editor backup").unwrap();

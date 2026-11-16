@@ -1213,7 +1213,7 @@ impl App {
     }
 
     /// The add form for `vms`: one VM's suggested settings, or for several,
-    /// empty fields that give each its own; and how to log in to it.
+    /// empty fields that give each its own.
     pub(super) fn add_form(&mut self, vms: &[String]) {
         let entries = self.entries();
         let listed = |vm: &String| {
@@ -1242,7 +1242,6 @@ impl App {
         ] {
             fields.push(Field::new(key, bytes.map(format_byte_size)));
         }
-        fields.push(Field::new("guest_login", None));
         self.dialog = Some(Dialog::Form(Form {
             purpose: Purpose::Add,
             vms: vms.to_vec(),

@@ -53,8 +53,8 @@ Each command and the TUI run in tmux, at 150x45, and are read off the
 screen as a person sees them. On every read the screen is checked for
 what must never be on it: a row written over the TUI, `libvirt:`
 messages, a panic. Questions are answered from a table: one that isn't
-in it, or one asked twice, is a failure. The pool is never changed (No to
-its question), so the host's own settings stay as they are.
+in it, or one asked twice, is a failure. No VM command asks about the
+pool, so a question about it fails too.
 
 The report, with the screen at each failure and a log of every question
 and answer, is `target/live/report.md`. The test VMs are deleted at the
@@ -79,7 +79,10 @@ sudo virsh pool-build rampire-test && sudo virsh pool-start rampire-test
 ```
 
 It also needs `tmux`, `curl`, `qemu-img` and libvirt's `default` network,
-and about 4 GiB of RAM and 3 GiB of disk for its two VMs.
+and about 4 GiB of RAM and 3 GiB of disk for its two VMs. It builds with
+two jobs (`CARGO_BUILD_JOBS` changes that), and before the build and each
+test VM it checks the host's free memory: without room for it and 2 GiB
+besides, it stops and starts nothing. Run nothing heavy beside it.
 
 ## The simulated host
 

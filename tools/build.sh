@@ -233,7 +233,11 @@ case $builder in
     # With package output to copy back, the build's own output goes to
     # stderr and stdout carries only the tar of it. Otherwise the command's
     # stdout passes through, so `package --print-version` can be captured.
-    payload | "$engine" run --rm -i \
+    # CARGO_BUILD_JOBS, when set, bounds the build inside too: a host that
+    # also runs VMs can't spare a job's memory for every core.
+    jobs=()
+    [[ -n ${CARGO_BUILD_JOBS:-} ]] && jobs=(-e "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS")
+    payload | "$engine" run --rm -i "${jobs[@]}" \
       -v rampire-cargo:/usr/local/cargo/registry \
       -v rampire-target:/build/src/target \
       -e "RAMPIRE_BUILD_OUTPUT=$output" \

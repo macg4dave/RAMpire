@@ -38,69 +38,6 @@ pub fn host_facts(context: &Context) -> Result<(u64, Vec<crate::init::DomainMemo
     Ok((host, domains))
 }
 
-/// After VMs were added or removed: offer the pool `init` would suggest
-/// now, with the same reasoning, when it differs from the one set. A
-/// problem here is said, not failed: the VM's own change is done.
-pub fn offer_pool(context: &Context, ui: &mut dyn Ui) {
-    if let Err(error) = offer_pool_or_fail(context, ui) {
-        ui.say(&format!(
-            "couldn't work out a new pool ({error}); rampire set global pool=SIZE sets it"
-        ));
-    }
-}
-
-fn offer_pool_or_fail(context: &Context, ui: &mut dyn Ui) -> Result<(), String> {
-    use rampire_core::format_byte_size;
-    if !is_set_up(context) {
-        return Ok(());
-    }
-    let globals = rampire_core::settings::load_globals(&context.draft())?;
-    let (host, domains) = host_facts(context)?;
-    let Some(pool) = crate::init::new_pool(host, &domains, globals.host_reserve, globals.pool)
-    else {
-        return Ok(());
-    };
-    let now = globals
-        .pool
-        .map_or_else(|| "not set".to_owned(), format_byte_size);
-    let mut shown = format!(
-        "The pool can change: it is {now}, and from this host's {:.1} GiB, less the {} reserve, less what each VM needs whatever happens, {} is left:\n\n",
-        host as f64 / rampire_core::GIB as f64,
-        format_byte_size(globals.host_reserve),
-        format_byte_size(pool),
-    );
-    for line in crate::init::set_aside_lines(&domains) {
-        shown.push_str(&format!("  {line}\n"));
-    }
-    ui.show(&shown);
-    if !ui.confirm(&format!(
-        "Change the pool from {now} to {}?",
-        format_byte_size(pool)
-    ))? {
-        ui.say("the pool is unchanged; rampire set global pool=SIZE changes it");
-        return Ok(());
-    }
-    // Agreed once: written and applied without asking again.
-    let pool = format_byte_size(pool);
-    let change = crate::set::parse_assignment(&format!("pool={pool}"))?;
-    let path = crate::set::set(&context.draft(), crate::set::GLOBAL, &[change])?;
-    ui.say(&format!("changed {}", path.display()));
-    crate::audit::record(
-        context,
-        "set",
-        None,
-        &[("changes", &format!("pool={pool}"))],
-    );
-    super::apply::apply_agreed(context, ui).map_err(|error| {
-        format!(
-            "{error}
-the new pool is saved in {} but not applied: rampire apply applies it",
-            path.display()
-        )
-    })?;
-    Ok(())
-}
-
 /// Whether this host is set up: its global settings are written.
 pub fn is_set_up(context: &Context) -> bool {
     context

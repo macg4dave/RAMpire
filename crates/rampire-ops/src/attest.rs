@@ -221,7 +221,7 @@ mod tests {
             .unwrap_or_default();
         std::fs::write(
             root.join("vms.d/web.toml"),
-            format!("alias = \"m\"\npriority = 1\nguest_os = \"linux\"\nmin_ram = \"1GB\"\nmax_ram = \"4GB\"\nfree_ram = \"512MB\"\n{review}"),
+            format!("alias = \"m\"\npriority = 1\nguest_os = \"linux\"\nmin_ram = \"1GB\"\nmax_ram = \"4GB\"\n{review}"),
         )
         .unwrap();
         root

@@ -17,7 +17,7 @@ listed under **For scripts** in `rampire --help`, each command's
 | `--json` | `status`, `check`, `doctor`, `vm list` | A versioned JSON document instead of text |
 | `--detailed-exitcode` | `apply` | 0 unchanged, 2 changed, 1 failed, 3 not applied (No was answered) |
 | `--no-apply` | `set` | Change the draft only, to apply later |
-| `--review`, `--kernel`, `--priority`, `--min-ram`, `--max-ram`, `--free-ram` | `vm add` | Every answer and setting given, so nothing is asked |
+| `--review`, `--kernel`, `--priority`, `--min-ram`, `--max-ram` | `vm add` | Every answer and setting given, so nothing is asked |
 | `--once`, `--interval-seconds`, `--events`, `--guest-interval-seconds`, `--no-guest` | `top`, `watch` | One plain snapshot, and how much is read |
 
 - Every command runs as root.

@@ -150,7 +150,21 @@ pub fn run(arguments: &[String], repo: &Path) -> Result<(), String> {
     preflight(&dir)?;
     if options.install {
         println!("==> installing this build on this host");
-        rampire_ops::process::run("bash", &["tools/build.sh", "install"], repo)?;
+        // The build shares the host with its VMs: two jobs, and only with
+        // room for them.
+        room_for(BUILD_BYTES, "the build")?;
+        let status = Command::new("bash")
+            .args(["tools/build.sh", "install"])
+            .current_dir(repo)
+            .env(
+                "CARGO_BUILD_JOBS",
+                std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "2".to_owned()),
+            )
+            .status()
+            .map_err(|error| format!("run tools/build.sh install: {error}"))?;
+        if !status.success() {
+            return Err(format!("tools/build.sh install failed: {status}"));
+        }
     }
     let mut run = Run {
         repo: repo.to_path_buf(),
@@ -256,6 +270,50 @@ fn live_dir(repo: &Path) -> Result<PathBuf, String> {
 }
 
 /// Everything the suite needs, checked before anything is changed.
+/// What a test VM is made with: `virt-install --memory`, in MiB.
+const VM_MIB: &str = "1536";
+/// A test VM's memory, and room for the disk tools `vm add` may run for it
+/// (libguestfs starts an appliance of its own).
+const VM_BYTES: u64 = (1536 + 1024) << 20;
+/// What the packaging build needs, at two jobs.
+const BYTES_PER_GIB: u64 = 1 << 30;
+const BUILD_BYTES: u64 = 3 * BYTES_PER_GIB;
+/// What the host keeps after anything the suite starts: the user's own
+/// VMs and services run beside it. On 2026-11-16 the suite and a build
+/// beside it took a 15 GiB host into swap until it stopped answering.
+const HOST_MARGIN_BYTES: u64 = 2 * BYTES_PER_GIB;
+
+/// Fail, starting nothing, unless the host has `bytes` for `what` and its
+/// margin besides.
+fn room_for(bytes: u64, what: &str) -> Result<(), String> {
+    let available = available_bytes()?;
+    let needed = bytes + HOST_MARGIN_BYTES;
+    if available < needed {
+        return Err(format!(
+            "not enough free memory for {what}: it needs {} MiB and the host keeps {} MiB, but {} MiB is available; nothing was started",
+            bytes >> 20,
+            HOST_MARGIN_BYTES >> 20,
+            available >> 20
+        ));
+    }
+    Ok(())
+}
+
+/// The host's `MemAvailable`, in bytes.
+fn available_bytes() -> Result<u64, String> {
+    let text = std::fs::read_to_string("/proc/meminfo")
+        .map_err(|error| format!("read /proc/meminfo: {error}"))?;
+    mem_available(&text).ok_or_else(|| "/proc/meminfo has no MemAvailable".to_owned())
+}
+
+fn mem_available(meminfo: &str) -> Option<u64> {
+    let line = meminfo
+        .lines()
+        .find(|line| line.starts_with("MemAvailable:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib * 1024)
+}
+
 fn preflight(dir: &Path) -> Result<(), String> {
     for tool in ["tmux", "curl", "qemu-img", "xorriso"] {
         if !Command::new("sh")
@@ -343,8 +401,10 @@ fn local(program: &str, args: &[&str]) -> Result<String, String> {
 fn test_vm(run: &mut Run, system: System) -> Result<String, String> {
     let name = system.vm();
     if virsh(&["domstate", &name]).is_err() {
+        room_for(VM_BYTES, &name)?;
         make_vm(run, system)?;
     } else if virsh(&["domstate", &name])?.trim() != "running" {
+        room_for(VM_BYTES, &name)?;
         virsh(&["start", &name])?;
     }
     wait_for_agent(run, &name, Duration::from_secs(600))?;
@@ -430,7 +490,7 @@ fn make_vm(run: &mut Run, system: System) -> Result<(), String> {
             "--name",
             &name,
             "--memory",
-            "1536",
+            VM_MIB,
             "--vcpus",
             "2",
             "--cpu",
@@ -605,14 +665,14 @@ enum Answer {
 type Answers = Vec<(&'static str, Answer)>;
 
 /// The review questions a VM without RDMA, NVMe or vhost-user passthrough
-/// may be asked, and the pool: never changed.
+/// may be asked. The pool is never asked about: a question about it is one
+/// the table doesn't have, and fails.
 fn answers_common() -> Answers {
     vec![
         ("Is this VM never live-migrated over RDMA", Answer::Yes),
         ("Is none of the VM's passed-through devices", Answer::Yes),
         ("Do all the VM's vhost-user devices", Answer::Yes),
         ("Is the VM's memory balloon never used", Answer::Yes),
-        ("Change the pool", Answer::No),
     ]
 }
 
@@ -664,7 +724,9 @@ impl Term {
                 &WIDTH.to_string(),
                 "-y",
                 "45",
-                &format!("sudo -n {command}; echo; echo \"EXITED $?\"; sleep 600"),
+                // The status is kept before the blank line: `$?` after
+                // `echo` was always 0, so every command read as succeeding.
+                &format!("sudo -n {command}; code=$?; echo; echo \"EXITED $code\"; sleep 600"),
             ])
             .output();
         std::thread::sleep(Duration::from_secs(2));
@@ -1356,5 +1418,12 @@ mod tests {
             tui_question(screen).as_deref(),
             Some("Add rampire-test-debian? RAMpire then grows it.")
         );
+    }
+
+    #[test]
+    fn free_memory_is_read_from_meminfo() {
+        let meminfo = "MemTotal:       15728640 kB\nMemFree:          250000 kB\nMemAvailable:    2412544 kB\n";
+        assert_eq!(mem_available(meminfo), Some(2_412_544 * 1024));
+        assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
     }
 }

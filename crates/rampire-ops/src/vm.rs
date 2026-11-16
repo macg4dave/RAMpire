@@ -782,11 +782,10 @@ fn insert_device(text: &mut String, device: &str) -> Result<(), String> {
 pub struct Suggested {
     pub min_ram: u64,
     pub max_ram: u64,
-    pub free_ram: u64,
 }
 
 /// `min_ram` is the boot RAM; `max_ram` the lower of the device ceiling
-/// and, for Linux, about four times boot RAM; `free_ram` 512 MiB.
+/// and, for Linux, about four times boot RAM.
 pub fn suggest(inspection: &Inspection, linux: bool) -> Option<Suggested> {
     let device = inspection.device()?;
     let block = device.block_bytes.max(2 * MIB);
@@ -800,7 +799,6 @@ pub fn suggest(inspection: &Inspection, linux: bool) -> Option<Suggested> {
     Some(Suggested {
         min_ram: boot,
         max_ram: max_ram / block * block,
-        free_ram: 512 * MIB,
     })
 }
 
@@ -1040,10 +1038,9 @@ pub fn review_toml(
 /// The VM's settings file.
 pub fn vm_toml(alias: &str, priority: u32, review: &str, suggested: &Suggested) -> String {
     format!(
-        "# Added by `rampire vm add`. Change a value with `rampire set VM KEY=VALUE`.\nalias = \"{alias}\"\npriority = {priority}\nreview = \"{review}\"\nguest_os = \"linux\"\n# The smallest the VM will be: it starts with this.\nmin_ram = \"{}\"\n# The biggest it may grow.\nmax_ram = \"{}\"\n# Technical: the spare memory it keeps ready. Leave it unless asked.\nfree_ram = \"{}\"\n",
+        "# Added by `rampire vm add`. Change a value with `rampire set VM KEY=VALUE`.\nalias = \"{alias}\"\npriority = {priority}\nreview = \"{review}\"\nguest_os = \"linux\"\n# The smallest the VM will be: it starts with this.\nmin_ram = \"{}\"\n# The biggest it may grow.\nmax_ram = \"{}\"\n",
         format_byte_size(suggested.min_ram),
         format_byte_size(suggested.max_ram),
-        format_byte_size(suggested.free_ram)
     )
 }
 
@@ -1331,10 +1328,7 @@ mod tests {
     fn suggests_settings_and_detects_review_answers() {
         let web = inspect(MANAGED).unwrap();
         let linux = suggest(&web, true).unwrap();
-        assert_eq!(
-            (linux.min_ram, linux.max_ram, linux.free_ram),
-            (GIB, 4 * GIB, 512 * MIB)
-        );
+        assert_eq!((linux.min_ram, linux.max_ram), (GIB, 4 * GIB));
         assert_eq!(suggest(&web, false).unwrap().max_ram, 9 * GIB);
         let unanswered = |answers: Vec<Detected>| -> Vec<&'static str> {
             answers

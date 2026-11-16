@@ -51,6 +51,15 @@ pub fn set(directory: &Path, target: &str, assignments: &[Assignment]) -> Result
     if assignments.is_empty() {
         return Err("set needs at least one KEY=VALUE".to_owned());
     }
+    // Read and ignored in old files, so a value set now would do nothing.
+    if assignments
+        .iter()
+        .any(|assignment| assignment.key == "free_ram")
+    {
+        return Err(
+            "free_ram is no longer a setting: a VM has a minimum and a maximum, min_ram and max_ram".to_owned(),
+        );
+    }
     let path = if target == GLOBAL {
         directory.join(GLOBAL_FILE)
     } else {
@@ -139,7 +148,7 @@ mod tests {
         std::fs::create_dir_all(root.join(VMS_DIRECTORY)).unwrap();
         std::fs::write(
             root.join("vms.d/web.toml"),
-            "# The web server.\nalias = \"m\"\n# Served first.\npriority = 100 # high\nguest_os = \"linux\"\nmin_ram = \"1GB\"\nmax_ram = \"4GB\"\nfree_ram = \"512MB\"\n",
+            "# The web server.\nalias = \"m\"\n# Served first.\npriority = 100 # high\nguest_os = \"linux\"\nmin_ram = \"1GB\"\nmax_ram = \"4GB\"\n",
         )
         .unwrap();
         root
@@ -191,6 +200,19 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("max_ram = \"12GB\"\n"), "{text}");
+    }
+
+    #[test]
+    fn free_ram_is_no_longer_a_setting() {
+        // Old files keep it, ignored: setting it would change nothing.
+        let root = configuration("free");
+        let before = std::fs::read_to_string(root.join("vms.d/web.toml")).unwrap();
+        let error = set(&root, "web", &assignments(&["free_ram=1GB"])).unwrap_err();
+        assert!(error.contains("no longer a setting"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("vms.d/web.toml")).unwrap(),
+            before
+        );
     }
 
     #[test]

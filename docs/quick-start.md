@@ -77,9 +77,8 @@ ssh -t HOST sudo rampire     # from another computer
 Every VM on the host is listed. Choose the VM with the arrows, press
 **Enter** and choose **Install RAMpire** (`a`):
 
-1. Its settings come up, filled in from its definition: priority, minimum,
-   maximum and free RAM, and how to log in to it. Change any, then
-   **Enter**.
+1. Its settings come up, filled in from its definition: priority, and
+   the minimum and maximum RAM. Change any, then **Enter**.
 2. It shows everything adding will do, and asks once.
 3. It does it, in the background: fixes the definition (keeping the old
    one), starts the VM, installs the guest service in it, restarts it if
@@ -94,8 +93,8 @@ rampire vm add webserver
 To install the guest service, RAMpire logs in to the VM: through its QEMU
 guest agent when that runs commands, else over SSH as root at the address
 libvirt has for it, with RAMpire's own key
-(`/var/lib/rampire/ssh/id_ed25519.pub`), or as `--guest-login USER@HOST`
-(Guest login in the form). When it can't log in, or the VM is off, it
+(`/var/lib/rampire/ssh/id_ed25519.pub`), or, from the command, as
+`--guest-login USER@HOST`. When it can't log in, or the VM is off, it
 uses libvirt's disk tools instead, which the host package recommends:
 with the VM shut down, it puts the package on its disk, and the package
 installs as the VM starts. The guest service needs systemd

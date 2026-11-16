@@ -23,8 +23,6 @@ enum Kind {
     Number,
     /// A size with its unit.
     Size,
-    /// A login, `USER@HOST`.
-    Login,
     /// `true` or `false`.
     Bool,
     /// A libvirt connection URI.
@@ -83,16 +81,6 @@ fn about(key: &str) -> (&'static str, &'static str, Kind) {
             "Maximum RAM",
             "The biggest it may grow. Linux: up to about 4 times its minimum.",
             Kind::Size,
-        ),
-        "free_ram" => (
-            "Free RAM",
-            "Spare memory kept in the VM. Below it the VM grows; above it, it shrinks.",
-            Kind::Size,
-        ),
-        "guest_login" => (
-            "Guest login",
-            "SSH login for installing rampire-guest, as USER@HOST. Empty: the guest agent, or root at the VM's address.",
-            Kind::Login,
         ),
         "host_reserve" => (
             "Host reserve",
@@ -160,7 +148,6 @@ impl Field {
                 .iter()
                 .map(|size| (*size).to_owned())
                 .collect(),
-            Kind::Login => Vec::new(),
         };
         let input = Input::new(original.as_deref().unwrap_or(""))
             .remembering(format!("setting {key}"))
@@ -223,8 +210,6 @@ impl Field {
             Kind::Size => rampire_core::units::parse_byte_size(value)
                 .err()
                 .map(|_| "a size, such as 8GB, 512MB or 1.5GB".to_owned()),
-            Kind::Login => (!value.contains('@') || value.contains(char::is_whitespace))
-                .then(|| "USER@HOST, such as root@192.168.122.5".to_owned()),
         }
     }
 }
@@ -262,11 +247,6 @@ impl Form {
                             if bytes("min_ram").is_some_and(|min| min >= max) =>
                         {
                             Some("must be more than Minimum RAM".to_owned())
-                        }
-                        ("free_ram", Some(max))
-                            if bytes("free_ram").is_some_and(|free| free >= max) =>
-                        {
-                            Some("must be less than Maximum RAM".to_owned())
                         }
                         ("host_reserve", _) => {
                             self.host.zip(field.bytes()).and_then(|(host, reserve)| {
@@ -516,7 +496,6 @@ impl Form {
                 field.input.line(theme, history, text_area.width as usize)
             } else if field.value().is_empty() && field.original.is_none() {
                 let blank = match (self.purpose, field.key) {
-                    (Purpose::Add, "guest_login") => "automatic",
                     (Purpose::Add | Purpose::Init, _) => "suggested",
                     (Purpose::Global, _) => "not set",
                     (Purpose::Set, _) => "each keeps its own",
@@ -682,7 +661,6 @@ mod tests {
                 Field::new("priority", Some("100".to_owned())),
                 Field::new("min_ram", Some("2GB".to_owned())),
                 Field::new("max_ram", Some("8GB".to_owned())),
-                Field::new("free_ram", Some("1GB".to_owned())),
             ],
             cursor: 0,
             warning: None,
@@ -708,7 +686,6 @@ mod tests {
         let mut form = form();
         form.fields[0].input.set("high");
         form.fields[1].input.set("16GB");
-        form.fields[3].input.set("8");
         let problems = form.problems();
         assert_eq!(problems[0].as_deref(), Some("a whole number, such as 100"));
         assert_eq!(problems[1], None);
@@ -724,14 +701,13 @@ mod tests {
         );
         form.fields[1].input.set("2GB");
         assert_eq!(form.problems()[2], None);
-        assert_eq!(problems[3].as_deref(), Some("add a unit: 8GB or 8MB"));
-        form.fields[3].input.set("8GB");
+        form.fields[2].input.set("8");
         assert_eq!(
-            form.problems()[3].as_deref(),
-            Some("must be less than Maximum RAM")
+            form.problems()[2].as_deref(),
+            Some("add a unit: 8GB or 8MB")
         );
-        form.fields[3].input.set("");
-        assert_eq!(form.problems()[3].as_deref(), Some("needs a value"));
+        form.fields[2].input.set("");
+        assert_eq!(form.problems()[2].as_deref(), Some("needs a value"));
         assert!(!form.valid());
     }
 
@@ -746,7 +722,7 @@ mod tests {
         };
         let mut form = form();
         form.fields[0].input.set("150");
-        for (width, height, roomy) in [(80, 22, false), (120, 38, true)] {
+        for (width, height, roomy) in [(80, 20, false), (120, 38, true)] {
             let area = Rect::new(0, 0, width, height);
             let mut buf = Buffer::empty(area);
             form.render(area, &mut buf, &theme, &History::default(), &context);
@@ -755,7 +731,7 @@ mod tests {
                 "Settings for web",
                 "Priority:",
                 "Minimum RAM:",
-                "Free RAM:",
+                "Maximum RAM:",
                 "was 100",
                 "Higher is served first",
                 "Runs  rampire set web priority=150",

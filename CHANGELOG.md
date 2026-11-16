@@ -11,6 +11,12 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 
 ## Unreleased
 
+- After the host restarts, `apply` no longer fails every VM with
+  "virtio-mem XML is missing current". libvirt shows a device's current
+  size only once QEMU has reported it, which can take a while after a VM
+  starts. Until then every `apply`, `vm add`, `vm remove` and `set` on the
+  host failed, and a VM checked in that time later read as "its
+  definition changed since RAMpire last checked this VM".
 - A VM's memory is two sizes: Minimum RAM, the smallest it will be, and
   Maximum RAM, the biggest it may grow. `vm add` fits the VM to them:
   it starts with its minimum, and its memory device holds the rest up to
@@ -21,9 +27,14 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   and asks whether to restart the VM for it. Until then the guest service
   keeps within the new sizes as nearly as it can, instead of stopping.
 - The TUI's add and settings forms ask for Priority, Minimum RAM and
-  Maximum RAM; Free RAM is no longer in them (`rampire set VM
-  free_ram=SIZE` still changes it). Maximum RAM must be more than Minimum
-  RAM.
+  Maximum RAM. Maximum RAM must be more than Minimum RAM. The add form no
+  longer has Guest login, and upgrading a guest from the TUI no longer
+  asks for an SSH login: RAMpire gets in through the guest agent, its own
+  SSH key, or the VM's disk. `--guest-login` stays on the command.
+- `free_ram` is no longer a setting: every guest keeps 16 MiB free,
+  built in. `vm add --free-ram` is gone, `rampire set VM free_ram=...` is
+  refused, and the TUI no longer shows it. A VM's file that still has a
+  `free_ram` line loads as before, and the line is ignored.
 - While `vm add` and `vm upgrade` wait for a guest, they say the first
   thing that isn't right, in the order the VM depends on it, and the
   guest service's own error in one line instead of its last log lines.
@@ -47,9 +58,6 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   come back, the wait was cancelled): its old definition, from its next
   start, and none of the files it wrote. It says so, and the journal
   records `vm_add_undone`.
-- `vm add` and `vm remove` offer the new pool when it changes: the one
-  `init` would suggest now, with the same reasoning (what each VM sets
-  aside). Yes sets it as `rampire set global pool=SIZE` does.
 - VM names may have capital letters, as libvirt allows (`Web01`). In
   file names each capital is written `^` and the letter in lower case
   (`vms.d/^web01.toml`, the review `^web01`), so no two names share a

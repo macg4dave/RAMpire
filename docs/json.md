@@ -81,7 +81,7 @@ The exit code is 0 when `passed` is true and 1 otherwise.
 | `status` | A managed VM's `rampire.status`, when it could be read |
 | `detail` | One line about it for a person |
 | `to_fix` | For a VM that isn't managed: what `vm add` would change |
-| `suggested` | For a VM that isn't managed: the `min_ram`, `max_ram` and `free_ram` `vm add` would give it, in bytes |
+| `suggested` | For a VM that isn't managed: the `min_ram` and `max_ram` `vm add` would give it, in bytes |
 | `rampire_parts` | For a VM that isn't managed: `true` when its definition still has RAMpire's virtio-mem device or control channel, which `vm remove` takes out; left out otherwise |
 | `add_restarts` | For a VM that isn't managed and runs: `true` when adding it shuts it down and starts it again; left out otherwise |
 | `runs_behind` | For a managed VM that runs: `true` when it runs an older definition than its saved one, which `vm restart` brings in; left out otherwise |

@@ -11,7 +11,7 @@ use super::Outcome;
 use crate::context::{applied_root, Context, TempDir, DOMAIN_BACKUPS};
 use crate::process;
 use crate::ui::Ui;
-use rampire_core::{format_byte_size, MIB};
+use rampire_core::format_byte_size;
 use rampire_host::attestation::AnswerSource;
 
 /// `vm add`'s options beside the VM's name.
@@ -23,7 +23,6 @@ pub struct AddOptions {
     pub priority: u32,
     pub min_ram: Option<String>,
     pub max_ram: Option<String>,
-    pub free_ram: Option<String>,
     /// `USER@HOST` to log in to the guest with, to install its package.
     pub guest_login: Option<String>,
     /// The guest package is installed some other way.
@@ -40,7 +39,6 @@ impl AddOptions {
             priority: 100,
             min_ram: None,
             max_ram: None,
-            free_ram: None,
             guest_login: None,
             no_guest_install: false,
         }
@@ -52,7 +50,6 @@ impl AddOptions {
             || self.priority != 100
             || self.min_ram.is_some()
             || self.max_ram.is_some()
-            || self.free_ram.is_some()
     }
 }
 
@@ -419,11 +416,6 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     })();
     match finished {
         Err(error) if undo.has_work() => Err(undo.run(context, &libvirt, ui, error)),
-        Ok(outcome) => {
-            // Its RAM above the boot RAM is the pool's now.
-            super::controller::offer_pool(context, ui);
-            Ok(outcome)
-        }
         finished => finished,
     }
 }
@@ -525,19 +517,12 @@ fn chosen_settings(
     };
     chosen.min_ram = size(options.min_ram.as_deref(), chosen.min_ram)?;
     chosen.max_ram = size(options.max_ram.as_deref(), chosen.max_ram)?;
-    // Spare memory isn't asked for: by default a quarter of the maximum,
-    // at most the suggested 512 MiB.
-    let spare = (chosen.max_ram / 4 / (2 * MIB) * (2 * MIB)).clamp(2 * MIB, chosen.free_ram);
-    chosen.free_ram = size(options.free_ram.as_deref(), spare)?;
     if chosen.min_ram >= chosen.max_ram {
         return Err(format!(
             "maximum RAM {} must be more than minimum RAM {}; nothing was changed",
             format_byte_size(chosen.max_ram),
             format_byte_size(chosen.min_ram)
         ));
-    }
-    if chosen.free_ram >= chosen.max_ram {
-        return Err("free RAM must be less than maximum RAM".to_owned());
     }
     Ok(chosen)
 }
@@ -1007,8 +992,6 @@ pub fn vm_remove(context: &Context, ui: &mut dyn Ui, name: &str) -> Result<Outco
     }
     forget_vm(ui, &directory, name, vm.review.as_deref()).map_err(unmanaged)?;
     ui.say(&format!("{name} is removed"));
-    // While it runs, all its RAM is its own again.
-    super::controller::offer_pool(context, ui);
     Ok(Outcome::Done)
 }
 
@@ -1218,7 +1201,9 @@ pub fn vm_upgrade(
         return Ok(Outcome::declined());
     }
     let libvirt = context.libvirt()?;
-    if !upgrade_guest(ui, &libvirt, vm, login, true)? {
+    // The TUI has no SSH login: it doesn't ask for one.
+    let ask_login = context.via != "tui";
+    if !upgrade_guest(ui, &libvirt, vm, login, true, ask_login)? {
         return Ok(Outcome::Declined(format!(
             "nothing was changed: {vm} keeps the guest build it runs"
         )));
@@ -1238,7 +1223,7 @@ pub fn vm_upgrade(
 /// while it runs; else, when `may_shut_down` and it is agreed to, on its
 /// disk with it shut down for a moment, the package installing as it starts
 /// again. A VM that is off gets it on its disk without asking. When it
-/// can't be logged in to by itself, its login is asked first. `false` when
+/// can't be logged in to by itself, its login is asked first, when `ask_login`. `false` when
 /// the person answered No to shutting it down: nothing was changed.
 fn upgrade_guest(
     ui: &mut dyn Ui,
@@ -1246,6 +1231,7 @@ fn upgrade_guest(
     vm: &str,
     login: Option<&str>,
     may_shut_down: bool,
+    ask_login: bool,
 ) -> Result<bool, String> {
     use std::time::Duration;
     let offline = |running: bool, ui: &mut dyn Ui| -> Result<bool, String> {
@@ -1269,8 +1255,8 @@ fn upgrade_guest(
     };
     let mut logged_in = install(ui, login);
     // The login `vm add` was given isn't kept: ask for one before
-    // anything that shuts the VM down.
-    if let (Err(why), None) = (&logged_in, login) {
+    // anything that shuts the VM down, except in the TUI, which has none.
+    if let (Err(why), None, true) = (&logged_in, login, ask_login) {
         if !ui.cancel().is_set() {
             ui.say(why);
             let given = ui.edit(
@@ -1398,7 +1384,7 @@ fn upgrade_if_behind(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(),
         "{vm} runs rampire-guest {}; upgrading it to this host's build",
         crate::guest::publication_build(publication.as_ref()).unwrap_or("of another build")
     ));
-    match upgrade_guest(ui, &libvirt, vm, None, false) {
+    match upgrade_guest(ui, &libvirt, vm, None, false, context.via != "tui") {
         Ok(_) => {
             crate::audit::record(context, "vm_upgrade", Some(vm), &[]);
             if let Err(why) = wait_for_build(

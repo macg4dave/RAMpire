@@ -136,7 +136,6 @@ fn preview(xml: &str) -> Result<Preview, String> {
     let suggested = crate::vm::suggest(&after, true).map(|sizes| SuggestedSizes {
         min_ram: sizes.min_ram,
         max_ram: sizes.max_ram,
-        free_ram: sizes.free_ram,
     });
     let problems = after
         .problems()

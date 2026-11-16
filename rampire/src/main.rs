@@ -308,9 +308,6 @@ enum VmCommand {
         /// boot RAM.
         #[arg(long, value_name = "SIZE", help_heading = SCRIPTS)]
         max_ram: Option<String>,
-        /// Spare memory the guest keeps; default 512MB.
-        #[arg(long, value_name = "SIZE", help_heading = SCRIPTS)]
-        free_ram: Option<String>,
     },
     /// Remove RAMpire from a VM: stop managing it at once, put its
     /// definition back to plain RAM (its boot RAM, without the virtio-mem
@@ -504,7 +501,6 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                 priority,
                 min_ram,
                 max_ram,
-                free_ram,
             } => lifecycle::vm_add(
                 &context,
                 ui,
@@ -517,7 +513,6 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                     priority: *priority,
                     min_ram: min_ram.clone(),
                     max_ram: max_ram.clone(),
-                    free_ram: free_ram.clone(),
                 },
             )
             .map(ended),

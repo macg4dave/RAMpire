@@ -121,7 +121,7 @@ observe_only = false
 
 | Setting | What it means | How to choose |
 |---|---|---|
-| `pool` | The total extra memory all the VMs may share, on top of the small amount each one starts with | The host's memory, minus what the host needs for itself, minus each VM's starting memory. `rampire init` works it out, and `vm add` and `vm remove` offer the new one when it changes |
+| `pool` | The total extra memory all the managed VMs may share, on top of what each one starts with. Nothing in it is kept for any one VM | Set once: `rampire init` suggests it when the host is set up. Change it whenever you like; adding or removing a VM never changes it or asks about it |
 | `host_reserve` | Memory the host always keeps free for itself. The program never gives VMs memory that would take the host below this | `"4GB"` suits most hosts. Raise it if the host runs other programs |
 | `observe_only` | Trial mode. `true`: the program decides and logs everything but changes no VM's memory | `false` for normal use |
 
@@ -142,7 +142,6 @@ review = "linux-standard"
 guest_os = "linux"
 min_ram = "2GB"
 max_ram = "8GB"
-free_ram = "512MB"
 ```
 
 | Setting | What it means | How to choose |
@@ -153,7 +152,6 @@ free_ram = "512MB"
 | `guest_os` | The VM's operating system | Don't change it |
 | `min_ram` | The smallest the VM will be. It starts with this, and memory is never taken back below it | The least this VM should run on |
 | `max_ram` | The biggest the VM may grow | The most this VM should ever have. For a Linux VM, keep it no more than about four times `min_ram`, or the VM may not be able to give memory back reliably |
-| `free_ram` | Technical: how much spare memory the VM keeps ready. It asks for more when its spare falls below this, and hands memory back when it has more spare than this | Leave it as `vm add` set it. More makes the VM respond faster to sudden demand but keeps more memory idle |
 
 Both `min_ram` and `max_ram` are the VM's whole memory. RAMpire fits the
 VM to them: it starts with `min_ram`, and its memory device holds the

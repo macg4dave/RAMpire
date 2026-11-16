@@ -13,7 +13,7 @@ use std::sync::mpsc::Sender;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// `vm add VM`, with the settings the form changed as `KEY=VALUE`:
-    /// `priority`, `min_ram`, `max_ram`, `free_ram` and `guest_login`.
+    /// `priority`, `min_ram`, `max_ram` and `guest_login`.
     Add {
         vm: String,
         changes: Vec<String>,
@@ -49,8 +49,6 @@ fn add_flag(key: &str) -> Option<&'static str> {
         "priority" => "--priority",
         "min_ram" => "--min-ram",
         "max_ram" => "--max-ram",
-        "free_ram" => "--free-ram",
-        "guest_login" => "--guest-login",
         _ => return None,
     })
 }
@@ -244,9 +242,6 @@ fn add_options(vm: &str, changes: &[String]) -> Result<lifecycle::AddOptions, St
             }
             "min_ram" => options.min_ram = Some(value),
             "max_ram" => options.max_ram = Some(value),
-            "free_ram" => options.free_ram = Some(value),
-            "guest_login" if !value.is_empty() => options.guest_login = Some(value),
-            "guest_login" => {}
             _ => return Err(format!("vm add has no setting {key}")),
         }
     }
@@ -293,13 +288,10 @@ mod tests {
         assert_eq!(
             Action::Add {
                 vm: "web".to_owned(),
-                changes: vec![
-                    "max_ram=12GB".to_owned(),
-                    "guest_login=admin@web".to_owned()
-                ]
+                changes: vec!["max_ram=12GB".to_owned(), "priority=150".to_owned()]
             }
             .command_line(&context),
-            "rampire vm add web --max-ram 12GB --guest-login admin@web"
+            "rampire vm add web --max-ram 12GB --priority 150"
         );
         assert_eq!(
             Action::Remove("web".to_owned()).command_line(&context),
@@ -319,17 +311,15 @@ mod tests {
     fn the_add_forms_changes_become_vm_adds_options() {
         let options = add_options(
             "web",
-            &[
-                "priority=150".to_owned(),
-                "max_ram=12GB".to_owned(),
-                "guest_login=".to_owned(),
-            ],
+            &["priority=150".to_owned(), "max_ram=12GB".to_owned()],
         )
         .unwrap();
         assert_eq!(options.priority, 150);
         assert_eq!(options.max_ram.as_deref(), Some("12GB"));
         assert_eq!(options.guest_login, None);
         assert!(add_options("web", &["priority=lots".to_owned()]).is_err());
+        // The TUI has no SSH login: the form can't give one.
+        assert!(add_options("web", &["guest_login=root@web".to_owned()]).is_err());
     }
 
     #[test]

@@ -138,11 +138,6 @@ pub const VM: SettingsFile = SettingsFile {
             meaning: "The biggest it may grow. For Linux, at most about four times `min_ram`",
         },
         Setting {
-            names: "`free_ram`",
-            default: None,
-            meaning: "Technical: spare memory the guest keeps; it asks for more below this and returns memory above it ([sizes](#sizes)). `vm add` sets it to a quarter of `max_ram`, at most 512 MiB",
-        },
-        Setting {
             names: "`guest_os`",
             default: None,
             meaning: "`\"linux\"`, or omitted for Windows",
@@ -215,12 +210,9 @@ Units are binary whatever the spelling: MB and MiB mean the same, and
 without quotes is a count of bytes, so `max_ram = 8` means 8 bytes and is
 refused by the alignment rules below.
 
-In a VM's file, `min_ram` and `max_ram` are multiples of 1 MiB, and
-`free_ram` is a multiple of 8 MiB and less than `max_ram`. On the running
-VM the limits are also aligned to its device's block, and `free_ram` must
-be eight blocks or more: with the 2 MiB block `vm add` gives a new
-device, use multiples of 16 MiB. Whole gigabytes always fit. Applying a
-size that doesn't fit says which one.";
+In a VM's file, `min_ram` and `max_ram` are multiples of 1 MiB. On the
+running VM the limits are also aligned to its device's block. Whole
+gigabytes always fit. Applying a size that doesn't fit says which one.";
 
 /// Every settings file, in the reference's order.
 pub const FILES: [SettingsFile; 3] = [GLOBAL, VM, REVIEW];

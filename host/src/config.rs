@@ -168,7 +168,7 @@ pub fn reloadable(old: &HostConfig, new: &HostConfig) -> Result<(), String> {
     };
     if fixed(old) != fixed(new) {
         return Err(format!(
-            "{}: a change beyond its priority, limits and free_ram",
+            "{}: a change beyond its priority and limits",
             old.vm_name
         ));
     }

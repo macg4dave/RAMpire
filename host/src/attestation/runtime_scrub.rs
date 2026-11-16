@@ -5,7 +5,7 @@
 //! in them is attested.
 
 pub(super) fn scrub_allocation_state(xml: &str) -> String {
-    let mut scrubbed = xml.to_owned();
+    let mut scrubbed = with_current(xml);
     // Libvirt derives the live top-level currentMemory value from base memory
     // plus the virtio-mem allocation. It therefore changes alongside the
     // alias-scoped requested/current fields and is not configuration drift.
@@ -36,6 +36,39 @@ pub(super) fn scrub_allocation_state(xml: &str) -> String {
         }
     }
     scrubbed
+}
+
+/// `xml` with a `<current>` after each virtio-mem `<requested>` that has
+/// none, laid out as libvirt writes it. libvirt shows `current` only once
+/// QEMU has reported the device's size, so just after a VM starts it may be
+/// missing; its value is scrubbed either way, and with this the VM's
+/// fingerprint is the same before and after it appears.
+fn with_current(xml: &str) -> String {
+    let mut text = xml.to_owned();
+    let mut offset = 0;
+    while let Some(found) = text[offset..].find("<requested") {
+        let start = offset + found;
+        let Some(close) = text[start..].find("</requested>") else {
+            break;
+        };
+        let end = start + close + "</requested>".len();
+        offset = end;
+        let after = text[end..].trim_start();
+        if after.starts_with("<current") {
+            continue;
+        }
+        let line_start = text[..start].rfind('\n').map_or(0, |index| index + 1);
+        let indent = &text[line_start..start];
+        let separator = if indent.trim().is_empty() {
+            format!("\n{indent}")
+        } else {
+            String::new()
+        };
+        let inserted = format!("{separator}<current unit='KiB'>0</current>");
+        text.insert_str(end, &inserted);
+        offset = end + inserted.len();
+    }
+    text
 }
 
 /// Libvirt assigns a new domain `id` and, for `type='dynamic'` security
@@ -332,6 +365,28 @@ pub(super) fn scrub_descriptor_numbers(arguments: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_without_its_current_size_yet_scrubs_as_one_with_it() {
+        // libvirt's live XML just after a VM starts, and once QEMU has
+        // reported the device's size.
+        let before = "<domain>\n  <devices>\n    <memory model='virtio-mem'>\n      <target>\n        <size unit='KiB'>2097152</size>\n        <block unit='KiB'>2048</block>\n        <requested unit='KiB'>0</requested>\n      </target>\n    </memory>\n  </devices>\n</domain>\n";
+        let after = before.replace(
+            "<requested unit='KiB'>0</requested>\n",
+            "<requested unit='KiB'>0</requested>\n        <current unit='KiB'>116736</current>\n",
+        );
+        assert_eq!(
+            scrub_allocation_state(before),
+            scrub_allocation_state(&after)
+        );
+        // One on a line of its own and one inline both get it once.
+        let inline = "<target><requested unit='KiB'>0</requested></target>";
+        assert_eq!(
+            with_current(inline),
+            "<target><requested unit='KiB'>0</requested><current unit='KiB'>0</current></target>"
+        );
+        assert_eq!(with_current(&with_current(inline)), with_current(inline));
+    }
     use crate::attestation::sha256_hex;
 
     #[test]

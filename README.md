@@ -117,12 +117,10 @@ You don't need to understand memory-management internals to change everyday sett
 priority = 100
 min_ram = "2GB"
 max_ram = "8GB"
-free_ram = "512MB"
 ```
 
 - **`min_ram`** is the smallest the VM will be; it starts with this.
 - **`max_ram`** is the biggest it may grow.
-- **`free_ram`** is technical: the spare memory the guest keeps ready. `vm add` sets it.
 - **`priority`** determines which requests are served first when the pool is short of memory.
 
 These are illustrative settings, **not a complete configuration file**; RAMpire generates the VM-specific fields when you add a guest.
