@@ -1,3 +1,6 @@
+//! Running `virsh`, one command at a time or over a shared libvirt
+//! connection, bounded in time and output.
+
 use std::io;
 use std::process::{Command, Output};
 use std::time::Duration;

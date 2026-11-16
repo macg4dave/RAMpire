@@ -1,3 +1,5 @@
+//! Why a virtio-mem device's state is invalid.
+
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]

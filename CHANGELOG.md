@@ -11,6 +11,15 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 
 ## Unreleased
 
+- `rampire status`, `vm list`, the doctor and `vm add` give a VM's sizes
+  as the whole VM, as its minimum and maximum are: "1.5 GiB of at most
+  3.0 GiB", where they said what its memory device alone held ("1.0 GiB
+  of at most 2.5 GiB" for the same VM).
+- `rampire doctor` says how full polkit's table of open files is, and
+  from three quarters full says to restart polkit. polkit 125 keeps a
+  file open for every check it is asked; when it has none left it
+  refuses every check, and a controller starting then failed with only
+  "Not authorized", which now points at it.
 - After the host restarts, `apply` no longer fails every VM with
   "virtio-mem XML is missing current". libvirt shows a device's current
   size only once QEMU has reported it, which can take a while after a VM
@@ -36,8 +45,10 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   16 MiB cushion, and how much it asks for is worked out from what it is
   doing: the shortfall, a small band, and what its demand will add before
   it can ask again, at the rate demand has been rising. It gives memory
-  back once demand stops rising and its spare is more than its recent
-  peak needs. `vm add --free-ram` is gone, `rampire set VM free_ram=...`
+  back once it hasn't needed it for twelve polls (a minute by default),
+  down to its peak over that time; before, it gave back whatever the last
+  second didn't need, and a VM whose demand swings resized every few
+  seconds. `vm add --free-ram` is gone, `rampire set VM free_ram=...`
   is refused, and the TUI no longer shows it. A VM's file that still has
   a `free_ram` line loads as before, and the line is ignored.
 - While `vm add` and `vm upgrade` wait for a guest, they say the first

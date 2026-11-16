@@ -454,19 +454,7 @@ fn listed(
 /// Whether the running VM `name` runs an older definition than its saved
 /// one, as `doctor` and `vm add` judge it. Unknown is no.
 fn runs_behind(libvirt: &crate::attest::Libvirt, name: &str) -> bool {
-    let read = |args: &[&str]| {
-        libvirt
-            .virsh(args)
-            .ok()
-            .and_then(|xml| crate::vm::inspect(&xml).ok())
-    };
-    match (
-        read(&["dumpxml", "--inactive", name]),
-        read(&["dumpxml", name]),
-    ) {
-        (Some(saved), Some(live)) => saved.runs_behind(&live),
-        _ => false,
-    }
+    crate::vm::runs_behind(libvirt, name).unwrap_or(false)
 }
 
 /// A managed VM's status and its line, into `vm`.
@@ -474,7 +462,11 @@ fn managed_status(context: &Context, vm: &mut ListedVm, state: &str) {
     let name = vm.vm_name.clone();
     match read_status(context, &name) {
         Ok(status) => {
-            vm.detail = crate::reports::status_line(&status);
+            let boot = context
+                .libvirt()
+                .ok()
+                .and_then(|libvirt| crate::vm::boot_bytes(&libvirt, &name));
+            vm.detail = crate::reports::status_line(&status, boot);
             vm.guest = match status.guest_input.observed_unix_millis {
                 Some(observed) => Published::Yes {
                     age_seconds: status.observed_unix_millis.saturating_sub(observed) / 1000,

@@ -135,7 +135,7 @@ fn settings_panel(
             }
             if let Some(boot) = details.boot_bytes {
                 second.extend([
-                    Span::styled("Boot RAM ", theme.text()),
+                    Span::styled("Starts with ", theme.text()),
                     Span::styled(size(boot), theme.value()),
                     Span::styled("   ", theme.text()),
                 ]);

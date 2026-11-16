@@ -25,7 +25,12 @@ git -C "$repo" archive --format=tar.gz --prefix="rampire-$version/" \
   -o "$top/SOURCES/rampire-$version.tar.gz" HEAD
 sed -e "s/@VERSION@/$version/" -e "s/@BUILD_ID@/$build_id/" \
   "$repo/packaging/rampire.spec.in" > "$top/SPECS/rampire.spec"
-! grep -q '@[A-Z_]*@' "$top/SPECS/rampire.spec"
+# Every @PLACEHOLDER@ replaced. (A bare `! grep` never stops a `set -e`
+# script, so written that way this check did nothing.)
+if grep -q '@[A-Z_]*@' "$top/SPECS/rampire.spec"; then
+  echo "rampire.spec still has a placeholder: $(grep -o '@[A-Z_]*@' "$top/SPECS/rampire.spec" | sort -u | tr '\n' ' ')" >&2
+  exit 1
+fi
 
 rpmbuild --define "_topdir $top" -bs "$top/SPECS/rampire.spec"
 cp "$top"/SRPMS/*.src.rpm "$output/"

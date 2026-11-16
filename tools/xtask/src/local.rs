@@ -1,3 +1,7 @@
+//! The gate's checks on this machine: format, build, test and lint the
+//! Linux crates, check that every shell script parses, and, for a Git
+//! checkout, its whitespace.
+
 use std::path::Path;
 
 use rampire_ops::process;

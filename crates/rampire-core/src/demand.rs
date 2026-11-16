@@ -1,3 +1,6 @@
+//! What a guest publishes: its memory counters, the native pressure signal
+//! and its one unresolved memory request, with diagnostics beside them.
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

@@ -125,10 +125,9 @@ TUI's tasks through a channel (`tui/jobs.rs`). Tests answer it with
 `ui::Transcript`. TUI tests set `App::hold_tasks`, so a task is queued but
 its command never runs.
 
-What each control does, from the key to the flow it runs, with how each
-is tested and what is verified only on a deployment, is in
-[the TUI audit](tui-functional-audit.md); the workflows a person
-follows, in [TUI workflows](tui-workflows.md).
+What each key and menu item does is in the
+[reference](reference.md#the-tui); how the TUI and the flows behind it
+are tested, and what only a real host shows, in [testing](testing.md).
 
 The screenshot software centres show, `docs/screenshots/tui.png`, is the
 dashboard drawn by the same renderer from a made-up host

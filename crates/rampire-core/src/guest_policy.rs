@@ -1,7 +1,8 @@
-//! Windows-owned memory policy. The guest turns its own telemetry and the
-//! host's published device state into explicit add/remove requests and keeps
-//! exactly one unresolved request, durably, until the host publishes its
-//! correlated terminal result. The host never estimates guest demand.
+//! The guest's memory policy, the same for Linux and Windows guests. The
+//! guest turns its own telemetry and the host's published device state
+//! into explicit add/remove requests and keeps exactly one unresolved
+//! request, durably, until the host publishes its correlated terminal
+//! result. The host never estimates guest demand.
 
 use serde::{Deserialize, Serialize};
 
@@ -829,7 +830,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_policy_reclaims_after_one_second_of_continuous_high_memory() {
+    fn shared_policy_reclaims_only_what_a_minute_of_polls_didnt_need() {
+        // Polls 5 s apart, as by default. A one-second window gave back
+        // what a VM's demand swings by and asked for it again moments
+        // later: 38 resizes in ten minutes on 2026-11-16.
         let mut guest = GuestRequester::new(
             crate::settings::GlobalSettings::default().guest_policy(2 * GIB, GIB, 3 * GIB),
             "guest",
@@ -838,22 +842,24 @@ mod tests {
             GuestRequestState::default(),
         )
         .unwrap();
-        assert!(guest
-            .poll(
-                sample(0, 8 * GIB, 12 * GIB),
-                Some(&status(0, 4 * GIB, None))
-            )
-            .unwrap()
-            .request
-            .is_none());
-        let request = guest
-            .poll(
-                sample(1, 8 * GIB, 12 * GIB),
-                Some(&status(1, 4 * GIB, None)),
-            )
-            .unwrap()
-            .request
-            .expect("one second qualifies reclaim");
+        let mut second = 0;
+        let request = loop {
+            let decision = guest
+                .poll(
+                    sample(second, 8 * GIB, 12 * GIB),
+                    Some(&status(second, 4 * GIB, None)),
+                )
+                .unwrap();
+            if let Some(request) = decision.request {
+                break request;
+            }
+            assert!(second < 120, "never reclaimed");
+            second += 5;
+        };
+        assert!(
+            (60..=65).contains(&second),
+            "reclaimed after {second} s, not after twelve polls"
+        );
         assert_eq!(request.operation, MemoryOperation::Remove);
         assert_eq!(request.bytes, 3 * GIB);
     }

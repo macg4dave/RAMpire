@@ -191,8 +191,8 @@ impl GlobalSettings {
     /// - `free_ram_bytes` ([`FREE_RAM_BYTES`]), the cushion: it asks for
     ///   more when its free memory falls below this;
     /// - `step_bytes`, the band: it returns memory only once its spare
-    ///   exceeds its recent peak demand and two of these, and native Low
-    ///   pressure asks for at least one;
+    ///   exceeds its peak demand over the last twelve polls and two of
+    ///   these, and native Low pressure asks for at least one;
     /// - reclaim never plans below half the cushion, also the level treated
     ///   as critical.
     ///
@@ -212,7 +212,12 @@ impl GlobalSettings {
                 commit_reserve_bytes: free_ram_bytes,
                 safe_floor_physical_reserve_bytes: free_ram_bytes / 2,
                 safe_floor_commit_reserve_bytes: free_ram_bytes / 2,
-                history_window_millis: 1_000,
+                // Memory goes back only once it hasn't been needed for twelve
+                // polls, the window the growth look-ahead also measures over.
+                // A one-second window gave back what a VM's demand swings by
+                // and asked for it again moments later: 38 resizes in ten
+                // minutes on 2026-11-16.
+                history_window_millis: self.poll_interval_seconds * 12_000,
                 maximum_gap_millis: self.poll_interval_seconds * 3000,
                 downward_hysteresis_bytes: 2 * step_bytes,
             },

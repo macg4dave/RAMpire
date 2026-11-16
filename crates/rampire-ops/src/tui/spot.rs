@@ -103,7 +103,7 @@ pub fn facts(app: &App, entry: &Entry) -> Vec<Fact> {
     }
     if let Some(details) = app.details.get(vm) {
         if let Some(boot) = details.boot_bytes {
-            fact("Boot RAM", crate::reports::size(boot));
+            fact("Starts with", crate::reports::size(boot));
         }
     }
     let line = |words: &[&str]| app.context.command_line(words);

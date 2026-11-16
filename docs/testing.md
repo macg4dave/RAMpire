@@ -40,6 +40,7 @@ that doesn't, as RHEL ships it), and works through what a person does:
 | `restart-open` | The VM restarts while the TUI is open | Nothing is written over the screen; the errors list has nothing from stderr; it reports in again |
 | `settings` | `rampire set VM min_ram=1536MB`, and Yes to the restart it takes | It exits 0; the VM now starts with 1536 MiB and stays healthy |
 | `upgrade` | `rampire vm upgrade VM` | As above |
+| `memory-load` | A program in the Debian VM takes all its free memory and 768 MiB more, 64 MiB a second, holds it 90 s and ends | The VM grows by at least 576 MiB with a grant of 64 MiB or more, not in steps of a few MiB, and gives back at least half of its growth within 3 minutes of the end |
 | `vm-gone` | Deletes a managed test VM from libvirt behind RAMpire's back and restarts the controller | The controller runs and manages the others, logging `vm_setup_failed`; `vm remove` takes the gone VM out |
 | `remove` | Removes each test VM in the TUI | Not managed after; its definition has none of RAMpire's parts |
 

@@ -206,7 +206,10 @@ pub struct SuggestedSizes {
 
 /// One VM's status in a line a person can read, as `rampire status`
 /// prints it.
-pub fn status_line(status: &ControllerStatusSnapshot) -> String {
+/// With `boot`, what the VM starts with ([`crate::vm::boot_bytes`]), its
+/// sizes are the whole VM's, as its minimum and maximum are; without it,
+/// only what its device holds.
+pub fn status_line(status: &ControllerStatusSnapshot, boot: Option<u64>) -> String {
     let state = if status.actuation_latched {
         format!(
             "latched: {}",
@@ -228,11 +231,21 @@ pub fn status_line(status: &ControllerStatusSnapshot) -> String {
         Some(error) => format!("; guest: {error}"),
         None => String::new(),
     };
+    let sizes = match boot {
+        Some(boot) => format!(
+            "{} of at most {}",
+            size(boot + status.current_bytes),
+            size(boot + status.maximum_target_bytes)
+        ),
+        None => format!(
+            "{} added to what it starts with, at most {}",
+            size(status.current_bytes),
+            size(status.maximum_target_bytes)
+        ),
+    };
     format!(
-        "{}: {} of at most {}, {state}{}{guest}",
+        "{}: {sizes}, {state}{}{guest}",
         status.vm_name,
-        size(status.current_bytes),
-        size(status.maximum_target_bytes),
         if status.observe_only {
             " (observe only)"
         } else {
@@ -270,6 +283,27 @@ mod tests {
         assert_eq!(size(512 << 20), "512 MiB");
         assert_eq!(size(3 << 30), "3.0 GiB");
         assert_eq!(size((3 << 30) + (512 << 20)), "3.5 GiB");
+    }
+
+    #[test]
+    fn a_status_line_gives_the_whole_vm_as_its_minimum_and_maximum_do() {
+        // torrent101 on 2026-11-16: it starts with 512 MiB, its device
+        // holds up to 2.5 GiB more, 1 GiB of it plugged. Its maximum is
+        // 3GB, not the 2.5 GiB the line said.
+        let mut status = status_report().vms.remove(0);
+        status.vm_name = "torrent101".to_owned();
+        status.current_bytes = GIB;
+        status.maximum_target_bytes = 2 * GIB + 512 * (1 << 20);
+        assert_eq!(
+            status_line(&status, Some(512 << 20)),
+            "torrent101: 1.5 GiB of at most 3.0 GiB, steady"
+        );
+        assert_eq!(
+            status_line(&status, None),
+            "torrent101: 1.0 GiB added to what it starts with, at most 2.5 GiB, steady"
+        );
+        status.observe_only = true;
+        assert!(status_line(&status, Some(0)).ends_with(", steady (observe only)"));
     }
 
     fn fixtures() -> PathBuf {

@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use rampire_host::config::HostSettings;
 use rampire_ops::context::{applied_root, SERVICE_ACCOUNT};
 use rampire_ops::reports::{
-    status_line, DoctorReport, DoctorSchema, StatusReport, StatusReportSchema,
+    status_line, DoctorReport, DoctorSchema, StatusReport, StatusReportSchema, REPORT_VERSION,
 };
 use serde::Serialize;
 
@@ -44,7 +44,7 @@ pub(crate) fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
     if cli.json {
         print_json(&StatusReport {
             schema: StatusReportSchema,
-            version: 1,
+            version: REPORT_VERSION,
             controller,
             vms,
             unavailable,
@@ -65,7 +65,11 @@ pub(crate) fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
         println!("RAMpire manages no VMs yet. Add one with: rampire vm add VM");
     }
     for status in &vms {
-        println!("{}", status_line(status));
+        let boot = context
+            .libvirt()
+            .ok()
+            .and_then(|libvirt| rampire_ops::vm::boot_bytes(&libvirt, &status.vm_name));
+        println!("{}", status_line(status, boot));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -107,7 +111,7 @@ pub(crate) fn doctor(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
     if cli.json {
         print_json(&DoctorReport {
             schema: DoctorSchema,
-            version: 1,
+            version: REPORT_VERSION,
             vm: vm.map(str::to_owned),
             passed,
             findings,

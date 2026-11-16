@@ -119,23 +119,29 @@ pub fn set(directory: &Path, target: &str, assignments: &[Assignment]) -> Result
     Ok(path)
 }
 
-/// Replace `path` in one step, keeping its owner and mode.
+/// Replace `path` in one step, durably, keeping its owner and mode
+/// ([`rampire_host::files::replace_file`], which also takes its temporary
+/// file away again if it fails).
 fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let temporary = path.with_extension("toml.rampire-set");
-    std::fs::write(&temporary, bytes)
-        .map_err(|error| format!("write {}: {error}", temporary.display()))?;
-    if let Ok(metadata) = std::fs::metadata(path) {
-        std::fs::set_permissions(&temporary, metadata.permissions())
-            .map_err(|error| format!("set mode of {}: {error}", temporary.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            std::os::unix::fs::chown(&temporary, Some(metadata.uid()), Some(metadata.gid()))
-                .map_err(|error| format!("set owner of {}: {error}", temporary.display()))?;
-        }
+    let before = std::fs::metadata(path).ok();
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        before
+            .as_ref()
+            .map(|metadata| metadata.permissions().mode())
+    };
+    #[cfg(not(unix))]
+    let mode = None;
+    rampire_host::files::replace_file(path, bytes, mode, true)
+        .map_err(|error| format!("replace {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    if let Some(metadata) = before {
+        use std::os::unix::fs::MetadataExt;
+        std::os::unix::fs::chown(path, Some(metadata.uid()), Some(metadata.gid()))
+            .map_err(|error| format!("set owner of {}: {error}", path.display()))?;
     }
-    std::fs::rename(&temporary, path)
-        .map_err(|error| format!("replace {}: {error}", path.display()))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -200,6 +206,24 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("max_ram = \"12GB\"\n"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_change_keeps_the_files_mode_and_leaves_nothing_beside_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = configuration("mode");
+        let path = root.join("vms.d/web.toml");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        set(&root, "web", &assignments(&["priority=150"])).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
+        let left: Vec<_> = std::fs::read_dir(root.join("vms.d"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(left, ["web.toml"]);
     }
 
     #[test]

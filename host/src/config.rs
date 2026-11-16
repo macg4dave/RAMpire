@@ -1,3 +1,7 @@
+//! The controller's view of the configuration: every VM's settings
+//! resolved with the global ones, and which changes it can take without
+//! restarting.
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

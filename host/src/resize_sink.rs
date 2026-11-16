@@ -1,3 +1,6 @@
+//! Carrying out one resize: the checked `virsh update-memory-device`
+//! command for a VM's virtio-mem device.
+
 use rampire_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;

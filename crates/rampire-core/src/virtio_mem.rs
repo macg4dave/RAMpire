@@ -1,3 +1,6 @@
+//! A virtio-mem device's state (size, block, requested and current bytes)
+//! and the rules it must keep.
+
 use crate::error::VirtioMemError;
 
 pub const MIN_BLOCK_SIZE_BYTES: u64 = 1 << 20;

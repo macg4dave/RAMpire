@@ -1,3 +1,5 @@
+//! Reading a VM's virtio-mem device state from its live definition.
+
 use rampire_core::{parse_virtio_mem_xml_for_alias, VirtioMemState};
 
 use crate::virsh::VirshCommand;

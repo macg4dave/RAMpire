@@ -235,6 +235,7 @@ publish() {
     && die "CHANGELOG.md lists unreleased changes: run tools/release.sh prepare first"
   notes_file=$(mktemp)
   # The path now: the trap runs after this function's locals are gone.
+  # shellcheck disable=SC2064
   trap "rm -f $(printf %q "$notes_file")" EXIT
   notes "$version" > "$notes_file"
 

@@ -1,3 +1,6 @@
+//! `cargo xtask`: the repository's build, check, package and live-test
+//! commands.
+
 mod build_identity;
 mod licenses;
 mod live;

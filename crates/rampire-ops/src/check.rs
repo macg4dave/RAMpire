@@ -28,7 +28,7 @@ pub fn run(directory: &Path) -> Result<CheckReport, String> {
         .collect();
     Ok(CheckReport {
         schema: CheckSchema,
-        version: 1,
+        version: crate::reports::REPORT_VERSION,
         passed: vms.iter().all(|vm| vm.problem.is_none()),
         vms,
     })

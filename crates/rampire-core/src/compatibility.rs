@@ -1,3 +1,7 @@
+//! Whether a virtio-mem device is safe to resize: the evidence for QEMU's
+//! `dynamic-memslots` and `unplugged-inaccessible` and for the workload
+//! review, each confirmed, rejected or unknown.
+
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

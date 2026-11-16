@@ -1,3 +1,6 @@
+//! Reading and writing files in a guest through its QEMU guest agent, for
+//! a guest that has no control channel.
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 

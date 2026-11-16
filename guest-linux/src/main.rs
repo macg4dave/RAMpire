@@ -1,3 +1,6 @@
+//! `rampire-guest`, the Linux guest service: reads the guest's memory and
+//! pressure and asks the host for memory, run by systemd.
+
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

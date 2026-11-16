@@ -178,7 +178,9 @@ rising over the last minute or so (twelve polls) and for two polls ahead.
 A VM creeping up gets a small top-up; one climbing fast gets a large
 grant at once; a single jump gets about that jump. When demand stops
 rising the look-ahead falls to nothing, and memory goes back once the
-spare exceeds the VM's recent peak demand and the band. Reclaim never
+VM hasn't needed it for twelve polls (a minute at the default 5 s): down
+to its peak demand over that time and the band, so what a VM's demand
+swings by stays with it rather than going back and being asked for again. Reclaim never
 plans below half the cushion (also the level treated as critical), and
 native Low pressure asks for at least 16 MiB. A Windows guest removes at
 most a quarter of its maximum per request. A file written before this
@@ -515,6 +517,19 @@ cause, then `rampire apply`, which starts it. Durable state means a pending
 request is resumed, not lost. `rampire doctor` says when it isn't running.
 One failure is tried again by itself, every 30 s: libvirt access refused at
 start (exit 75), before anything was done, as when polkit is restarting.
+
+**polkit out of open files.** polkit 125 (RHEL 10) keeps a file open for
+every authorization check it is asked and never closes it. When it reaches
+its limit (1024) it refuses every check, and a controller starting then
+fails with "Not authorized", again every 30 s. A running controller keeps
+its libvirt connection and isn't affected; any restart (`apply`, an
+upgrade, a reboot) is. The checks need not be RAMpire's: on a desktop host,
+GNOME Shell and GNOME Software ask several a minute. `rampire doctor` says
+how full polkit is, as a problem from three quarters; then:
+
+```bash
+sudo systemctl restart polkit
+```
 
 **A guest service restart or guest reboot.** The guest's one unresolved
 request is durable and is sent again unchanged until the host resolves it.

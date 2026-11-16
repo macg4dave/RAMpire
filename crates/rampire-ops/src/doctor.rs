@@ -147,11 +147,62 @@ pub fn run(connection: &str, account: &str, applied_root: &Path) -> Vec<Finding>
         )
         .runs(&["init"])
     });
+    findings.extend(polkit_finding(Path::new("/proc")));
     if current.exists() {
         findings.push(controller_finding(&crate::systemd_unit::controller_state()));
     }
     findings
 }
+
+/// How full polkit's table of open files is. polkit 125 (RHEL 10) keeps a
+/// descriptor for every authorization check it is asked, and when its
+/// table is full it refuses every check: the controller can't start, and
+/// says only "Not authorized". On 2026-11-16 the desktop's own checks
+/// (gnome-shell, gnome-software) filled it in about four hours. Restarting
+/// polkit empties it. `None` when polkitd isn't running or can't be read,
+/// as for a user who isn't root.
+pub fn polkit_finding(proc: &Path) -> Option<Finding> {
+    let pid = std::fs::read_dir(proc).ok()?.flatten().find_map(|entry| {
+        let name = entry.file_name().into_string().ok()?;
+        name.bytes().all(|b| b.is_ascii_digit()).then_some(())?;
+        let comm = std::fs::read_to_string(entry.path().join("comm")).ok()?;
+        (comm.trim() == "polkitd").then_some(name)
+    })?;
+    let open = std::fs::read_dir(proc.join(&pid).join("fd")).ok()?.count();
+    let limits = std::fs::read_to_string(proc.join(&pid).join("limits")).ok()?;
+    Some(polkit_descriptors(open, open_files_limit(&limits)?))
+}
+
+/// The soft limit on open files in a `/proc/PID/limits`.
+fn open_files_limit(limits: &str) -> Option<usize> {
+    limits
+        .lines()
+        .find_map(|line| line.strip_prefix("Max open files"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// [`polkit_finding`] for `open` files of at most `limit`: a problem from
+/// three quarters full.
+fn polkit_descriptors(open: usize, limit: usize) -> Finding {
+    let detail = format!("polkitd has {open} of {limit} files open");
+    if open * 4 >= limit * 3 {
+        Finding::problem(
+            POLKIT_CHECK,
+            format!(
+                "{detail}: it keeps one for every check it is asked, and when it has no more it refuses every check, the controller's too"
+            ),
+            "systemctl restart polkit",
+        )
+    } else {
+        Finding::ok(POLKIT_CHECK, detail)
+    }
+}
+
+/// The check of polkit's open files.
+pub const POLKIT_CHECK: &str = "polkit";
 
 /// Whether the controller runs. With something applied it must: a stopped
 /// one resizes nothing, and every VM's guest then looks as if it hasn't
@@ -478,5 +529,34 @@ mod tests {
             ["qemu"]
         );
         assert_eq!(supplementary_groups(&[unit_file, debian]), ["libvirt-qemu"]);
+    }
+
+    #[test]
+    fn a_polkit_near_its_limit_of_open_files_is_a_problem() {
+        let limits = "Limit                     Soft Limit           Hard Limit           Units\n\
+            Max open files            1024                 524288               files\n";
+        assert_eq!(open_files_limit(limits), Some(1024));
+        assert!(polkit_descriptors(14, 1024).ok);
+        // 2026-11-16: 1017 of 1024, and the controller "Not authorized".
+        let full = polkit_descriptors(1017, 1024);
+        assert!(!full.ok);
+        assert_eq!(full.fix.as_deref(), Some("systemctl restart polkit"));
+        assert!(!polkit_descriptors(768, 1024).ok);
+        assert!(polkit_descriptors(767, 1024).ok);
+        // Read from a /proc of its own.
+        let proc = std::env::temp_dir().join(format!("rampire-proc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&proc);
+        std::fs::create_dir_all(proc.join("42/fd")).unwrap();
+        std::fs::create_dir_all(proc.join("7/fd")).unwrap();
+        std::fs::write(proc.join("7/comm"), "sshd\n").unwrap();
+        std::fs::write(proc.join("42/comm"), "polkitd\n").unwrap();
+        std::fs::write(proc.join("42/limits"), limits).unwrap();
+        for fd in 0..3 {
+            std::fs::write(proc.join(format!("42/fd/{fd}")), "").unwrap();
+        }
+        let finding = polkit_finding(&proc).expect("polkitd found");
+        assert_eq!(finding.detail, "polkitd has 3 of 1024 files open");
+        std::fs::remove_dir_all(&proc).unwrap();
+        assert_eq!(polkit_finding(&proc), None);
     }
 }

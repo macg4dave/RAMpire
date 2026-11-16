@@ -545,10 +545,18 @@ mod tests {
         // reserve and the 128 MiB margin, less 1 GiB of fixed RAM, wants
         // 1,664 MiB of the 4 GiB device.
         let mut worker = fixture.worker("session-a", 4 * GIB, 4 * GIB + 512 * MIB);
-        fixture.write_status(1, 4 * GIB, None);
-        assert_eq!(worker.poll_once().unwrap().request, None, "no history yet");
-        fixture.write_status(2, 4 * GIB, None);
-        let request = worker.poll_once().unwrap().request.expect("reclaim");
+        // A poll a second; memory goes back only once it hasn't been needed
+        // for the policy's window, twelve of the default 5 s polls.
+        let mut second = 1;
+        let request = loop {
+            fixture.write_status(second, 4 * GIB, None);
+            if let Some(request) = worker.poll_once().unwrap().request {
+                break request;
+            }
+            assert!(second < 120, "never reclaimed");
+            second += 1;
+        };
+        assert!(second > 60, "reclaimed after {second} s, before the window");
         assert_eq!(request.operation, MemoryOperation::Remove);
         assert_eq!(request.bytes, 2 * GIB + 384 * MIB);
     }

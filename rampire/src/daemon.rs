@@ -7,10 +7,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The exit status for a failure at start that is safe to try again later
-/// (EX_TEMPFAIL): rampire.service restarts on it, and on nothing else.
-pub const RETRY_LATER: u8 = 75;
-
 use rampire_host::attestation::{read_attestation, AttestedCompatibilitySource};
 use rampire_host::config::{HostConfig, HostSettings};
 use rampire_host::control_channel::ControlChannel;
@@ -24,6 +20,10 @@ use rampire_host::virsh::Virsh;
 use rampire_host::xml_source::VirshXmlSource;
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::flag;
+
+/// The exit status for a failure at start that is safe to try again later
+/// (EX_TEMPFAIL): rampire.service restarts on it, and on nothing else.
+pub const RETRY_LATER: u8 = 75;
 
 /// The copy the running controller started on, which `rampire apply` keeps
 /// while it runs.
@@ -92,8 +92,10 @@ pub fn run(config_path: &Path) -> ExitCode {
         // restarting or reloading its rules (a package upgrade does that).
         // The unit restarts on this status alone; every other failure stays
         // fail-stop.
+        // polkit 125 keeps a file open for every check it is asked; with
+        // none left it refuses them all, which reads as "Not authorized".
         eprintln!(
-            "rampire authorization error: {error}; trying again in 30 s (exit {RETRY_LATER})"
+            "rampire authorization error: {error}; trying again in 30 s (exit {RETRY_LATER}). If polkit has run out of open files, rampire doctor says so; systemctl restart polkit fixes it"
         );
         return ExitCode::from(RETRY_LATER);
     }

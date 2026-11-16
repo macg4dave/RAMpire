@@ -215,6 +215,22 @@ impl Inspection {
     }
 }
 
+/// What the running `vm` starts with, the memory of its NUMA cell, from
+/// its live definition; `None` when libvirt can't say or it has no cell.
+pub fn boot_bytes(libvirt: &crate::attest::Libvirt, vm: &str) -> Option<u64> {
+    let live = inspect(&libvirt.virsh(&["dumpxml", vm]).ok()?).ok()?;
+    (live.numa_cells > 0).then_some(live.boot_bytes)
+}
+
+/// Whether the running `vm` lacks what its saved definition gives RAMpire
+/// ([`Inspection::runs_behind`]), so it needs a cold start; `None` when
+/// libvirt can't say.
+pub fn runs_behind(libvirt: &crate::attest::Libvirt, vm: &str) -> Option<bool> {
+    let saved = inspect(&libvirt.virsh(&["dumpxml", "--inactive", vm]).ok()?).ok()?;
+    let live = inspect(&libvirt.virsh(&["dumpxml", vm]).ok()?).ok()?;
+    Some(saved.runs_behind(&live))
+}
+
 /// A new device's size: three times boot RAM, so a Linux guest grows to
 /// about four times its boot RAM and can still return it reliably. Rounded
 /// up to whole GiB, at most the largest whole GiB a u64 holds.

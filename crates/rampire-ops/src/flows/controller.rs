@@ -234,7 +234,11 @@ pub fn recover(
     rampire_host::operator_actions::status(&context.target(Some(vm))?, &mut bytes)?;
     let status = rampire_core::parse_controller_status(&bytes)
         .map_err(|error| format!("status of {vm}: {error}"))?;
-    ui.say(&crate::reports::status_line(&status));
+    let boot = context
+        .libvirt()
+        .ok()
+        .and_then(|libvirt| crate::vm::boot_bytes(&libvirt, vm));
+    ui.say(&crate::reports::status_line(&status, boot));
     if !ui.confirm(&format!(
         "Stop {unit}, clear {vm}'s latch and start it again?"
     ))? {

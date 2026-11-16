@@ -70,7 +70,7 @@ pub fn run(context: &Context, vm: &str) -> Result<Vec<Finding>, String> {
     }
 
     match crate::inventory::read_status(context, vm) {
-        Ok(status) => findings.extend(controller(vm, &status)),
+        Ok(status) => findings.extend(controller(vm, &status, crate::vm::boot_bytes(&libvirt, vm))),
         Err(error) => findings.push(Finding::problem(
             "controller status",
             format!("{vm}'s status couldn't be read: {error}"),
@@ -320,8 +320,9 @@ fn attestation(context: &Context, vm: &str) -> Result<Finding, String> {
     )
 }
 
-/// What the controller says: a latch, recovery, observe-only.
-pub fn controller(vm: &str, status: &ControllerStatusSnapshot) -> Vec<Finding> {
+/// What the controller says: a latch, recovery, observe-only. `boot` is what
+/// the VM starts with, for its sizes ([`crate::reports::status_line`]).
+pub fn controller(vm: &str, status: &ControllerStatusSnapshot, boot: Option<u64>) -> Vec<Finding> {
     let recover = format!("rampire recover {vm} \"WHY IT IS SAFE TO RESUME\"");
     let mut findings = Vec::new();
     if status.actuation_latched {
@@ -353,14 +354,11 @@ pub fn controller(vm: &str, status: &ControllerStatusSnapshot) -> Vec<Finding> {
     }
     findings.push(Finding::ok(
         "controller",
-        if status.observe_only {
-            format!(
-                "{} (observe only: it decides but changes nothing)",
-                crate::reports::status_line(status)
-            )
-        } else {
-            crate::reports::status_line(status)
-        },
+        // The line says "(observe only)"; this says what that means.
+        crate::reports::status_line(status, boot).replace(
+            " (observe only)",
+            " (observe only: it decides but changes nothing)",
+        ),
     ));
     findings
 }

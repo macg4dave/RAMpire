@@ -42,6 +42,17 @@ Work that is done goes in the [changelog](../CHANGELOG.md), not here.
   download fails it. apt and dnf now retry. Done looks like: images with
   the dependencies installed, kept between runs like the build container.
 
+## Controller
+
+- **One unreadable VM holds back the others.** A VM the controller can't
+  read (just after the host starts, before libvirt shows its device's
+  size; or one whose guest stopped publishing) is charged the whole pool,
+  since it could hold anything. Every other VM's growth is then refused
+  with "no free pool" until it can be read again. Seen on 2026-11-16 after
+  a host restart. Needs an owner decision: charge such a VM what it last
+  held (kept in the controller's state) instead of the whole pool, or keep
+  the safe choice and say so in the TUI.
+
 ## Parked
 
 Not scheduled. Each needs an owner decision or an outside fix first.
@@ -63,6 +74,17 @@ Not scheduled. Each needs an owner decision or an outside fix first.
   refuses it. The guest service would need to run as a Home Assistant
   add-on (a container with the host's `/proc` and the control channel),
   published where Home Assistant finds add-ons.
+- **polkit 125's descriptor leak.** polkit on RHEL 10 keeps a file open
+  for every authorization check and fails every check once it has 1024;
+  on a desktop host GNOME Shell and GNOME Software alone fill it in hours.
+  RAMpire can't fix it: `rampire doctor` now warns, and restarting polkit
+  clears it ([administration](administration.md#recovering)). Done looks
+  like: the leak reported to Red Hat, and a polkit update that fixes it.
+- **SSH logins on the command line.** The TUI no longer asks for or takes
+  an SSH login for a guest. `vm add --guest-login`, `vm upgrade
+  --guest-login` and the upgrade command's prompt for one remain, for
+  scripts and guests whose agent can't run commands. Needs an owner
+  decision: keep them, or take them out too.
 - **Images in the TUI.** Real pictures through the Kitty graphics
   protocol and Sixel (for example the mascot in the header), where the
   terminal supports them, falling back to the icons.

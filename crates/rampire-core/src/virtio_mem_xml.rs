@@ -1,3 +1,6 @@
+//! Reading a virtio-mem device, found by its alias, out of a libvirt domain
+//! definition.
+
 use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use thiserror::Error;

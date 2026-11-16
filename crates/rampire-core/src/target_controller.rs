@@ -1,4 +1,8 @@
-//! Absolute target estimation from raw Windows memory telemetry.
+//! How much device memory a guest wants, worked out from its own memory
+//! telemetry (Windows' counters, which the Linux guest fills from
+//! `/proc/meminfo`): the shortfall below its reserve, a band above that,
+//! what its rising demand will add before it can ask again, and when
+//! memory can safely go back.
 
 use std::collections::VecDeque;
 

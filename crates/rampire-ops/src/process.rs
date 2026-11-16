@@ -1,3 +1,6 @@
+//! Running the commands the operator tools call (virsh, systemctl,
+//! journalctl and the like), with their output and failures as text.
+
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::{Command, Output};

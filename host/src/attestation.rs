@@ -1,3 +1,7 @@
+//! A VM's recorded setup: the review it was checked against and the
+//! fingerprint of how it runs, which every resize compares with the live
+//! VM before it goes ahead.
+
 use std::path::Path;
 
 use rampire_core::{settings::GuestOs, CompatibilityEvidence};
@@ -10,9 +14,9 @@ mod runtime_scrub;
 
 pub use live_evidence::{AttestedCompatibilitySource, VirshCompatibilityEvidenceSource};
 
-/// Version 2 names the reviewed guest operating system and drops the
-/// development-only trust flag of version 1; a version 1 attestation must be
-/// made again from an updated review.
+/// The attestation's version. It names the reviewed guest operating
+/// system. Versions restarted at 1 when documents began naming their
+/// schema (docs/names.md).
 pub const COMPATIBILITY_ATTESTATION_VERSION: u32 = 1;
 
 rampire_core::schema_name! {

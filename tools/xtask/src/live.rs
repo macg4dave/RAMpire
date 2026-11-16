@@ -25,12 +25,12 @@ The live suite, on this host (docs/testing.md):
                                    and writes target/live/report.md.
                                    --keep leaves the VMs for a look after.
   Scenarios: add-declined, add-cancelled, add-running, add-off,
-             restart-open, settings, upgrade, vm-gone, remove
+             restart-open, settings, upgrade, memory-load, vm-gone, remove
   RAMPIRE_LIVE_DIR (or site/build.env) names a folder for the VMs' disks.
 "#;
 
 const PREFIX: &str = "rampire-test-";
-const SCENARIOS: [&str; 9] = [
+const SCENARIOS: [&str; 10] = [
     "add-declined",
     "add-cancelled",
     "add-running",
@@ -38,6 +38,7 @@ const SCENARIOS: [&str; 9] = [
     "restart-open",
     "settings",
     "upgrade",
+    "memory-load",
     "vm-gone",
     "remove",
 ];
@@ -190,6 +191,7 @@ pub fn run(arguments: &[String], repo: &Path) -> Result<(), String> {
             "restart-open" => restart_open(&mut run),
             "settings" => settings(&mut run),
             "upgrade" => upgrade(&mut run),
+            "memory-load" => memory_load(&mut run),
             "vm-gone" => vm_gone(&mut run),
             "remove" => remove(&mut run),
             _ => Ok(()),
@@ -299,19 +301,10 @@ fn room_for(bytes: u64, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The host's `MemAvailable`, in bytes.
+/// The host's `MemAvailable`, in bytes; nothing when it can't be read, so
+/// nothing is started.
 fn available_bytes() -> Result<u64, String> {
-    let text = std::fs::read_to_string("/proc/meminfo")
-        .map_err(|error| format!("read /proc/meminfo: {error}"))?;
-    mem_available(&text).ok_or_else(|| "/proc/meminfo has no MemAvailable".to_owned())
-}
-
-fn mem_available(meminfo: &str) -> Option<u64> {
-    let line = meminfo
-        .lines()
-        .find(|line| line.starts_with("MemAvailable:"))?;
-    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kib * 1024)
+    Ok(rampire_ops::host_readings::read_meminfo()?.available)
 }
 
 fn preflight(dir: &Path) -> Result<(), String> {
@@ -1247,6 +1240,149 @@ fn upgrade(run: &mut Run) -> Result<(), String> {
     Ok(())
 }
 
+/// How much more than the guest's free memory the load in [`memory_load`]
+/// takes, so the VM must grow by about this.
+const LOAD_MIB: u64 = 768;
+
+/// A program in the guest takes all its free memory and 768 MiB more,
+/// 64 MiB a second as a busy program would, holds it 90 s and ends: the
+/// VM grows by about that in a few large grants, not in steps of a few
+/// MiB, and gives most of it back once the program ends. On 2026-11-16 a
+/// guest with a 16 MiB cushion grew 8 MiB at a time and sat at its
+/// ceiling.
+fn memory_load(run: &mut Run) -> Result<(), String> {
+    let vm = System::Debian.vm();
+    if management(&vm).as_deref() != Some("managed") {
+        return Err(format!("{vm} isn't managed: run add-running first"));
+    }
+    room_for(LOAD_MIB << 20, &format!("{vm}'s load"))?;
+    let before = plugged_mib(&vm)?;
+    let since = unix_seconds();
+    // Touch a byte of every page, so the memory is really used, 16 MiB a
+    // quarter second; hold it for 90 s, then end.
+    let program = format!(
+        "import time\n\
+         free = next(int(l.split()[1]) for l in open('/proc/meminfo') if l.startswith('MemAvailable:')) * 1024\n\
+         held = []\n\
+         for _ in range((free + ({LOAD_MIB} << 20)) // (16 << 20)):\n    \
+             b = bytearray(16 << 20)\n    \
+             for i in range(0, len(b), 4096): b[i] = 1\n    \
+             held.append(b)\n    \
+             time.sleep(0.25)\n\
+         time.sleep(90)\n"
+    );
+    let request = serde_json::json!({
+        "execute": "guest-exec",
+        "arguments": {"path": "/usr/bin/python3", "arg": ["-c", program], "capture-output": false}
+    });
+    virsh(&["qemu-agent-command", &vm, &request.to_string()])?;
+    run.note(format!(
+        "a program in {vm} is taking its free memory and {LOAD_MIB} MiB more; it had {before} MiB plugged"
+    ));
+    // Growth: about the extra, while the program ramps up.
+    let started = Instant::now();
+    let mut peak = before;
+    while started.elapsed() < Duration::from_secs(150) {
+        peak = peak.max(plugged_mib(&vm)?);
+        if peak >= before + LOAD_MIB * 3 / 4 {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    let grants = grants_mib(&vm, since);
+    let largest = grants.iter().copied().max().unwrap_or(0);
+    run.note(format!(
+        "{vm} grew from {before} to {peak} MiB in {} grants, the largest {largest} MiB",
+        grants.len()
+    ));
+    if peak < before + LOAD_MIB * 3 / 4 {
+        run.fail(
+            format!("{vm} grew only from {before} to {peak} MiB for a load {LOAD_MIB} MiB over its free memory"),
+            None,
+        );
+    }
+    if largest < 64 {
+        run.fail(
+            format!("{vm}'s largest grant was {largest} MiB: it grew in small steps ({grants:?})"),
+            None,
+        );
+    }
+    // Give-back: once the program ends, at least half of what it grew.
+    let deadline = Instant::now() + Duration::from_secs(150 + 90 + 180);
+    let mut now = peak;
+    while Instant::now() < deadline {
+        now = plugged_mib(&vm)?;
+        if now <= peak - (peak - before) / 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+    if now <= peak - (peak - before) / 2 {
+        run.note(format!("{vm} gave back to {now} MiB once the load ended"));
+    } else {
+        run.fail(
+            format!("{vm} still has {now} MiB plugged after its load ended (peak {peak}, before {before})"),
+            None,
+        );
+    }
+    check_healthy(run, &vm);
+    Ok(())
+}
+
+/// What `vm`'s virtio-mem device has plugged now, in MiB.
+fn plugged_mib(vm: &str) -> Result<u64, String> {
+    let xml = virsh(&["dumpxml", vm])?;
+    let device = &xml[xml
+        .find("model='virtio-mem'")
+        .ok_or_else(|| format!("{vm} has no virtio-mem device"))?..];
+    let current = device
+        .find("<current unit='KiB'>")
+        .map(|at| &device[at + "<current unit='KiB'>".len()..])
+        .ok_or_else(|| format!("{vm}'s device shows no current size yet"))?;
+    let kib: u64 = current[..current.find('<').unwrap_or(0)]
+        .parse()
+        .map_err(|_| format!("{vm}'s device current size isn't a number"))?;
+    Ok(kib / 1024)
+}
+
+/// The controller's grants to `vm` for growth since `since` (Unix
+/// seconds), in MiB, oldest first.
+fn grants_mib(vm: &str, since: u64) -> Vec<u64> {
+    let journal = sudo(
+        "journalctl",
+        &[
+            "-u",
+            "rampire.service",
+            "--since",
+            &format!("@{since}"),
+            "--no-pager",
+            "-o",
+            "cat",
+        ],
+    )
+    .unwrap_or_default();
+    journal
+        .lines()
+        .filter(|line| {
+            line.contains(&format!("vm={vm} "))
+                && line.contains("event=controller_decision action=grant")
+                && line.contains("operation=Add")
+        })
+        .filter_map(|line| {
+            let value = line.split(" grant_bytes=").nth(1)?;
+            value.split(' ').next()?.parse::<u64>().ok()
+        })
+        .filter(|bytes| *bytes > 0)
+        .map(|bytes| bytes >> 20)
+        .collect()
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
 /// A managed VM deleted from libvirt behind RAMpire's back: the controller
 /// still starts and manages the others, and `vm remove` takes it out.
 fn vm_gone(run: &mut Run) -> Result<(), String> {
@@ -1418,12 +1554,5 @@ mod tests {
             tui_question(screen).as_deref(),
             Some("Add rampire-test-debian? RAMpire then grows it.")
         );
-    }
-
-    #[test]
-    fn free_memory_is_read_from_meminfo() {
-        let meminfo = "MemTotal:       15728640 kB\nMemFree:          250000 kB\nMemAvailable:    2412544 kB\n";
-        assert_eq!(mem_available(meminfo), Some(2_412_544 * 1024));
-        assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
     }
 }

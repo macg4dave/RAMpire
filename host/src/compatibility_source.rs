@@ -1,3 +1,6 @@
+//! Where the controller gets a VM's compatibility evidence just before a
+//! resize.
+
 use rampire_core::VirtioMemCompatibility;
 
 /// Supplies compatibility evidence immediately before resize preparation.
