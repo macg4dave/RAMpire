@@ -87,6 +87,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.6.0" date="2026-11-16">
+      <url type="details">https://github.com/macg4dave/RAMpire/blob/v0.6.0/CHANGELOG.md</url>
+    </release>
     <release version="0.5.0" date="2026-11-15">
       <description>
         <p>

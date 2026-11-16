@@ -9,7 +9,7 @@ A change someone using RAMpire would notice gets a line under
 turns that section into the release's entry, and the entry becomes the
 release's notes on GitHub ([releasing](docs/releasing.md)).
 
-## Unreleased
+## 0.6.0 (2026-11-16)
 
 - A managed VM that is shut off no longer stops every other VM from
   growing. The controller couldn't read a stopped VM's device, so it
