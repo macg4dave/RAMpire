@@ -31,10 +31,15 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   longer has Guest login, and upgrading a guest from the TUI no longer
   asks for an SSH login: RAMpire gets in through the guest agent, its own
   SSH key, or the VM's disk. `--guest-login` stays on the command.
-- `free_ram` is no longer a setting: every guest keeps 16 MiB free,
-  built in. `vm add --free-ram` is gone, `rampire set VM free_ram=...` is
-  refused, and the TUI no longer shows it. A VM's file that still has a
-  `free_ram` line loads as before, and the line is ignored.
+- `free_ram` is no longer a setting, and nothing replaces it with a
+  fixed size. A guest asks for more when its free memory falls below a
+  16 MiB cushion, and how much it asks for is worked out from what it is
+  doing: the shortfall, a small band, and what its demand will add before
+  it can ask again, at the rate demand has been rising. It gives memory
+  back once demand stops rising and its spare is more than its recent
+  peak needs. `vm add --free-ram` is gone, `rampire set VM free_ram=...`
+  is refused, and the TUI no longer shows it. A VM's file that still has
+  a `free_ram` line loads as before, and the line is ignored.
 - While `vm add` and `vm upgrade` wait for a guest, they say the first
   thing that isn't right, in the order the VM depends on it, and the
   guest service's own error in one line instead of its last log lines.

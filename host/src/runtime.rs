@@ -671,7 +671,8 @@ mod tests {
 
     #[test]
     fn guest_settings_reach_every_guest() {
-        let settings = rampire_core::settings::GlobalSettings::default().guest_policy(GIB, 8 * GIB);
+        let settings =
+            rampire_core::settings::GlobalSettings::default().guest_policy(GIB, GIB / 2, 8 * GIB);
         let published = rampire_core::GuestSettings {
             policy: settings,
             min_ram: 4 * GIB,

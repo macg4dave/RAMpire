@@ -831,7 +831,7 @@ mod tests {
     #[test]
     fn shared_policy_reclaims_after_one_second_of_continuous_high_memory() {
         let mut guest = GuestRequester::new(
-            crate::settings::GlobalSettings::default().guest_policy(2 * GIB, 3 * GIB),
+            crate::settings::GlobalSettings::default().guest_policy(2 * GIB, GIB, 3 * GIB),
             "guest",
             "service",
             "session",

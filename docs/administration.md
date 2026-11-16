@@ -170,16 +170,19 @@ controller never takes memory from one VM to give to another. Admission
 also keeps 256 MiB above `host_reserve` for changes between
 planning and resizing.
 
-Every guest keeps 16 MiB free, built in; it is not a setting. The guest
-asks for more when its free memory falls below that and returns memory
-when it has more than that spare. The rest of the policy follows from it:
-reclaim never plans below half of it (also the level treated as
-critical), memory is returned only once the surplus exceeds an eighth of
-it, growth and reclaim both aim a sixteenth of it above it so ordinary
-fluctuation causes no resize, and native Low pressure asks for at least
-half of it. A Windows guest removes at most one and a half times it per
-request. A file written before it was built in may still have a
-`free_ram` line: it is ignored.
+How much a guest asks for is worked out from what it is doing; none of
+it is a setting. It asks for more when its free memory falls below a
+16 MiB cushion: the shortfall, a small band above it, and what its
+demand will add before it can ask again, at the rate demand has been
+rising over the last minute or so (twelve polls) and for two polls ahead.
+A VM creeping up gets a small top-up; one climbing fast gets a large
+grant at once; a single jump gets about that jump. When demand stops
+rising the look-ahead falls to nothing, and memory goes back once the
+spare exceeds the VM's recent peak demand and the band. Reclaim never
+plans below half the cushion (also the level treated as critical), and
+native Low pressure asks for at least 16 MiB. A Windows guest removes at
+most a quarter of its maximum per request. A file written before this
+may still have a `free_ram` line: it is ignored.
 
 Guests take these settings from the host with every status. Changing a
 VM's settings needs only a controller install, never a guest change.

@@ -88,6 +88,9 @@ struct TargetEstimatorState {
     last_sequence: u64,
     last_visible_base_bytes: Option<u64>,
     history: VecDeque<CandidateHistoryEntry>,
+    /// Recent demand, `(monotonic_millis, device bytes)`, oldest first: how
+    /// fast it is rising sets how far ahead growth looks ([`look_ahead`]).
+    demand: VecDeque<(u64, u64)>,
 }
 
 impl TargetEstimatorState {
@@ -206,9 +209,23 @@ impl TargetEstimator {
         // Aiming at demand itself leaves the device on the growth threshold,
         // where every fluctuation in guest memory costs a host resize.
         let margin = align_up(self.config.downward_hysteresis_bytes / 2, block)?;
+        // Growth also looks ahead: what demand will add, at the rate it has
+        // been rising, before the guest can ask again. A VM creeping up gets
+        // a top-up, one climbing fast gets a large grant at once; once it
+        // stops rising this falls to nothing, and reclaim returns the rest.
+        let ahead = align_up(
+            look_ahead(
+                &mut self.state.demand,
+                sample.monotonic_millis,
+                instantaneous.desired_now_bytes,
+                self.config.maximum_gap_millis,
+            ),
+            block,
+        )?;
         let target_now = instantaneous
             .desired_now_bytes
             .saturating_add(margin)
+            .saturating_add(ahead)
             .clamp(minimum, maximum);
         instantaneous.desired_now_bytes = instantaneous.desired_now_bytes.clamp(minimum, maximum);
         instantaneous.floor_now_bytes = instantaneous.floor_now_bytes.clamp(minimum, maximum);
@@ -343,6 +360,7 @@ impl TargetEstimator {
         }
         if sample.session_id != self.state.session_id {
             self.state.history.clear();
+            self.state.demand.clear();
             return Ok(());
         }
         if sample.sequence <= self.state.last_sequence
@@ -358,9 +376,48 @@ impl TargetEstimator {
             > self.config.maximum_gap_millis
         {
             self.state.history.clear();
+            self.state.demand.clear();
         }
         Ok(())
     }
+}
+
+/// What demand will add before the guest can ask again: how much it rose
+/// across a recent window (from its oldest sample there to `now_bytes`),
+/// as a rate, over two poll intervals. Polls are a third of
+/// `maximum_gap_millis` apart; the window is twelve polls, and the rate is
+/// never taken over less than three, so one sudden jump, which the
+/// shortfall itself already asks for, isn't multiplied up. Records
+/// `(now_millis, now_bytes)` in `demand`. Nothing when demand is flat or
+/// falling.
+fn look_ahead(
+    demand: &mut VecDeque<(u64, u64)>,
+    now_millis: u64,
+    now_bytes: u64,
+    maximum_gap_millis: u64,
+) -> u64 {
+    let poll = (maximum_gap_millis / 3).max(1);
+    let window = poll.saturating_mul(12);
+    let lead = poll.saturating_mul(2);
+    while demand
+        .front()
+        .is_some_and(|(at, _)| now_millis.saturating_sub(*at) > window)
+    {
+        demand.pop_front();
+    }
+    let ahead = demand
+        .front()
+        .filter(|(at, bytes)| *at < now_millis && *bytes < now_bytes)
+        .map_or(0, |(at, bytes)| {
+            let risen = u128::from(now_bytes - bytes);
+            let elapsed = u128::from((now_millis - at).max(poll.saturating_mul(3)));
+            u64::try_from(risen * u128::from(lead) / elapsed).unwrap_or(u64::MAX)
+        });
+    demand.push_back((now_millis, now_bytes));
+    if demand.len() > MAX_TARGET_HISTORY_ENTRIES {
+        demand.pop_front();
+    }
+    ahead
 }
 
 fn calculate_instantaneous(
@@ -843,7 +900,10 @@ mod tests {
                 geometry(10 * GIB),
             )
             .expect("second growth sample");
-        assert_eq!(second.desired_bytes, 12 * GIB + 128 * MIB);
+        // Demand rose 2 GiB in a minute: growth looks two polls (40 s) ahead
+        // at that rate, about 1.33 GiB more, in whole blocks.
+        let ahead = (2 * GIB * 2 / 3).div_ceil(2 * MIB) * (2 * MIB);
+        assert_eq!(second.desired_bytes, 12 * GIB + 128 * MIB + ahead);
 
         for sequence in 2..=12 {
             let result = estimator
@@ -890,6 +950,38 @@ mod tests {
     }
 
     #[test]
+    fn growth_looks_ahead_by_how_fast_demand_is_rising() {
+        // Polls 5 s apart, as by default.
+        let gap = 15_000;
+        let mut demand = VecDeque::new();
+        // Flat: nothing more than the shortfall.
+        for poll in 0..12 {
+            assert_eq!(look_ahead(&mut demand, poll * 5_000, 600 * MIB, gap), 0);
+        }
+        // torrent101 on 2026-11-16, creeping 8 MiB a poll: it got 8 MiB at
+        // a time and sat at its ceiling. Rising, it looks two polls ahead.
+        let mut demand = VecDeque::new();
+        let mut ahead = 0;
+        for poll in 0..13 {
+            ahead = look_ahead(&mut demand, poll * 5_000, 600 * MIB + poll * 8 * MIB, gap);
+        }
+        assert_eq!(ahead, 16 * MIB);
+        // One jump of 92 MiB: the shortfall asks for it; the look-ahead
+        // adds about two thirds, not the same again for every poll.
+        let mut demand = VecDeque::new();
+        look_ahead(&mut demand, 0, 600 * MIB, gap);
+        let jump = look_ahead(&mut demand, 5_000, 692 * MIB, gap);
+        assert!(jump > 0 && jump < 92 * MIB, "{jump}");
+        // It stops rising: once the window has passed, nothing again.
+        for poll in 2..16 {
+            ahead = look_ahead(&mut demand, poll * 5_000, 692 * MIB, gap);
+        }
+        assert_eq!(ahead, 0);
+        // Falling: nothing.
+        assert_eq!(look_ahead(&mut demand, 80_000, 500 * MIB, gap), 0);
+    }
+
+    #[test]
     fn invalid_sample_clears_reclaim_readiness() {
         let mut estimator = TargetEstimator::new(config()).expect("estimator");
         estimator.state = TargetEstimatorState {
@@ -905,6 +997,7 @@ mod tests {
                 target_now_bytes: 4 * GIB,
                 floor_now_bytes: 3 * GIB,
             }]),
+            demand: VecDeque::new(),
         };
         assert!(estimator
             .estimate(
@@ -1007,7 +1100,17 @@ mod tests {
             assert!(estimator.state.history.len() <= MAX_TARGET_HISTORY_ENTRIES);
             if sequence == 10_000 {
                 assert!(result.history_ready);
-                assert_eq!(result.desired_bytes, 9 * GIB + 128 * MIB);
+                // The spike's target survives compression: its demand and
+                // band, and what growth looked ahead to as it jumped.
+                let peak = estimator
+                    .state
+                    .history
+                    .iter()
+                    .map(|entry| entry.target_now_bytes)
+                    .max()
+                    .unwrap();
+                assert!(peak > 9 * GIB + 128 * MIB, "{peak}");
+                assert_eq!(result.desired_bytes, peak);
             }
         }
     }

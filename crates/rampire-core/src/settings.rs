@@ -182,21 +182,28 @@ impl GlobalSettings {
         self.poll_interval_seconds * 6000
     }
 
-    /// The guest policy for one VM. Every size comes from `free_ram_bytes`
-    /// ([`FREE_RAM_BYTES`]), the memory the guest keeps free above what it
-    /// uses:
+    /// The guest policy for one VM. How much it asks for is worked out
+    /// from what it is doing ([`crate::target_controller`]): the shortfall
+    /// below `free_ram_bytes` free, half a band above that, and what demand
+    /// will add, at the rate it has been rising, before it can ask again.
+    /// Here are only the floors under that:
     ///
-    /// - the guest asks for more when free memory falls below `free_ram`;
-    /// - reclaim never plans below half of it, and that half is also the
-    ///   level treated as critical;
-    /// - memory is returned only once the surplus exceeds an eighth of it;
-    /// - growth and reclaim both leave a sixteenth of it above `free_ram`, so
-    ///   ordinary fluctuation at the threshold causes no resize;
-    /// - native Low pressure asks for at least half of it.
+    /// - `free_ram_bytes` ([`FREE_RAM_BYTES`]), the cushion: it asks for
+    ///   more when its free memory falls below this;
+    /// - `step_bytes`, the band: it returns memory only once its spare
+    ///   exceeds its recent peak demand and two of these, and native Low
+    ///   pressure asks for at least one;
+    /// - reclaim never plans below half the cushion, also the level treated
+    ///   as critical.
     ///
     /// `removal_step_bytes` bounds one removal request. Polling controls both
     /// workers and the corresponding freshness/gap bounds.
-    pub fn guest_policy(&self, free_ram_bytes: u64, removal_step_bytes: u64) -> GuestMemoryPolicy {
+    pub fn guest_policy(
+        &self,
+        free_ram_bytes: u64,
+        step_bytes: u64,
+        removal_step_bytes: u64,
+    ) -> GuestMemoryPolicy {
         let freshness = self.freshness_millis();
         GuestMemoryPolicy {
             target: TargetPolicyConfig {
@@ -207,9 +214,9 @@ impl GlobalSettings {
                 safe_floor_commit_reserve_bytes: free_ram_bytes / 2,
                 history_window_millis: 1_000,
                 maximum_gap_millis: self.poll_interval_seconds * 3000,
-                downward_hysteresis_bytes: free_ram_bytes / 8,
+                downward_hysteresis_bytes: 2 * step_bytes,
             },
-            grow_step_bytes: free_ram_bytes / 2,
+            grow_step_bytes: step_bytes,
             shrink_step_bytes: removal_step_bytes,
             host_status_max_age_millis: freshness,
             request_lifetime_millis: freshness,
@@ -259,12 +266,11 @@ pub struct VmSettings {
     pub review: Option<String>,
 }
 
-/// The memory every guest keeps free above what it is using: it asks for
-/// more when its free memory falls below this, and returns memory when it
-/// has more than this spare. Every policy size is derived from it
-/// ([`GlobalSettings::guest_policy`]). It was the setting `free_ram`; a
-/// person chooses only a VM's minimum and maximum. Sixteen device blocks
-/// of 2 MiB at the least, so an eighth of it is still whole blocks.
+/// The cushion every guest keeps free above what it is using: it asks for
+/// more when its free memory falls below this, and how much is worked out
+/// from what it is doing ([`GlobalSettings::guest_policy`]).
+/// It was the setting `free_ram`; a person chooses only a VM's minimum and
+/// maximum. Whole 2 MiB device blocks, as is half of it.
 pub const FREE_RAM_BYTES: u64 = 16 * MIB;
 
 /// Read any value and keep nothing of it.
@@ -328,10 +334,11 @@ impl VmSettings {
     /// about 2.2 GiB per removal.
     pub fn guest_policy(&self, globals: &GlobalSettings) -> GuestMemoryPolicy {
         let removal_step = match self.guest_os {
-            GuestOs::Windows => FREE_RAM_BYTES + FREE_RAM_BYTES / 2,
+            // A quarter of its maximum, in whole 2 MiB blocks.
+            GuestOs::Windows => (self.max_ram / 4 / (2 * MIB)).max(1) * (2 * MIB),
             GuestOs::Linux => self.max_ram,
         };
-        globals.guest_policy(FREE_RAM_BYTES, removal_step)
+        globals.guest_policy(FREE_RAM_BYTES, FREE_RAM_BYTES, removal_step)
     }
 
     /// The Windows service's install configuration. Its limits and policy
@@ -733,16 +740,20 @@ mod tests {
     }
 
     #[test]
-    fn every_policy_size_comes_from_the_built_in_free_ram() {
+    fn the_policy_has_floors_and_no_fixed_step() {
         let globals = GlobalSettings::default();
         let policy = vm("guest").guest_policy(&globals);
         policy.validate().unwrap();
+        // The cushion: asks for more below 16 MiB free.
         assert_eq!(policy.target.physical_reserve_bytes, 16 * MIB);
         assert_eq!(policy.target.commit_reserve_bytes, 16 * MIB);
         assert_eq!(policy.target.safe_floor_physical_reserve_bytes, 8 * MIB);
-        assert_eq!(policy.target.downward_hysteresis_bytes, 2 * MIB);
-        assert_eq!(policy.grow_step_bytes, 8 * MIB);
-        assert_eq!(policy.shrink_step_bytes, 24 * MIB);
+        // No fixed step: growth looks ahead by demand's own rate. The band
+        // and the least a native Low asks for are floors.
+        assert_eq!(policy.grow_step_bytes, 16 * MIB);
+        assert_eq!(policy.target.downward_hysteresis_bytes, 32 * MIB);
+        // Windows removes a quarter of its maximum at most.
+        assert_eq!(policy.shrink_step_bytes, 4 * GIB);
 
         // A file from before still has free_ram: it loads, and it is ignored.
         let linux: VmSettings = toml::from_str(

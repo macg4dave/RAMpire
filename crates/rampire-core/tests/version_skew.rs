@@ -92,7 +92,7 @@ fn host_status() -> HostMemoryStatus {
         current_bytes: GIB,
         result: None,
         guest_settings: Some(GuestSettings {
-            policy: globals.guest_policy(GIB / 2, 8 * GIB),
+            policy: globals.guest_policy(GIB / 2, GIB / 4, 8 * GIB),
             min_ram: GIB,
             max_ram: 9 * GIB,
             poll_interval_millis: globals.poll_interval_seconds * 1000,

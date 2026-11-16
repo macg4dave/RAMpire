@@ -352,7 +352,7 @@ mod tests {
 
     fn settings() -> GuestSettings {
         GuestSettings {
-            policy: GlobalSettings::default().guest_policy(2 * GIB, 3 * GIB),
+            policy: GlobalSettings::default().guest_policy(2 * GIB, 128 * MIB, 3 * GIB),
             min_ram: 2 * GIB,
             max_ram: 5 * GIB,
             poll_interval_millis: 1000,
