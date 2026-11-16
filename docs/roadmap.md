@@ -42,19 +42,6 @@ Work that is done goes in the [changelog](../CHANGELOG.md), not here.
   download fails it. apt and dnf now retry. Done looks like: images with
   the dependencies installed, kept between runs like the build container.
 
-## Controller
-
-- **One unreadable VM holds back the others.** A running VM the
-  controller can't read (just after it starts, before libvirt shows its
-  device's size; or one whose guest stopped publishing) is charged the
-  whole pool, since it could hold anything. Every other VM's growth is
-  then refused with "no free pool" until it can be read again. Seen on
-  2026-11-16 after a host restart. (A VM that is shut off is no longer
-  one of these: it holds nothing and is charged nothing.) Needs an owner
-  decision: charge such a VM what it last held (kept in the controller's
-  state) instead of the whole pool, or keep the safe choice and say so in
-  the TUI.
-
 ## Parked
 
 Not scheduled. Each needs an owner decision or an outside fix first.

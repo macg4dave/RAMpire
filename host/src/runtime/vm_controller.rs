@@ -144,13 +144,8 @@ where
             Err(_) if self.state_source.is_shut_off() => return Ok(self.observe_shut_off()),
             Err(error) => {
                 // Without an owned operation there is nothing to protect but
-                // the pool: hold at the last known charge. A VM that was off
-                // and has just started holds what its device plugs as it
-                // boots, which isn't known yet.
-                if std::mem::take(&mut self.shut_off) {
-                    self.outstanding_growth = None;
-                    self.last_charge = None;
-                }
+                // the pool: hold at the last known charge.
+                self.shut_off = false;
                 if !self.state_unavailable_reported {
                     self.log(&format!("event=live_state_unavailable reason={error}"));
                     self.state_unavailable_reported = true;
@@ -284,12 +279,7 @@ where
                 self.last_charge = Some((state.pool_charge(intent_target), state.block_size_bytes));
             }
             Err(_) if self.state_source.is_shut_off() => return self.observe_shut_off(),
-            Err(_) => {
-                if std::mem::take(&mut self.shut_off) {
-                    self.outstanding_growth = None;
-                    self.last_charge = None;
-                }
-            }
+            Err(_) => self.shut_off = false,
         }
         Observed::Held {
             charge: self.last_charge,
@@ -313,14 +303,16 @@ where
 
     /// This VM's input to the pool. Anything not executing a request asks
     /// for nothing beyond what it holds. A VM that is shut off holds
-    /// nothing. An otherwise unreadable VM (crashed, or a failing virsh)
-    /// keeps the memory it last held. A VM never read since startup, or
-    /// started since it was last read, could hold anything, so it is
-    /// charged the whole pool.
+    /// nothing. An unreadable VM (just started, crashed, or a failing virsh)
+    /// is charged what it last held, or, never read, the target of its own
+    /// unfinished command: never more, so it can't hold back a VM that
+    /// works. What it really holds is in the host's free memory, which
+    /// every growth is checked against.
     pub(super) fn pool_member(&self, observed: &Observed, pool_bytes: u64) -> PoolMember {
         let (charged_bytes, block_bytes, wanted) = match observed {
             Observed::Held { charge } => {
-                let (charged, block) = charge.unwrap_or((pool_bytes, MIN_BLOCK_SIZE_BYTES));
+                let (charged, block) =
+                    charge.unwrap_or((self.intent_target(), MIN_BLOCK_SIZE_BYTES));
                 (charged, block, 0)
             }
             // A stopping round never reaches allocation.
@@ -1032,7 +1024,7 @@ where
     }
 
     /// The recorded command's target; zero with none.
-    fn intent_target(&self) -> u64 {
+    pub(super) fn intent_target(&self) -> u64 {
         self.control
             .intent
             .as_ref()

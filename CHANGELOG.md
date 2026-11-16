@@ -9,6 +9,17 @@ A change someone using RAMpire would notice gets a line under
 turns that section into the release's entry, and the entry becomes the
 release's notes on GitHub ([releasing](docs/releasing.md)).
 
+## Unreleased
+
+- A VM the controller can't read no longer holds back the VMs that
+  work. Just after the host or a VM starts, before libvirt shows its
+  device's size, or while reading it fails, it was charged the whole
+  pool and all the host's free memory, and every other VM's growth was
+  refused with "no free pool". It is now charged what it last held, or
+  nothing if it hasn't been read since the controller started; every
+  growth is still checked against the host's real free memory and its
+  reserve. Its own requests wait until it can be read.
+
 ## 0.6.0 (2026-11-16)
 
 - A managed VM that is shut off no longer stops every other VM from

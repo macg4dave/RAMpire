@@ -270,8 +270,10 @@ where
             service_order(&self.vms[*index].pool_member(&observed[*index], u64::MAX))
         });
         let mut host = HostBudget {
+            // A VM never read is committed only to its own unfinished
+            // command; what it already holds is in the host's free memory.
             committed: self.vms.iter().fold(0_u64, |total, vm| {
-                total.saturating_add(vm.outstanding_growth.unwrap_or(u64::MAX))
+                total.saturating_add(vm.outstanding_growth.unwrap_or_else(|| vm.intent_target()))
             }),
         };
         let mut observed = observed.into_iter().map(Some).collect::<Vec<_>>();
@@ -841,7 +843,8 @@ mod tests {
         round(&mut runtime);
         assert_eq!(*running.targets.borrow(), [6 * GIB]);
 
-        // Once it starts, until it is read it could hold anything again.
+        // Once it starts, while it can't be read yet, it still holds back
+        // nothing.
         {
             let mut device = off.device.0.borrow_mut();
             device.off = false;
@@ -851,9 +854,54 @@ mod tests {
             .guest
             .send(Some(request(2, MemoryOperation::Add, 2 * GIB)));
         round(&mut runtime);
-        assert_eq!(*running.targets.borrow(), [6 * GIB]);
-        let empty = running.guest.last_result().expect("pool-empty result");
-        assert_eq!(empty.outcome, MemoryOutcome::PoolEmpty);
+        assert_eq!(*running.targets.borrow(), [6 * GIB, 8 * GIB]);
+    }
+
+    #[test]
+    fn a_vm_that_cant_be_read_holds_back_only_what_it_last_held() {
+        // One VM never read since the controller started (just after the
+        // host starts, before libvirt shows its size); another read once
+        // holding 3 GiB, then unreadable.
+        let never_read = Fixture::new("unread-never", 100, 0);
+        never_read.device.0.borrow_mut().starting = true;
+        let was_read = Fixture::new("unread-later", 100, 3 * GIB);
+        let working = Fixture::new("unread-working", 100, 4 * GIB);
+        let mut runtime = runtime(
+            vec![
+                never_read.controller(None),
+                was_read.controller(None),
+                working.controller(None),
+            ],
+            64 * GIB,
+            Some(10 * GIB),
+        );
+        round(&mut runtime);
+        was_read.device.0.borrow_mut().starting = true;
+        // The pool has 10 - 3 - 4 = 3 GiB free for the VM that works.
+        working
+            .guest
+            .send(Some(request(1, MemoryOperation::Add, 4 * GIB)));
+        round(&mut runtime);
+        assert_eq!(*working.targets.borrow(), [7 * GIB]);
+    }
+
+    #[test]
+    fn a_vm_that_cant_be_read_holds_back_no_host_memory() {
+        // The host has 6 GiB free and keeps 4 GiB: 2 GiB less the margin
+        // may grow, whatever a VM that can't be read holds.
+        let never_read = Fixture::new("unread-host", 100, 0);
+        never_read.device.0.borrow_mut().starting = true;
+        let working = Fixture::new("unread-host-working", 100, 4 * GIB);
+        working
+            .guest
+            .send(Some(request(1, MemoryOperation::Add, GIB)));
+        let mut runtime = runtime(
+            vec![never_read.controller(None), working.controller(None)],
+            6 * GIB,
+            None,
+        );
+        round(&mut runtime);
+        assert_eq!(*working.targets.borrow(), [5 * GIB]);
     }
 
     #[test]
