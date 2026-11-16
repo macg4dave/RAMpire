@@ -76,6 +76,8 @@ pub struct VmController<G, S, R> {
     /// again every poll and reported once until one goes through.
     settle_unavailable_reported: bool,
     state_unavailable_reported: bool,
+    /// The VM was last seen shut off, holding nothing.
+    shut_off: bool,
     guest_unavailable_reported: bool,
     /// Separate from `guest_unavailable_reported`: a successful status write
     /// every poll must not re-arm the read-failure report.
@@ -110,6 +112,7 @@ impl<G, S, R> VmController<G, S, R> {
             unowned_divergence_reported: false,
             settle_unavailable_reported: false,
             state_unavailable_reported: false,
+            shut_off: false,
             guest_unavailable_reported: false,
             status_unpublished_reported: false,
             health_report: None,
@@ -138,9 +141,16 @@ where
                     charge: self.last_charge,
                 });
             }
+            Err(_) if self.state_source.is_shut_off() => return Ok(self.observe_shut_off()),
             Err(error) => {
                 // Without an owned operation there is nothing to protect but
-                // the pool: hold at the last known charge.
+                // the pool: hold at the last known charge. A VM that was off
+                // and has just started holds what its device plugs as it
+                // boots, which isn't known yet.
+                if std::mem::take(&mut self.shut_off) {
+                    self.outstanding_growth = None;
+                    self.last_charge = None;
+                }
                 if !self.state_unavailable_reported {
                     self.log(&format!("event=live_state_unavailable reason={error}"));
                     self.state_unavailable_reported = true;
@@ -151,6 +161,7 @@ where
             }
         };
         self.state_unavailable_reported = false;
+        self.shut_off = false;
         let intent_target = self.intent_target();
         self.outstanding_growth = Some(state.outstanding_growth(intent_target));
         let charge = (state.pool_charge(intent_target), state.block_size_bytes);
@@ -265,20 +276,47 @@ where
 
     /// A stopped VM still holds memory, so the pool keeps charging it.
     pub(super) fn observe_stopped(&mut self) -> Observed {
-        if let Ok(state) = self.live_state() {
-            let intent_target = self.intent_target();
-            self.outstanding_growth = Some(state.outstanding_growth(intent_target));
-            self.last_charge = Some((state.pool_charge(intent_target), state.block_size_bytes));
+        match self.live_state() {
+            Ok(state) => {
+                self.shut_off = false;
+                let intent_target = self.intent_target();
+                self.outstanding_growth = Some(state.outstanding_growth(intent_target));
+                self.last_charge = Some((state.pool_charge(intent_target), state.block_size_bytes));
+            }
+            Err(_) if self.state_source.is_shut_off() => return self.observe_shut_off(),
+            Err(_) => {
+                if std::mem::take(&mut self.shut_off) {
+                    self.outstanding_growth = None;
+                    self.last_charge = None;
+                }
+            }
         }
         Observed::Held {
             charge: self.last_charge,
         }
     }
 
+    /// A VM that is shut off holds no memory: nothing of the pool or the
+    /// host is charged for it until it starts and is read again.
+    fn observe_shut_off(&mut self) -> Observed {
+        if !self.shut_off {
+            self.log("event=vm_shut_off charge_bytes=0");
+            self.shut_off = true;
+        }
+        self.state_unavailable_reported = false;
+        self.outstanding_growth = Some(0);
+        self.last_charge = Some((0, MIN_BLOCK_SIZE_BYTES));
+        Observed::Held {
+            charge: self.last_charge,
+        }
+    }
+
     /// This VM's input to the pool. Anything not executing a request asks
-    /// for nothing beyond what it holds. An unreadable VM (crashed, off, or a
-    /// failing virsh) keeps the memory it last held. A VM never read since
-    /// startup could hold anything, so it is charged the whole pool.
+    /// for nothing beyond what it holds. A VM that is shut off holds
+    /// nothing. An otherwise unreadable VM (crashed, or a failing virsh)
+    /// keeps the memory it last held. A VM never read since startup, or
+    /// started since it was last read, could hold anything, so it is
+    /// charged the whole pool.
     pub(super) fn pool_member(&self, observed: &Observed, pool_bytes: u64) -> PoolMember {
         let (charged_bytes, block_bytes, wanted) = match observed {
             Observed::Held { charge } => {

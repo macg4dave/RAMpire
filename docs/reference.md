@@ -193,7 +193,7 @@ logged as `event=operator_change action=tui_failed`.
 |---|---|
 | `rampire init [--host-reserve SIZE]` | Checks the host as `doctor` does and stops on a problem; then asks the host reserve (the recommended one filled in; `--host-reserve` answers it), suggests `global.toml` from the host's memory and its VMs (never over an existing one), creates the configuration folders, applies, and enables and starts the controller |
 | `rampire doctor [VM]` | Checks libvirt 10.1+, QEMU 8.2+ with virtio-mem's options, the service account, the socket group, libvirt access, an applied configuration and the controller running, with the fix for each problem, and gives one line per managed VM. With a VM, everything about it: its saved and running definition (device, control channel, balloon, memory slots), its recorded setup, a latch, the guest's publication and readiness report (driver, onlining, pressure signal, `max_ram` against the movable zone), and the last request and what held it back |
-| `rampire check` | Checks the draft and every VM against its recorded setup; changes nothing |
+| `rampire check` | Checks the draft and every VM against its recorded setup; changes nothing. A VM that is shut off has no live setup to compare, so only its record is checked; the controller compares it again before it first resizes it |
 
 ### Changing the configuration
 

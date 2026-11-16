@@ -11,6 +11,19 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 
 ## Unreleased
 
+- A managed VM that is shut off no longer stops every other VM from
+  growing. The controller couldn't read a stopped VM's device, so it
+  charged it the whole pool and the host's free memory as though it
+  could hold anything, and every request to grow was refused with "no
+  free pool". A VM that is off now holds nothing of either (logged once
+  as `vm_shut_off`); once it starts, it is charged as before until it
+  can be read.
+- A managed VM that is shut off no longer fails `rampire check`. Its
+  live setup was read from QEMU, which a stopped VM doesn't have, so
+  `apply`, `vm add`, `set` and `vm upgrade` refused every VM while one
+  managed VM was off, with a fix (`rampire apply`) that couldn't work.
+  A VM that is off now passes on its record alone; it is compared with
+  its live setup again before it is first resized.
 - The controller no longer needs polkit once it has started. Before
   each resize it re-checked the VM's recorded setup with `virsh`, a new
   libvirt connection and polkit check each time; with polkit out of

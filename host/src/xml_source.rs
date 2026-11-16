@@ -7,6 +7,21 @@ use crate::virsh::VirshCommand;
 /// Reads a VM's virtio-mem device state.
 pub trait MemoryStateSource {
     fn memory_state(&self) -> Result<VirtioMemState, String>;
+
+    /// Whether the VM is shut off, so its device holds no memory. Asked
+    /// only when its state can't be read; anything else, a VM that has just
+    /// started included, is not off.
+    fn is_shut_off(&self) -> bool {
+        false
+    }
+}
+
+/// Whether a domain's live XML is a shut-off domain's: libvirt gives a
+/// running one the `id` of its QEMU process and an inactive one none.
+pub fn is_inactive_domain_xml(xml: &str) -> bool {
+    xml.find("<domain")
+        .and_then(|start| xml[start..].find('>').map(|end| &xml[start..start + end]))
+        .is_some_and(|tag| !tag.contains(" id="))
 }
 
 pub struct VirshXmlSource<C> {
@@ -35,6 +50,12 @@ impl<C: VirshCommand> MemoryStateSource for VirshXmlSource<C> {
             .map(|snapshot| snapshot.memory)
             .map_err(|error| error.to_string())
     }
+
+    fn is_shut_off(&self) -> bool {
+        self.command
+            .run(&["dumpxml".to_owned(), self.vm_name.clone()])
+            .is_ok_and(|xml| is_inactive_domain_xml(&xml))
+    }
 }
 
 #[cfg(test)]
@@ -50,6 +71,18 @@ mod tests {
             Ok(self.xml.clone())
         }
     }
+    #[test]
+    fn a_domain_without_a_process_id_is_shut_off() {
+        assert!(is_inactive_domain_xml(
+            "<domain type='kvm'>\n  <name>guest</name>"
+        ));
+        assert!(!is_inactive_domain_xml(
+            "<domain type='kvm' id='7'>\n  <name>guest</name>"
+        ));
+        // Unreadable XML is not taken for a VM that is off.
+        assert!(!is_inactive_domain_xml(""));
+    }
+
     #[test]
     fn reads_the_configured_alias_only() {
         let xml = "<domain><memory model='virtio-mem'><target><size unit='MiB'>8</size><block unit='MiB'>2</block><requested unit='MiB'>4</requested><current unit='MiB'>4</current></target><alias name='memory0'/></memory></domain>".to_owned();

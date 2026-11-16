@@ -355,6 +355,11 @@ mod tests {
         stall_at: Option<u64>,
         /// A growth stops plugging memory at this allocation.
         grow_stall_at: Option<u64>,
+        /// The VM is shut off: libvirt shows no current size, as for a VM
+        /// that has just started, but its domain has no process.
+        off: bool,
+        /// The VM has started and its current size isn't shown yet.
+        starting: bool,
     }
 
     /// A device that converges toward `requested` whenever it is read.
@@ -372,6 +377,8 @@ mod tests {
                 },
                 stall_at: None,
                 grow_stall_at: None,
+                off: false,
+                starting: false,
             })))
         }
 
@@ -383,6 +390,9 @@ mod tests {
     impl MemoryStateSource for Device {
         fn memory_state(&self) -> Result<VirtioMemState, String> {
             let mut device = self.0.borrow_mut();
+            if device.off || device.starting {
+                return Err("virtio-mem XML is missing current".to_owned());
+            }
             let requested = device.live.requested_bytes;
             device.live.current_bytes = if requested >= device.live.current_bytes {
                 requested
@@ -392,6 +402,10 @@ mod tests {
                 requested.max(device.stall_at.unwrap_or(0))
             };
             Ok(device.live)
+        }
+
+        fn is_shut_off(&self) -> bool {
+            self.0.borrow().off
         }
     }
 
@@ -809,6 +823,37 @@ mod tests {
         assert_eq!(empty.actual_bytes, 0);
         drop(runtime);
         assert!(low.journal().journal.result.is_some(), "journalled");
+    }
+
+    #[test]
+    fn a_shut_off_vm_holds_nothing_of_the_pool_or_the_host() {
+        let off = Fixture::new("shut-off", 100, 0);
+        off.device.0.borrow_mut().off = true;
+        let running = Fixture::new("shut-off-peer", 100, 4 * GIB);
+        running
+            .guest
+            .send(Some(request(1, MemoryOperation::Add, 2 * GIB)));
+        let mut runtime = runtime(
+            vec![off.controller(None), running.controller(None)],
+            64 * GIB,
+            Some(10 * GIB),
+        );
+        round(&mut runtime);
+        assert_eq!(*running.targets.borrow(), [6 * GIB]);
+
+        // Once it starts, until it is read it could hold anything again.
+        {
+            let mut device = off.device.0.borrow_mut();
+            device.off = false;
+            device.starting = true;
+        }
+        running
+            .guest
+            .send(Some(request(2, MemoryOperation::Add, 2 * GIB)));
+        round(&mut runtime);
+        assert_eq!(*running.targets.borrow(), [6 * GIB]);
+        let empty = running.guest.last_result().expect("pool-empty result");
+        assert_eq!(empty.outcome, MemoryOutcome::PoolEmpty);
     }
 
     #[test]

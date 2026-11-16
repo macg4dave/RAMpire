@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use rampire_host::attestation::AttestedCompatibilitySource;
+use rampire_host::attestation::{read_attestation, AttestedCompatibilitySource};
 use rampire_host::compatibility_source::CompatibilitySource;
 use rampire_host::config::{HostConfig, HostSettings};
 use rampire_host::virsh::{Virsh, VirshCommand, VirshError};
@@ -77,12 +77,22 @@ fn check_vm(config: &HostConfig) -> Result<(), String> {
         config.command_timeout,
         &config.libvirt_uri,
     );
-    if !domain_exists(&virsh, &config.vm_name)? {
+    check_domain(&virsh, config)
+}
+
+/// Check one VM through `virsh`. A VM with no QEMU process (shut off or
+/// crashed) has no live evidence to compare: its record must still read,
+/// and the controller compares it with the live VM before it resizes it.
+fn check_domain(virsh: &impl VirshCommand, config: &HostConfig) -> Result<(), String> {
+    let Some(state) = domain_state(virsh, &config.vm_name)? else {
         return Err(format!("{NO_DOMAIN} {}", config.vm_name));
+    };
+    if matches!(state.as_str(), "shut off" | "crashed") {
+        return read_attestation(Path::new(&config.compatibility_attestation_path)).map(drop);
     }
     // Reads the attestation, then compares it with the live evidence.
     AttestedCompatibilitySource::new(
-        &virsh,
+        virsh,
         &config.vm_name,
         &config.alias,
         config.guest_os,
@@ -93,11 +103,12 @@ fn check_vm(config: &HostConfig) -> Result<(), String> {
     .map_err(|error| format!("live compatibility: {error}"))
 }
 
-/// Whether libvirt knows the VM. Any other failure to ask is an error.
-fn domain_exists(virsh: &Virsh, vm: &str) -> Result<bool, String> {
+/// The VM's state as `virsh domstate` names it, or `None` when libvirt
+/// doesn't know it. Any other failure to ask is an error.
+fn domain_state(virsh: &impl VirshCommand, vm: &str) -> Result<Option<String>, String> {
     match virsh.run(&["domstate".to_owned(), vm.to_owned()]) {
-        Ok(_) => Ok(true),
-        Err(VirshError::Failed { stderr, .. }) if is_missing_domain(&stderr) => Ok(false),
+        Ok(state) => Ok(Some(state.trim().to_owned())),
+        Err(VirshError::Failed { stderr, .. }) if is_missing_domain(&stderr) => Ok(None),
         Err(error) => Err(format!("ask libvirt about the domain: {error}")),
     }
 }
@@ -163,6 +174,104 @@ error: Domain not found: no domain with matching name 'gone'"
              problem: old: libvirt has no domain old\n  fix: rampire vm remove old\n"
         );
         assert!(!text(&report, true).contains("ok: web"));
+    }
+
+    /// libvirt with one VM in `state`, which refuses QMP as libvirt does
+    /// for a VM that isn't running.
+    struct OneVm {
+        state: &'static str,
+    }
+
+    impl VirshCommand for OneVm {
+        fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
+            match arguments.first().map(String::as_str) {
+                Some("domstate") => Ok(format!("{}\n", self.state)),
+                _ => Err(VirshError::Failed {
+                    status: "exit status: 1".to_owned(),
+                    stderr: "error: Requested operation is not valid: domain is not running"
+                        .to_owned(),
+                }),
+            }
+        }
+    }
+
+    #[test]
+    fn a_shut_off_vm_passes_on_its_record_alone() {
+        use rampire_host::attestation::{
+            read_review, CompatibilityAttestation, LiveCompatibilityEvidence,
+        };
+        let root = std::env::temp_dir().join(format!("rampire-check-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/config");
+        let mut config = HostSettings::load(&fixture)
+            .expect("fixture loads")
+            .vms
+            .remove(0);
+        config.compatibility_attestation_path = root.join("vm.json").display().to_string();
+
+        // Without its record, a VM that is off still fails.
+        let missing = check_domain(&OneVm { state: "shut off" }, &config);
+
+        let answer =
+            |value: &str, source: &str| format!("{{ value = {value}, source = \"{source}\" }}");
+        let review_path = root.join("review.toml");
+        std::fs::write(
+            &review_path,
+            format!(
+                "version = 1\nguest_os = \"{}\"\nworkload_reviewed = {}\n{}memory_slot_budget = {}\nvfio_mapping_budget = {}\nguest_driver_version = {}\n",
+                match config.guest_os {
+                    rampire_core::settings::GuestOs::Linux => "linux",
+                    rampire_core::settings::GuestOs::Windows => "windows",
+                },
+                answer("true", "confirmed"),
+                [
+                    "no_vdpa",
+                    "no_rdma_migration",
+                    "no_vfio_nvme",
+                    "no_mlock",
+                    "no_secure_virtualization",
+                    "no_unsupported_vhost_user",
+                    "balloon_resize_inactive",
+                ]
+                .iter()
+                .map(|key| format!("{key} = {}\n", answer("true", "detected")))
+                .collect::<String>(),
+                answer("1", "confirmed"),
+                answer("1", "confirmed"),
+                answer("\"driver 1\"", "confirmed"),
+            ),
+        )
+        .unwrap();
+        let live = LiveCompatibilityEvidence {
+            vm_name: config.vm_name.clone(),
+            device_alias: config.alias.clone(),
+            domain_xml_sha256: "a".repeat(64),
+            qemu_argv_sha256: "b".repeat(64),
+            libvirt_version_sha256: "c".repeat(64),
+            qemu_version: serde_json::json!({"qemu": {"major": 9, "minor": 2, "micro": 0}, "package": "qemu-9.2"}),
+            dynamic_memslots: true,
+            unplugged_inaccessible: true,
+        };
+        let document =
+            CompatibilityAttestation::new(live, read_review(&review_path).expect("review"))
+                .expect("attestation");
+        std::fs::write(
+            &config.compatibility_attestation_path,
+            document.to_pretty_json().unwrap(),
+        )
+        .unwrap();
+
+        let off = check_domain(&OneVm { state: "shut off" }, &config);
+        let crashed = check_domain(&OneVm { state: "crashed" }, &config);
+        // A running VM is still compared with its live evidence.
+        let running = check_domain(&OneVm { state: "running" }, &config);
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(missing.unwrap_err().contains("attestation"));
+        assert_eq!(off, Ok(()));
+        assert_eq!(crashed, Ok(()));
+        assert!(running.unwrap_err().contains("domain is not running"));
     }
 
     #[test]

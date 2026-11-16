@@ -50,6 +50,7 @@ A request is described by `session_id`, `sequence`, `operation` (`Add` or
 | `actuation_latched` | `reason` | Resizing stops until `rampire recover` |
 | `vm_stopped` | `reason` | The controller stops acting for this VM; others continue |
 | `live_state_unavailable` | `reason` | The device's state couldn't be read |
+| `vm_shut_off` | `charge_bytes` | The VM is shut off: it holds no memory, and nothing of the pool or the host is charged for it until it starts |
 | `guest_input_invalid` | `reason` | No valid publication from the guest |
 | `guest_status_unpublished` | `reason` | The host status couldn't reach the guest |
 | `publication_copy_failed` | `reason` | The copy for `status`, `top` and `watch` couldn't be written |
