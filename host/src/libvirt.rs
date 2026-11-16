@@ -948,13 +948,19 @@ mod tests {
             "qemu+unix:///system?socket=/nonexistent/rampire-test-sock",
             Duration::from_secs(5),
         );
+        let installed = [
+            "/usr/lib64/libvirt.so.0",
+            "/usr/lib/x86_64-linux-gnu/libvirt.so.0",
+        ]
+        .iter()
+        .any(|path| std::path::Path::new(path).exists());
         match session.run(&arguments(&["dumpxml", "guest"])) {
+            // A host without the library (the build container): the
+            // session can't start, and there is nothing to show.
+            Some(Err(VirshError::Failed { status, .. }))
+                if !installed && status == "libvirt session unavailable" => {}
             Some(Err(error)) => assert!(error.is_unavailable(), "{error}"),
-            // A host without the library: nothing to show.
-            other => assert!(
-                !std::path::Path::new("/usr/lib64/libvirt.so.0").exists(),
-                "{other:?}"
-            ),
+            other => assert!(!installed, "{other:?}"),
         }
     }
 
