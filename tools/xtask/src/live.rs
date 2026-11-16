@@ -921,8 +921,8 @@ fn choose(run: &mut Run, term: &Term, vm: &str) -> bool {
 
 /// Add `vm` in the TUI as a person does: its menu's Add, the form, then
 /// the questions. The task's window must open at once.
-fn add_in_tui(run: &mut Run, vm: &str) -> Result<(), String> {
-    let (mut tui, title) = start_add(run, vm)?;
+fn add_in_tui(run: &mut Run, vm: &str, sizes: Option<(&str, &str)>) -> Result<(), String> {
+    let (mut tui, title) = start_add(run, vm, sizes)?;
     match tui
         .answer_task(run, &title, &answers_add(), Duration::from_secs(900))
         .as_deref()
@@ -936,9 +936,14 @@ fn add_in_tui(run: &mut Run, vm: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the TUI, choose `vm`, press Add and save the form: the task's
-/// window must open at once. The TUI and the task's title.
-fn start_add(run: &mut Run, vm: &str) -> Result<(Term, String), String> {
+/// Open the TUI, choose `vm`, press Add, type `sizes` (Minimum and
+/// Maximum RAM) over the suggested ones when given, and save the form: the
+/// task's window must open at once. The TUI and the task's title.
+fn start_add(
+    run: &mut Run,
+    vm: &str,
+    sizes: Option<(&str, &str)>,
+) -> Result<(Term, String), String> {
     let tui = Term::start("rampire");
     if !tui.wait_for(run, "VMS", Duration::from_secs(30), true) {
         return Err("the TUI didn't open".to_owned());
@@ -949,6 +954,16 @@ fn start_add(run: &mut Run, vm: &str) -> Result<(Term, String), String> {
     tui.keys(&["a"]);
     if !tui.wait_for(run, &format!("Add {vm}"), Duration::from_secs(10), true) {
         return Err("the Add form didn't open".to_owned());
+    }
+    if let Some((min, max)) = sizes {
+        // Priority, then Minimum RAM, then Maximum RAM.
+        for size in [min, max] {
+            tui.keys(&["Tab"]);
+            tui.keys(&["C-a"]);
+            tui.keys(&["C-k"]);
+            tui.text(size);
+        }
+        run.note(format!("typed Minimum RAM {min} and Maximum RAM {max}"));
     }
     tui.keys(&["Enter"]);
     let title = format!("rampire vm add {vm}");
@@ -970,7 +985,7 @@ fn saved_definition(vm: &str) -> Result<String, String> {
 fn add_declined(run: &mut Run) -> Result<(), String> {
     let vm = test_vm(run, System::Debian)?;
     let before = saved_definition(&vm)?;
-    let (mut tui, title) = start_add(run, &vm)?;
+    let (mut tui, title) = start_add(run, &vm, None)?;
     let mut answers = vec![("Add ", Answer::No)];
     answers.extend(answers_common());
     match tui
@@ -1003,7 +1018,7 @@ fn add_declined(run: &mut Run) -> Result<(), String> {
 fn add_cancelled(run: &mut Run) -> Result<(), String> {
     let vm = test_vm(run, System::Debian)?;
     let before = saved_definition(&vm)?;
-    let (mut tui, title) = start_add(run, &vm)?;
+    let (mut tui, title) = start_add(run, &vm, None)?;
     let mut answers = answers_add();
     // Asked once the controller has the VM, when cancelling came too late.
     answers.push(("Shut ", Answer::Yes));
@@ -1047,10 +1062,24 @@ fn add_cancelled(run: &mut Run) -> Result<(), String> {
     Ok(())
 }
 
+/// Added with sizes of its own, not the VM's present RAM: it must come
+/// back starting with its minimum, its device holding the rest.
 fn add_running(run: &mut Run) -> Result<(), String> {
     let vm = test_vm(run, System::Debian)?;
-    add_in_tui(run, &vm)?;
+    // The test VMs are made with 1536 MiB.
+    add_in_tui(run, &vm, Some(("1GB", "3GB")))?;
     check_healthy(run, &vm);
+    let saved = saved_definition(&vm)?;
+    let boots_with_minimum = saved.contains("memory='1048576' unit='KiB'");
+    let device_holds_rest = saved.contains("<size unit='KiB'>2097152</size>");
+    if boots_with_minimum && device_holds_rest {
+        run.note(format!("{vm} starts with 1 GiB and its device holds 2 GiB"));
+    } else {
+        run.fail(
+            format!("{vm}'s definition isn't fitted to 1GB to 3GB (cell 1 GiB: {boots_with_minimum}, device 2 GiB: {device_holds_rest})"),
+            Some(saved),
+        );
+    }
     Ok(())
 }
 
@@ -1065,7 +1094,7 @@ fn add_off(run: &mut Run) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_secs(3));
     }
-    add_in_tui(run, &vm)?;
+    add_in_tui(run, &vm, None)?;
     check_healthy(run, &vm);
     Ok(())
 }
@@ -1109,20 +1138,32 @@ fn restart_open(run: &mut Run) -> Result<(), String> {
     Ok(())
 }
 
-/// A setting changed with the command, applied, taken by the controller.
+/// A new minimum set with the command: the definition is fitted to it,
+/// the restart it takes is asked and done, and the VM comes back starting
+/// with it, healthy.
 fn settings(run: &mut Run) -> Result<(), String> {
     let vm = System::Debian.vm();
-    let mut term = Term::start(&format!("rampire set {vm} max_ram=3GB"));
-    let mut answers = vec![("Apply", Answer::Yes)];
+    let command = format!("rampire set {vm} min_ram=1536MB");
+    let mut term = Term::start(&command);
+    let mut answers = vec![
+        ("Apply", Answer::Yes),
+        ("That takes a restart", Answer::Yes),
+    ];
     answers.extend(answers_common());
     let code = term.answer_until_exit(run, &answers, Duration::from_secs(600))?;
     if code != 0 {
-        run.fail(
-            format!("set {vm} max_ram=3GB exited {code}"),
-            Some(term.screen()),
-        );
+        run.fail(format!("{command} exited {code}"), Some(term.screen()));
     }
     check_healthy(run, &vm);
+    let saved = saved_definition(&vm)?;
+    if saved.contains("memory='1572864' unit='KiB'") {
+        run.note(format!("{vm} now starts with 1536 MiB"));
+    } else {
+        run.fail(
+            format!("{vm}'s definition doesn't start it with 1536 MiB after {command}"),
+            Some(saved),
+        );
+    }
     Ok(())
 }
 

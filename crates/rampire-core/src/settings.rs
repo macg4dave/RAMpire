@@ -103,7 +103,7 @@ fn linux_removal_retry_after_seconds(retries: u32) -> u64 {
 pub const GLOBAL_FILE: &str = "global.toml";
 /// The folder of VM settings files, in the configuration directory.
 pub const VMS_DIRECTORY: &str = "vms.d";
-use crate::units::GIB;
+use crate::units::{GIB, MIB};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -182,8 +182,9 @@ impl GlobalSettings {
         self.poll_interval_seconds * 6000
     }
 
-    /// The guest policy for one VM. Every size comes from the VM's
-    /// `free_ram`, the memory the guest keeps free above what it uses:
+    /// The guest policy for one VM. Every size comes from `free_ram_bytes`
+    /// ([`FREE_RAM_BYTES`]), the memory the guest keeps free above what it
+    /// uses:
     ///
     /// - the guest asks for more when free memory falls below `free_ram`;
     /// - reclaim never plans below half of it, and that half is also the
@@ -232,11 +233,15 @@ pub struct VmSettings {
     pub min_ram: u64,
     #[serde(with = "crate::units::byte_size")]
     pub max_ram: u64,
-    /// Memory the guest keeps free above what it is using. It asks for more
-    /// when free memory falls below this and returns memory when it has more
-    /// than this spare. Every policy size is derived from it.
-    #[serde(with = "crate::units::byte_size")]
-    pub free_ram: u64,
+    /// `free_ram`, a setting once: files written before it went still have
+    /// it, and it is read and ignored. [`FREE_RAM_BYTES`] is used instead.
+    #[serde(
+        default,
+        rename = "free_ram",
+        skip_serializing,
+        deserialize_with = "ignore_value"
+    )]
+    pub retired_free_ram: (),
     /// Omitted means Windows.
     #[serde(default, skip_serializing_if = "GuestOs::is_windows")]
     pub guest_os: GuestOs,
@@ -254,6 +259,19 @@ pub struct VmSettings {
     pub review: Option<String>,
 }
 
+/// The memory every guest keeps free above what it is using: it asks for
+/// more when its free memory falls below this, and returns memory when it
+/// has more than this spare. Every policy size is derived from it
+/// ([`GlobalSettings::guest_policy`]). It was the setting `free_ram`; a
+/// person chooses only a VM's minimum and maximum. Sixteen device blocks
+/// of 2 MiB at the least, so an eighth of it is still whole blocks.
+pub const FREE_RAM_BYTES: u64 = 16 * MIB;
+
+/// Read any value and keep nothing of it.
+fn ignore_value<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_| ())
+}
+
 impl VmSettings {
     pub fn validate(&self) -> Result<(), String> {
         validate_vm_name(&self.vm_name)?;
@@ -269,16 +287,6 @@ impl VmSettings {
             validate_name("review profile", review)?;
         }
         validate_ram_limits(self.min_ram, self.max_ram)?;
-        // An eighth of it must still be a whole number of device blocks.
-        let unit = 8 * crate::MIN_BLOCK_SIZE_BYTES;
-        if self.free_ram == 0
-            || !self.free_ram.is_multiple_of(unit)
-            || self.free_ram >= self.max_ram
-        {
-            return Err(format!(
-                "free_ram must be a positive multiple of {unit} bytes (and of eight live device blocks) and less than max_ram"
-            ));
-        }
         match self.guest_os {
             GuestOs::Windows => self.validate_windows(),
             GuestOs::Linux => {
@@ -320,10 +328,10 @@ impl VmSettings {
     /// about 2.2 GiB per removal.
     pub fn guest_policy(&self, globals: &GlobalSettings) -> GuestMemoryPolicy {
         let removal_step = match self.guest_os {
-            GuestOs::Windows => self.free_ram + self.free_ram / 2,
+            GuestOs::Windows => FREE_RAM_BYTES + FREE_RAM_BYTES / 2,
             GuestOs::Linux => self.max_ram,
         };
-        globals.guest_policy(self.free_ram, removal_step)
+        globals.guest_policy(FREE_RAM_BYTES, removal_step)
     }
 
     /// The Windows service's install configuration. Its limits and policy
@@ -599,7 +607,7 @@ mod tests {
             review: None,
             min_ram: 4 * GIB,
             max_ram: 16 * GIB,
-            free_ram: 2 * GIB,
+            retired_free_ram: (),
             vm_name: name.to_owned(),
             guest_os: GuestOs::Windows,
             install_path: Some(r"C:\Program Files\RAMpire\rampire-guest.exe".to_owned()),
@@ -725,42 +733,36 @@ mod tests {
     }
 
     #[test]
-    fn every_policy_size_comes_from_the_vm_free_ram_setting() {
+    fn every_policy_size_comes_from_the_built_in_free_ram() {
         let globals = GlobalSettings::default();
-        let mut windows = vm("guest");
-        let policy = windows.guest_policy(&globals);
+        let policy = vm("guest").guest_policy(&globals);
         policy.validate().unwrap();
-        assert_eq!(policy.target.physical_reserve_bytes, 2 * GIB);
-        assert_eq!(policy.target.commit_reserve_bytes, 2 * GIB);
-        assert_eq!(policy.target.safe_floor_physical_reserve_bytes, GIB);
-        assert_eq!(policy.target.downward_hysteresis_bytes, GIB / 4);
-        assert_eq!(policy.grow_step_bytes, GIB);
-        assert_eq!(policy.shrink_step_bytes, 3 * GIB);
+        assert_eq!(policy.target.physical_reserve_bytes, 16 * MIB);
+        assert_eq!(policy.target.commit_reserve_bytes, 16 * MIB);
+        assert_eq!(policy.target.safe_floor_physical_reserve_bytes, 8 * MIB);
+        assert_eq!(policy.target.downward_hysteresis_bytes, 2 * MIB);
+        assert_eq!(policy.grow_step_bytes, 8 * MIB);
+        assert_eq!(policy.shrink_step_bytes, 24 * MIB);
 
+        // A file from before still has free_ram: it loads, and it is ignored.
         let linux: VmSettings = toml::from_str(
             "min_ram='2GB'\nmax_ram='5GB'\nfree_ram='512MB'\nguest_os='linux'\nalias='memory0'\npriority=1",
         )
         .unwrap();
         let policy = linux.guest_policy(&globals);
         policy.validate().unwrap();
-        assert_eq!(policy.target.physical_reserve_bytes, GIB / 2);
-        assert_eq!(policy.target.safe_floor_physical_reserve_bytes, GIB / 4);
-        assert_eq!(policy.target.downward_hysteresis_bytes, GIB / 16);
+        assert_eq!(policy.target.physical_reserve_bytes, 16 * MIB);
         assert_eq!(
             policy.shrink_step_bytes,
             5 * GIB,
             "Linux returns its surplus at once"
         );
-
-        for invalid in [0, GIB / 2 + 1, 16 * GIB] {
-            windows.free_ram = invalid;
-            assert!(windows.validate().is_err(), "{invalid}");
-        }
-        assert!(
-            toml::from_str::<VmSettings>("min_ram='2GB'\nmax_ram='5GB'\nalias='m'\npriority=1")
-                .is_err(),
-            "free_ram has no built-in default"
-        );
+        let without: VmSettings =
+            toml::from_str("min_ram='2GB'\nmax_ram='5GB'\nguest_os='linux'\nalias='m'\npriority=1")
+                .unwrap();
+        assert_eq!(without.guest_policy(&globals), policy);
+        // Written back, it has none.
+        assert!(!toml::to_string(&linux).unwrap().contains("free_ram"));
     }
 
     #[test]

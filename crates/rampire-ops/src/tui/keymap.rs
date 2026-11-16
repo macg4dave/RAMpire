@@ -336,7 +336,7 @@ pub static BINDINGS: &[Binding] = &[
     bind(Only(L::List), &[ch(','), ch('u')], C::Sort(SortBy::GuestUse, true), "sort: guest's memory most in use first"),
     bind(Only(L::List), &[ch(','), ch('U')], C::Sort(SortBy::GuestUse, false), "sort: guest's memory least in use first"),
     bind(Only(L::List), &[ch('m'), ch('g')], C::Linemode(Linemode::Guest), "last columns: the guest's memory in use and its request"),
-    bind(Only(L::List), &[ch('m'), ch('l')], C::Linemode(Linemode::Limits), "last columns: minimum, maximum and free RAM"),
+    bind(Only(L::List), &[ch('m'), ch('l')], C::Linemode(Linemode::Limits), "last columns: minimum and maximum RAM"),
     bind(Only(L::List), &[ch('m'), ch('d')], C::Linemode(Linemode::Device), "last columns: the memory device: requested, size and block"),
     bind(Only(L::List), &[ch('m'), ch('t')], C::Linemode(Linemode::Detail), "last columns: a line about each VM"),
     // A VM's details.

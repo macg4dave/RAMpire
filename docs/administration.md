@@ -184,11 +184,43 @@ VM's settings needs only a controller install, never a guest change.
 
 ## Adding a VM
 
-`sudo rampire vm add VM` does every step below in one command: it shows
-what it will do and asks once, then fixes the definition, starts the VM,
-installs the guest service in it, restarts it if that is needed, writes
-the review and the settings, applies, and waits for the guest to report
-in. The steps are what it does, for doing them by hand or in a fleet.
+`sudo rampire vm add VM` does it all in one command, in the order the VM
+depends on each part.
+
+**Checked first; nothing is changed until all of it passes and you agree:**
+
+1. The host is set up and the controller runs: without it the guest has
+   no one to report to.
+2. The VM's definition can take RAMpire's parts (a NUMA cell, a free
+   memory slot, the device and the control channel), and what it will
+   look like with them.
+3. The sizes: the minimum the VM will be and the maximum it may grow to,
+   the maximum more than the minimum. The definition is then fitted to
+   them: the VM starts with its minimum, and its device holds the rest
+   up to its maximum.
+4. The guest can take the guest service (a read-only system can't), and
+   every other managed VM passes `apply`'s checks.
+5. What it will do, including whether the VM is shut down, is shown, and
+   you are asked once.
+
+**Then, in this order:**
+
+6. The fixed definition is saved. It takes effect only when the VM is
+   next started from off, not at a reboot from inside it.
+7. The guest service is installed: logged in to a running VM, or on the
+   disk of one that is off (it installs as the VM starts). It is enabled
+   and waits for its settings, so it does no harm before the controller
+   knows the VM.
+8. The VM is started, or shut down and started, once: the device, the
+   control channel and the kernel's pressure information all come in
+   with that start.
+9. The review and settings are written and applied: the controller
+   records the VM's setup and connects to its control channel.
+10. The guest service gets its settings over the channel and reports in.
+    While `vm add` waits it says every 20 s what it sees, the first thing
+    in the list above that isn't right yet.
+
+The steps below are what it writes, for doing them by hand or in a fleet.
 
 1. **Device.** Give the domain a virtio-mem device with a stable alias and
    the options the controller requires. The device's `requested` size in
@@ -247,7 +279,9 @@ in. The steps are what it does, for doing them by hand or in a fleet.
    `workload_reviewed` can only be confirmed by a person.
 
 4. **Settings.** Write `/etc/rampire/vms.d/<vm_name>.toml` and run
-   `sudo rampire apply` with the VM running.
+   `sudo rampire apply` with the VM running. The NUMA cell's memory is
+   `min_ram`, and the device's size `max_ram` less that: `vm add` and
+   `set` keep them so.
 
    `apply` records how the VM is set up: hashes of its live domain XML,
    QEMU's arguments and versions, and the device options, bound to the

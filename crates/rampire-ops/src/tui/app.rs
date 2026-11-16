@@ -1195,10 +1195,9 @@ impl App {
                     Field::new("priority", Some(settings.priority.to_string())),
                     Field::new("min_ram", Some(format_byte_size(settings.min_ram))),
                     Field::new("max_ram", Some(format_byte_size(settings.max_ram))),
-                    Field::new("free_ram", Some(format_byte_size(settings.free_ram))),
                 ]
             }
-            _ => ["priority", "min_ram", "max_ram", "free_ram"]
+            _ => ["priority", "min_ram", "max_ram"]
                 .into_iter()
                 .map(|key| Field::new(key, None))
                 .collect(),
@@ -1240,7 +1239,6 @@ impl App {
         for (key, bytes) in [
             ("min_ram", suggested.map(|sizes| sizes.min_ram)),
             ("max_ram", suggested.map(|sizes| sizes.max_ram)),
-            ("free_ram", suggested.map(|sizes| sizes.free_ram)),
         ] {
             fields.push(Field::new(key, bytes.map(format_byte_size)));
         }

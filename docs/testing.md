@@ -35,10 +35,10 @@ that doesn't, as RHEL ships it), and works through what a person does:
 |---|---|---|
 | `add-declined` | Starts an add in the TUI and answers No | The task says Not done; the definition is as it was; the VM isn't managed |
 | `add-cancelled` | Starts an add and cancels it (`x`) as soon as it is working | However far it got, the VM is whole: managed and healthy, or not managed with its old definition back |
-| `add-running` | Adds a running VM in the TUI: its menu, the form, the questions | The task's window opens as the form closes and stays open; each question is one expected, asked once; the add ends Done; the guest publishes; `doctor` finds nothing |
+| `add-running` | Adds a running VM in the TUI: its menu, the form with Minimum RAM 1GB and Maximum RAM 3GB typed in, the questions | The task's window opens as the form closes and stays open; each question is one expected, asked once; the add ends Done; the guest publishes; `doctor` finds nothing; the VM starts with 1 GiB and its device holds 2 GiB |
 | `add-off` | Adds a VM that is shut off: the disk way | As above |
 | `restart-open` | The VM restarts while the TUI is open | Nothing is written over the screen; the errors list has nothing from stderr; it reports in again |
-| `settings` | `rampire set VM max_ram=3GB` | It exits 0 and the VM stays healthy |
+| `settings` | `rampire set VM min_ram=1536MB`, and Yes to the restart it takes | It exits 0; the VM now starts with 1536 MiB and stays healthy |
 | `upgrade` | `rampire vm upgrade VM` | As above |
 | `vm-gone` | Deletes a managed test VM from libvirt behind RAMpire's back and restarts the controller | The controller runs and manages the others, logging `vm_setup_failed`; `vm remove` takes the gone VM out |
 | `remove` | Removes each test VM in the TUI | Not managed after; its definition has none of RAMpire's parts |

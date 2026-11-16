@@ -131,11 +131,6 @@ fn settings_panel(
                         rampire_core::format_byte_size(settings.max_ram),
                         theme.value(),
                     ),
-                    Span::styled("  Free RAM ", theme.text()),
-                    Span::styled(
-                        rampire_core::format_byte_size(settings.free_ram),
-                        theme.value(),
-                    ),
                 ]);
             }
             if let Some(boot) = details.boot_bytes {

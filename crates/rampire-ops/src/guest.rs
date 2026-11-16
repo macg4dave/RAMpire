@@ -391,10 +391,36 @@ impl<'a> Guest<'a> {
 /// The bytes of a file each guest-agent write carries; see `agent_put`.
 const AGENT_CHUNK: usize = 64 * 1024;
 
+/// What the guest service is doing inside a running VM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestService {
+    /// `systemctl is-active`: `active`, `activating` (restarting after it
+    /// stopped), `failed`, `inactive`...
+    pub state: String,
+    /// The error it last logged, in its own words, without the layers it
+    /// was passed up through.
+    pub error: Option<String>,
+}
+
+impl GuestService {
+    /// Its state, said for a person.
+    pub fn described(&self) -> &'static str {
+        match self.state.as_str() {
+            "active" => "runs",
+            // systemd starts it again after it stopped on an error.
+            "activating" => "keeps stopping and being started again",
+            "failed" => "stopped on an error",
+            "inactive" => "isn't started",
+            _ => "isn't running",
+        }
+    }
+}
+
 /// What the guest service is doing inside a running VM, read through its
-/// guest agent: `systemctl is-active` and its last log lines. `None` when
-/// the agent can't run commands, so nothing can be read from inside.
-pub fn service_state(libvirt: &Libvirt, vm: &str) -> Option<String> {
+/// guest agent: `systemctl is-active` and the error in its last log lines.
+/// `None` when the agent can't run commands, so nothing can be read from
+/// inside.
+pub fn service_state(libvirt: &Libvirt, vm: &str) -> Option<GuestService> {
     if !agent_runs_commands(libvirt, vm) {
         return None;
     }
@@ -408,17 +434,47 @@ pub fn service_state(libvirt: &Libvirt, vm: &str) -> Option<String> {
     let text = guest
         .run(
             "systemctl is-active rampire-guest.service 2>/dev/null || true; \
-             journalctl -u rampire-guest.service -n 3 --no-pager -o cat 2>/dev/null || true",
+             journalctl -u rampire-guest.service -n 10 --no-pager -o cat 2>/dev/null || true",
         )
         .ok()?;
+    Some(guest_service_in(&text))
+}
+
+/// [`service_state`]'s answer: the state on the first line, the log after.
+fn guest_service_in(text: &str) -> GuestService {
     let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
     let state = lines.next().unwrap_or("unknown").to_owned();
-    let log: Vec<&str> = lines.collect();
-    Some(if log.is_empty() {
-        state
-    } else {
-        format!("{state}; it last logged: {}", log.join(" | "))
-    })
+    let error = lines.filter_map(guest_error).next_back();
+    GuestService { state, error }
+}
+
+/// The error in one of the guest service's log lines, if it says one: its
+/// last failed poll, or why it stopped. systemd's own lines about the unit
+/// say nothing the state doesn't.
+fn guest_error(line: &str) -> Option<String> {
+    let (_, error) = line
+        .split_once("rampire-guest failed: ")
+        .or_else(|| line.split_once("poll skipped; reclaim history reset: "))?;
+    let mut error = error.trim();
+    // The layers an error is passed up through, outermost first.
+    loop {
+        let inner = match error.split_once(" consecutive polls failed: ") {
+            Some((count, rest)) if count.bytes().all(|b| b.is_ascii_digit()) => rest,
+            _ => [
+                "guest memory request failed: ",
+                "target geometry is invalid: ",
+                "target policy is invalid: ",
+            ]
+            .iter()
+            .find_map(|layer| error.strip_prefix(layer))
+            .unwrap_or(error),
+        };
+        if inner == error {
+            break;
+        }
+        error = inner;
+    }
+    Some(error.trim_end_matches('.').to_owned())
 }
 
 /// The build a guest's service runs, from its publication.
@@ -1084,6 +1140,34 @@ mod tests {
             first_boot.find("systemctl reboot")
                 < first_boot.find("systemctl restart rampire-guest"),
             "{first_boot}"
+        );
+    }
+
+    #[test]
+    fn the_guest_services_own_error_is_read_out_of_its_log() {
+        // torrent101 on 2026-11-16, as the wait for it showed it.
+        let log = "activating\n\
+            host via control channel org.rampire.control.0\n\
+            settings from host: vm=torrent101 min_ram=536870912 max_ram=3221225472\n\
+            poll skipped; reclaim history reset: guest memory request failed: target geometry is invalid: configured RAM limits cannot be met by this VM's live memory geometry\n\
+            rampire-guest failed: 5 consecutive polls failed: guest memory request failed: target geometry is invalid: configured RAM limits cannot be met by this VM's live memory geometry\n\
+            rampire-guest.service: Main process exited, code=exited, status=1/FAILURE\n\
+            rampire-guest.service: Failed with result 'exit-code'.\n";
+        let service = guest_service_in(log);
+        assert_eq!(service.state, "activating");
+        assert_eq!(
+            service.error.as_deref(),
+            Some("configured RAM limits cannot be met by this VM's live memory geometry")
+        );
+        assert_eq!(
+            service.described(),
+            "keeps stopping and being started again"
+        );
+        let quiet = guest_service_in("active\nsettings from host: vm=web\n");
+        assert_eq!((quiet.described(), quiet.error), ("runs", None));
+        assert_eq!(
+            guest_error("rampire-guest failed: publish: broken pipe").as_deref(),
+            Some("publish: broken pipe")
         );
     }
 }

@@ -130,17 +130,17 @@ pub const VM: SettingsFile = SettingsFile {
         Setting {
             names: "`min_ram`",
             default: None,
-            meaning: "The least RAM the VM's system sees, boot RAM included; memory is never taken back below it. The guest's kernel keeps some boot RAM for itself, so a `min_ram` equal to boot RAM grows the VM a little at once",
+            meaning: "The smallest the VM will be: it starts with this, and memory is never taken back below it. The guest's kernel keeps a little of it for itself, so the VM may grow a little at once to reach it",
         },
         Setting {
             names: "`max_ram`",
             default: None,
-            meaning: "The largest it may grow. For Linux, at most about four times boot RAM",
+            meaning: "The biggest it may grow. For Linux, at most about four times `min_ram`",
         },
         Setting {
             names: "`free_ram`",
             default: None,
-            meaning: "Spare memory the guest keeps; it asks for more below this and returns memory above it ([sizes](#sizes))",
+            meaning: "Technical: spare memory the guest keeps; it asks for more below this and returns memory above it ([sizes](#sizes)). `vm add` sets it to a quarter of `max_ram`, at most 512 MiB",
         },
         Setting {
             names: "`guest_os`",
@@ -283,7 +283,7 @@ mod tests {
             priority: 1,
             min_ram: 1,
             max_ram: 2,
-            free_ram: 1,
+            retired_free_ram: (),
             guest_os: GuestOs::Linux,
             install_path: Some(String::new()),
             service_account: Some(String::new()),

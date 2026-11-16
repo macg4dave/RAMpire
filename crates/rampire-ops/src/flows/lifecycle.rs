@@ -11,7 +11,7 @@ use super::Outcome;
 use crate::context::{applied_root, Context, TempDir, DOMAIN_BACKUPS};
 use crate::process;
 use crate::ui::Ui;
-use rampire_core::format_byte_size;
+use rampire_core::{format_byte_size, MIB};
 use rampire_host::attestation::AnswerSource;
 
 /// `vm add`'s options beside the VM's name.
@@ -116,12 +116,13 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     let libvirt = context.libvirt()?;
     let xml = libvirt.virsh(&["dumpxml", "--inactive", name])?;
     let inspection = vm::inspect(&xml)?;
-    let fixed = vm::fix_xml(&xml, &inspection)?;
-    let after = match &fixed {
+    // RAMpire's parts: the device, the channels, the cell they need.
+    let with_parts = vm::fix_xml(&xml, &inspection)?;
+    let parts = match &with_parts {
         Some(fixed) => vm::inspect(fixed)?,
         None => inspection.clone(),
     };
-    let problems = after.problems();
+    let problems = parts.problems();
     if !problems.is_empty() {
         for (problem, fix) in &problems {
             ui.say(&format!("problem: {problem}"));
@@ -130,10 +131,35 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         return Err(format!("{name} can't be managed yet; nothing was changed"));
     }
     // Without problems there is one device, and it has an alias.
-    let alias = after
+    let alias = parts
         .device()
         .and_then(|device| device.alias.clone())
         .ok_or_else(|| format!("{name} has no virtio-mem device with an alias"))?;
+    // The sizes first: they need only the definition, and the steps after
+    // this read the disk and check every other VM.
+    let settings = if kept {
+        None
+    } else {
+        Some(chosen_settings(&parts, options)?)
+    };
+    let (min_ram, max_ram) = match &settings {
+        Some(chosen) => (chosen.min_ram, chosen.max_ram),
+        None => {
+            let kept = rampire_core::settings::load_vm(&settings_path)?;
+            (kept.min_ram, kept.max_ram)
+        }
+    };
+    // Then the definition is fitted to them: the VM boots with its
+    // minimum, and its device holds the rest up to its maximum.
+    let with_parts_text = with_parts.as_deref().unwrap_or(&xml);
+    let fitted = vm::fit_memory(with_parts_text, min_ram, max_ram)
+        .map_err(|error| format!("{name}: {error}; nothing was changed"))?;
+    let resized = fitted != with_parts_text;
+    let fixed = (fitted != xml).then_some(fitted);
+    let after = match &fixed {
+        Some(fixed) => vm::inspect(fixed)?,
+        None => inspection.clone(),
+    };
 
     // `apply` checks every VM: one that fails would stop it at the end.
     other_vms_pass(context, &libvirt, ui, name)?;
@@ -160,18 +186,20 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
     }
 
     let running = libvirt.state(name)? == "running";
-    let changes = inspection.fixable();
+    let mut changes = inspection.fixable();
+    if resized {
+        changes.push(format!(
+            "boot with {}, its minimum; its memory device holds the rest, up to {}",
+            format_byte_size(min_ram),
+            format_byte_size(max_ram)
+        ));
+    }
     // Every change but saving the requested size takes effect when the VM
     // next starts; a VM fixed by an earlier run may still run the old one.
-    let mut restart = running && inspection.fixes_take_a_restart();
+    let mut restart = running && (inspection.fixes_take_a_restart() || resized);
     if running && !restart {
         restart = after.runs_behind(&vm::inspect(&libvirt.virsh(&["dumpxml", name])?)?);
     }
-    let settings = if kept {
-        None
-    } else {
-        Some(chosen_settings(&after, options)?)
-    };
 
     // What will be done, agreed to once.
     let mut shown = format!("Adding {name} to RAMpire\n\n");
@@ -189,11 +217,10 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         Some(chosen) => row(
             "Settings",
             &format!(
-                "priority {}, min {}, max {}, free {}",
+                "priority {}, minimum RAM {}, maximum RAM {}",
                 options.priority,
                 format_byte_size(chosen.min_ram),
                 format_byte_size(chosen.max_ram),
-                format_byte_size(chosen.free_ram)
             ),
         ),
         None => row(
@@ -498,9 +525,16 @@ fn chosen_settings(
     };
     chosen.min_ram = size(options.min_ram.as_deref(), chosen.min_ram)?;
     chosen.max_ram = size(options.max_ram.as_deref(), chosen.max_ram)?;
-    chosen.free_ram = size(options.free_ram.as_deref(), chosen.free_ram)?;
-    if chosen.min_ram > chosen.max_ram {
-        return Err("minimum RAM is more than maximum RAM".to_owned());
+    // Spare memory isn't asked for: by default a quarter of the maximum,
+    // at most the suggested 512 MiB.
+    let spare = (chosen.max_ram / 4 / (2 * MIB) * (2 * MIB)).clamp(2 * MIB, chosen.free_ram);
+    chosen.free_ram = size(options.free_ram.as_deref(), spare)?;
+    if chosen.min_ram >= chosen.max_ram {
+        return Err(format!(
+            "maximum RAM {} must be more than minimum RAM {}; nothing was changed",
+            format_byte_size(chosen.max_ram),
+            format_byte_size(chosen.min_ram)
+        ));
     }
     if chosen.free_ram >= chosen.max_ram {
         return Err("free RAM must be less than maximum RAM".to_owned());
@@ -605,9 +639,10 @@ fn guest_reports_in(
 const WAIT_REPORT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Why `vm`'s guest service hasn't reported in, as far as the host can
-/// tell, the first cause found: the VM isn't running, it runs an older
-/// definition, the service in it isn't running (with its last log lines),
-/// or what the controller says.
+/// tell: the first cause found, in the order the VM depends on them. The
+/// controller runs; the VM runs; it runs its saved definition; its guest
+/// service runs without an error; the controller reaches its control
+/// channel.
 fn why_not_reported(context: &Context, libvirt: &crate::attest::Libvirt, vm: &str) -> String {
     let controller = crate::doctor::controller_finding(&crate::systemd_unit::controller_state());
     if !controller.ok {
@@ -628,18 +663,26 @@ fn why_not_reported(context: &Context, libvirt: &crate::attest::Libvirt, vm: &st
         );
     }
     let service = match crate::guest::service_state(libvirt, vm) {
-        Some(state) if state.starts_with("active") => state,
-        Some(state) => {
-            return format!(
-                "its guest service isn't running: {state}. In {vm}: systemctl status rampire-guest"
-            )
-        }
+        Some(service) => service,
         None => {
             return format!(
                 "its guest agent doesn't run commands, so RAMpire can't see inside {vm}. In {vm}: systemctl status rampire-guest"
             )
         }
     };
+    if let Some(error) = &service.error {
+        return format!(
+            "its guest service {}: {error}. In {vm}: journalctl -u rampire-guest",
+            service.described()
+        );
+    }
+    if service.state != "active" {
+        return format!(
+            "its guest service {} ({}). In {vm}: systemctl status rampire-guest",
+            service.described(),
+            service.state
+        );
+    }
     // The guest is up: what is missing is between it and the controller.
     // The controller says why it can't reach the channel; a guest without
     // one writes control files instead, which the controller reads through
@@ -647,14 +690,12 @@ fn why_not_reported(context: &Context, libvirt: &crate::attest::Libvirt, vm: &st
     match crate::journal::channel_event(vm, Path::new("/")) {
         Some(event) if event.starts_with("unavailable") => {
             return format!(
-                "its guest service runs ({service}), but the controller can't reach {vm}'s control channel: {}",
+                "its guest service runs, but the controller can't reach {vm}'s control channel: {}",
                 event.trim_start_matches("unavailable: ")
             )
         }
         Some(_) => {
-            return format!(
-                "its guest service runs ({service}) and the controller is connected to its control channel, but nothing has come over it yet"
-            )
+            return "its guest service runs and the controller is connected to its control channel, but nothing has come over it yet".to_owned()
         }
         None => {}
     }
@@ -667,7 +708,7 @@ fn why_not_reported(context: &Context, libvirt: &crate::attest::Libvirt, vm: &st
                 .collect();
             if problems.is_empty() {
                 format!(
-                    "its guest service runs ({service}), but the controller has had nothing from it yet and hasn't said why: rampire logs --vm {vm}"
+                    "its guest service runs, but the controller has had nothing from it yet and hasn't said why: rampire logs --vm {vm}"
                 )
             } else {
                 problems.join("; ")
@@ -1414,7 +1455,12 @@ pub fn set(
         )
     };
     if target != crate::set::GLOBAL {
-        grow_for_max_ram(context, ui, target).map_err(saved)?;
+        if changes
+            .iter()
+            .any(|change| matches!(change.key.as_str(), "min_ram" | "max_ram"))
+        {
+            fit_to_limits(context, ui, target).map_err(saved)?;
+        }
         upgrade_if_behind(context, ui, target).map_err(saved)?;
     }
     let not_applied = format!(
@@ -1431,27 +1477,28 @@ pub fn set(
     })
 }
 
-/// When a VM's `max_ram` is more than its virtio-mem device holds, grow the
-/// device in its definition. That takes a restart, so ask whether now; else
-/// it takes effect at the VM's next start. Within the device, a change needs
-/// nothing here: the controller takes it at once.
-fn grow_for_max_ram(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(), String> {
+/// After `min_ram` or `max_ram` changed: when the VM's definition can't
+/// hold them, because it boots with other than its minimum or its device
+/// can't reach its maximum, fit it to them, as `vm add` does. That takes
+/// effect when the VM next starts from off, so ask whether to restart it
+/// now. Until then its guest service keeps within both as nearly as it
+/// can. A device bigger than the maximum needs nothing: the controller
+/// never grows the VM past it.
+fn fit_to_limits(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(), String> {
     use std::time::Duration;
     let settings = crate::attest::vm_settings(&context.draft(), vm)?;
     let libvirt = context.libvirt()?;
     let xml = libvirt.virsh(&["dumpxml", "--inactive", vm])?;
     let inspection = crate::vm::inspect(&xml)?;
-    let Some(device) = inspection.device() else {
+    let (Some(holds), Some(device)) = (inspection.holds(), inspection.device()) else {
         return Ok(());
     };
-    let boot = inspection.memory_bytes.saturating_sub(device.size_bytes);
-    if settings.max_ram <= boot + device.size_bytes {
+    let fit = crate::vm::fitted(settings.min_ram, settings.max_ram, device.block_bytes)?;
+    if holds.boot == fit.boot && holds.device >= fit.device {
         return Ok(());
     }
-    let block = device.block_bytes.max(2 * 1024 * 1024);
-    let size = (settings.max_ram - boot).div_ceil(block) * block;
-    let grown = crate::vm::grow_device(&xml, size)?;
-    let backup = redefine(&libvirt, vm, &xml, &grown)?;
+    let fitted = crate::vm::fit_memory(&xml, settings.min_ram, settings.max_ram)?;
+    let backup = redefine(&libvirt, vm, &xml, &fitted)?;
     crate::audit::record(
         context,
         "fix_xml",
@@ -1459,10 +1506,9 @@ fn grow_for_max_ram(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(), 
         &[("backup", &backup.display().to_string())],
     );
     ui.say(&format!(
-        "{vm}'s memory device grows from {} to {} for maximum RAM {}; the old definition is in {}",
-        format_byte_size(device.size_bytes),
-        format_byte_size(size),
-        format_byte_size(settings.max_ram),
+        "{vm} now boots with {}, its minimum, and can grow to {}; the old definition is in {}",
+        format_byte_size(fit.boot),
+        format_byte_size(fit.boot + fit.device),
         backup.display()
     ));
     if libvirt.state(vm)? != "running" {
@@ -1470,15 +1516,15 @@ fn grow_for_max_ram(context: &Context, ui: &mut dyn Ui, vm: &str) -> Result<(), 
         return Ok(());
     }
     if ui.confirm(&format!(
-        "The bigger device takes a restart. Restart {vm} now? (No: it grows at its next start)"
+        "That takes a restart. Shut {vm} down and start it again now? (No: at its next start)"
     ))? {
         crate::attest::cold_restart(vm, &libvirt, Duration::from_secs(300))?;
         ui.say(&format!("{vm} restarted"));
     } else {
         ui.say(&format!(
-            "{vm} grows to {} at its next start; until then it stays within {}",
-            format_byte_size(settings.max_ram),
-            format_byte_size(boot + device.size_bytes)
+            "until {vm} next starts from off it keeps within its new sizes as nearly as it can, from {} to {}; rampire vm restart {vm} restarts it",
+            format_byte_size(holds.boot),
+            format_byte_size(holds.boot + holds.device)
         ));
     }
     Ok(())

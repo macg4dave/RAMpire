@@ -102,12 +102,6 @@ pub fn facts(app: &App, entry: &Entry) -> Vec<Fact> {
         }
     }
     if let Some(details) = app.details.get(vm) {
-        if let Some(settings) = &details.settings {
-            fact(
-                "Free RAM",
-                rampire_core::format_byte_size(settings.free_ram),
-            );
-        }
         if let Some(boot) = details.boot_bytes {
             fact("Boot RAM", crate::reports::size(boot));
         }

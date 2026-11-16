@@ -209,12 +209,8 @@ fn vm_list(
             widths.extend([Constraint::Length(gauge as u16 + 13), Constraint::Fill(1)]);
         }
         Linemode::Limits => {
-            header.extend(["MIN", "MAX", "FREE"]);
-            widths.extend([
-                Constraint::Length(9),
-                Constraint::Length(9),
-                Constraint::Fill(1),
-            ]);
+            header.extend(["MIN", "MAX"]);
+            widths.extend([Constraint::Length(9), Constraint::Fill(1)]);
         }
         Linemode::Device => {
             header.extend(["REQUESTED", "SIZE", "BLOCK"]);
@@ -297,12 +293,7 @@ fn vm_list(
                             }));
                         }
                         Linemode::Limits => {
-                            let free = app
-                                .details
-                                .get(&entry.name)
-                                .and_then(|details| details.settings.as_ref())
-                                .map_or("-".to_owned(), |settings| short(settings.free_ram));
-                            for text in [short(vm.min_ram), short(vm.max_ram), free] {
+                            for text in [short(vm.min_ram), short(vm.max_ram)] {
                                 cells.push(Cell::from(Span::styled(text, theme.text())));
                             }
                         }
@@ -365,9 +356,8 @@ fn vm_list(
                                 Span::styled(next, theme.tone(Tone::Info))
                             }));
                         }
-                        Linemode::Limits | Linemode::Device => {
-                            cells.extend([dash(), dash(), dash()])
-                        }
+                        Linemode::Limits => cells.extend([dash(), dash()]),
+                        Linemode::Device => cells.extend([dash(), dash(), dash()]),
                         Linemode::Detail => cells.push(Cell::from(Span::styled(
                             entry
                                 .listed

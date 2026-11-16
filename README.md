@@ -120,8 +120,9 @@ max_ram = "8GB"
 free_ram = "512MB"
 ```
 
-- **`min_ram` / `max_ram`** define the VM's memory boundaries.
-- **`free_ram`** defines the spare memory the guest aims to retain.
+- **`min_ram`** is the smallest the VM will be; it starts with this.
+- **`max_ram`** is the biggest it may grow.
+- **`free_ram`** is technical: the spare memory the guest keeps ready. `vm add` sets it.
 - **`priority`** determines which requests are served first when the pool is short of memory.
 
 These are illustrative settings, **not a complete configuration file**; RAMpire generates the VM-specific fields when you add a guest.

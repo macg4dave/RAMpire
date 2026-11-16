@@ -76,12 +76,12 @@ fn about(key: &str) -> (&'static str, &'static str, Kind) {
         ),
         "min_ram" => (
             "Minimum RAM",
-            "Never shrunk below this. Includes boot memory.",
+            "The smallest the VM will be. It starts with this.",
             Kind::Size,
         ),
         "max_ram" => (
             "Maximum RAM",
-            "Never grown above this. Linux: at most 4 times boot memory.",
+            "The biggest it may grow. Linux: up to about 4 times its minimum.",
             Kind::Size,
         ),
         "free_ram" => (
@@ -258,8 +258,10 @@ impl Form {
                 field
                     .problem()
                     .or_else(|| match (field.key, bytes("max_ram")) {
-                        ("min_ram", Some(max)) if bytes("min_ram").is_some_and(|min| min > max) => {
-                            Some("more than Maximum RAM".to_owned())
+                        ("max_ram", Some(max))
+                            if bytes("min_ram").is_some_and(|min| min >= max) =>
+                        {
+                            Some("must be more than Minimum RAM".to_owned())
                         }
                         ("free_ram", Some(max))
                             if bytes("free_ram").is_some_and(|free| free >= max) =>
@@ -709,8 +711,19 @@ mod tests {
         form.fields[3].input.set("8");
         let problems = form.problems();
         assert_eq!(problems[0].as_deref(), Some("a whole number, such as 100"));
-        assert_eq!(problems[1].as_deref(), Some("more than Maximum RAM"));
-        assert_eq!(problems[2], None);
+        assert_eq!(problems[1], None);
+        assert_eq!(
+            problems[2].as_deref(),
+            Some("must be more than Minimum RAM")
+        );
+        // Equal leaves nothing to grow into.
+        form.fields[1].input.set("8GB");
+        assert_eq!(
+            form.problems()[2].as_deref(),
+            Some("must be more than Minimum RAM")
+        );
+        form.fields[1].input.set("2GB");
+        assert_eq!(form.problems()[2], None);
         assert_eq!(problems[3].as_deref(), Some("add a unit: 8GB or 8MB"));
         form.fields[3].input.set("8GB");
         assert_eq!(

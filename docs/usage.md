@@ -151,12 +151,15 @@ free_ram = "512MB"
 | `priority` | Who comes first when memory is short | See [Setting a priority](#setting-a-priority) |
 | `review` | The review profile the VM was checked against, in `reviews/` | Don't change it |
 | `guest_os` | The VM's operating system | Don't change it |
-| `min_ram` | The smallest the VM is ever made. Memory is never taken back below this | Usually the amount the VM starts with |
-| `max_ram` | The largest the VM may ever grow | The most this VM should ever have. For a Linux VM, keep it no more than about four times the memory the VM starts with, or the VM may not be able to give memory back reliably |
-| `free_ram` | How much spare memory the VM keeps ready. It asks for more when its spare falls below this, and hands memory back when it has more spare than this | `"512MB"` to `"1GB"` suits most VMs. More makes the VM respond faster to sudden demand but keeps more memory idle. Less shares memory more tightly |
+| `min_ram` | The smallest the VM will be. It starts with this, and memory is never taken back below it | The least this VM should run on |
+| `max_ram` | The biggest the VM may grow | The most this VM should ever have. For a Linux VM, keep it no more than about four times `min_ram`, or the VM may not be able to give memory back reliably |
+| `free_ram` | Technical: how much spare memory the VM keeps ready. It asks for more when its spare falls below this, and hands memory back when it has more spare than this | Leave it as `vm add` set it. More makes the VM respond faster to sudden demand but keeps more memory idle |
 
-All three sizes cover the VM's total memory, including what it starts
-with.
+Both `min_ram` and `max_ram` are the VM's whole memory. RAMpire fits the
+VM to them: it starts with `min_ram`, and its memory device holds the
+rest up to `max_ram`. Changing either with `rampire set` fits it again,
+which takes effect when the VM next starts from off; `set` asks whether
+to restart it then.
 
 #### Setting a priority
 

@@ -11,6 +11,26 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 
 ## Unreleased
 
+- A VM's memory is two sizes: Minimum RAM, the smallest it will be, and
+  Maximum RAM, the biggest it may grow. `vm add` fits the VM to them:
+  it starts with its minimum, and its memory device holds the rest up to
+  its maximum. Before, the minimum had to match the RAM the VM already
+  started with, and a maximum below that was taken without a word, after
+  which the guest service refused it and stopped every few seconds.
+- `rampire set` fits the VM again when a new minimum or maximum needs it,
+  and asks whether to restart the VM for it. Until then the guest service
+  keeps within the new sizes as nearly as it can, instead of stopping.
+- The TUI's add and settings forms ask for Priority, Minimum RAM and
+  Maximum RAM; Free RAM is no longer in them (`rampire set VM
+  free_ram=SIZE` still changes it). Maximum RAM must be more than Minimum
+  RAM.
+- While `vm add` and `vm upgrade` wait for a guest, they say the first
+  thing that isn't right, in the order the VM depends on it, and the
+  guest service's own error in one line instead of its last log lines.
+  A service that keeps failing is said to, not "activating".
+- The controller no longer logs `guest_status_unpublished` for a status
+  it sent on the control channel when the guest agent isn't answering,
+  as when a VM is booting.
 - The TUI no longer reports **Done** for a task that wasn't. Answering No
   to removing, restarting, upgrading, applying, recovering or setting up
   ends **Not done**, and so does a task with a part left: settings saved

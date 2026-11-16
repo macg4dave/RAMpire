@@ -343,14 +343,14 @@ impl<Q: GuestFileReader + GuestFileWriter, T: UnixClock> GuestLink for GuestChan
             self.files
                 .write_file(&host_status_path(&self.publication_path), &bytes)
         });
+        // Sent on the channel, the status reached the guest: the files are
+        // only for a guest that isn't on it, and they need its guest agent,
+        // which a booting guest doesn't have yet. They are written again on
+        // the next round.
         #[cfg(unix)]
-        let written = written.map_err(|error| {
-            if sent_on_channel {
-                format!("sent on the control channel; control files not written: {error}")
-            } else {
-                error
-            }
-        });
+        if sent_on_channel && written.is_err() {
+            return Ok(());
+        }
         written?;
         self.last_write.set(Some(Instant::now()));
         if changed {
@@ -671,6 +671,65 @@ mod tests {
         let other = qga(vec![b'x'; MAX_RAW_TELEMETRY_FILE_BYTES + 1]);
         assert!(other.read().is_err());
         assert!(other.agent_absent.borrow().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_status_sent_on_the_channel_is_published_without_the_files() {
+        // A guest booting onto its new definition: the channel is open,
+        // its agent isn't answering yet. The controller logged that as
+        // guest_status_unpublished, though the guest had the status.
+        use std::io::Read;
+        struct AgentDown;
+        impl GuestFileReader for AgentDown {
+            fn read_file(&self, _path: &str, _maximum: usize) -> Result<Vec<u8>, String> {
+                Err("Guest agent is not responding".to_owned())
+            }
+        }
+        impl GuestFileWriter for AgentDown {
+            fn write_file(&self, _path: &str, _contents: &[u8]) -> Result<(), String> {
+                Err("Guest agent is not responding".to_owned())
+            }
+        }
+        let status = HostMemoryStatus {
+            schema: HostStatusSchema,
+            version: MEMORY_REQUEST_VERSION,
+            vm_name: "guest".to_owned(),
+            service_name: "rampire-guest".to_owned(),
+            device_alias: "memory0".to_owned(),
+            observed_unix_millis: 1_000_000,
+            device_size_bytes: 8 << 30,
+            block_size_bytes: 2 << 20,
+            requested_bytes: 0,
+            current_bytes: 0,
+            result: None,
+            guest_settings: None,
+        };
+        let without = || {
+            GuestChannel::with_clock(
+                AgentDown,
+                "/var/lib/rampire-guest/control.json",
+                "guest",
+                "rampire-guest",
+                Duration::from_secs(60),
+                Duration::from_secs(5),
+                FixedClock(1_000_000),
+            )
+        };
+        assert!(
+            without().publish_status(&status).is_err(),
+            "nowhere to send it"
+        );
+        let (ours, mut guest) = std::os::unix::net::UnixStream::pair().unwrap();
+        let control =
+            crate::control_channel::ControlChannel::over(ours, "guest".to_owned()).unwrap();
+        let channel = without().with_control(control);
+        assert_eq!(channel.publish_status(&status), Ok(()));
+        let mut expected = serde_json::to_vec(&status).unwrap();
+        expected.push(b'\n');
+        let mut received = vec![0; expected.len()];
+        guest.read_exact(&mut received).unwrap();
+        assert_eq!(received, expected);
     }
 
     #[cfg(unix)]

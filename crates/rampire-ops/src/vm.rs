@@ -804,6 +804,110 @@ pub fn suggest(inspection: &Inspection, linux: bool) -> Option<Suggested> {
     })
 }
 
+/// How a definition holds memory for `min_ram` and `max_ram`: the VM
+/// boots with its minimum, and its virtio-mem device holds the rest up to
+/// its maximum. Both are whole device blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fitted {
+    pub boot: u64,
+    pub device: u64,
+}
+
+/// [`Fitted`] for these limits on a device with blocks of `block` bytes.
+pub fn fitted(min_ram: u64, max_ram: u64, block: u64) -> Result<Fitted, String> {
+    let block = block.max(2 * MIB);
+    let boot = min_ram.div_ceil(block) * block;
+    if max_ram <= boot {
+        return Err(format!(
+            "maximum RAM {} must be more than minimum RAM {}, or there is nothing to grow into",
+            format_byte_size(max_ram),
+            format_byte_size(min_ram)
+        ));
+    }
+    Ok(Fitted {
+        boot,
+        device: (max_ram - boot).div_ceil(block) * block,
+    })
+}
+
+impl Inspection {
+    /// How this definition holds memory now, when it has one NUMA cell
+    /// and a device: the only shape [`fit_memory`] changes.
+    pub fn holds(&self) -> Option<Fitted> {
+        let device = self.device()?;
+        (self.numa_cells == 1).then_some(Fitted {
+            boot: self.boot_bytes,
+            device: device.size_bytes,
+        })
+    }
+}
+
+/// The definition with the VM booting with `min_ram` and its device
+/// holding the rest up to `max_ram`: its NUMA cell, its device's size,
+/// `<memory>`, `<currentMemory>` and, when it is too small, `<maxMemory>`.
+/// It needs one NUMA cell and a device, as [`fix_xml`] leaves it. Like
+/// every change to a definition, it takes effect when the VM next starts.
+pub fn fit_memory(xml: &str, min_ram: u64, max_ram: u64) -> Result<String, String> {
+    let inspection = inspect(xml)?;
+    let device = inspection
+        .device()
+        .ok_or("the domain has no virtio-mem device")?;
+    if inspection.numa_cells != 1 {
+        return Err(format!(
+            "its definition has {} NUMA cells; RAMpire sizes only one",
+            inspection.numa_cells
+        ));
+    }
+    let fit = fitted(min_ram, max_ram, device.block_bytes)?;
+    let mut text = xml.to_owned();
+    // The cell: what the VM boots with.
+    let cell = find_element(&text, "cell").ok_or("the NUMA cell has no text")?;
+    let cell_end = cell + text[cell..].find('>').ok_or("the NUMA cell has no end")?;
+    let mut tag = text[cell..cell_end].to_owned();
+    for (key, value) in [
+        ("memory", (fit.boot / 1024).to_string()),
+        ("unit", "KiB".to_owned()),
+    ] {
+        let at = tag
+            .find(&format!(" {key}='"))
+            .map(|at| at + key.len() + 3)
+            .ok_or_else(|| format!("the NUMA cell has no {key}"))?;
+        let end = at
+            + tag[at..]
+                .find('\'')
+                .ok_or("the NUMA cell's text is cut short")?;
+        tag.replace_range(at..end, &value);
+    }
+    text.replace_range(cell..cell_end, &tag);
+    // The device, and the totals that hold it: <memory> as boot RAM and
+    // the device, <maxMemory> at least that.
+    let mut text = grow_device(&text, fit.device)?;
+    let total = fit.boot + fit.device;
+    if let Some(start) = find_element(&text, "memory") {
+        let end = start
+            + text[start..]
+                .find("</memory>")
+                .ok_or("<memory> has no end")?
+            + "</memory>".len();
+        text.replace_range(
+            start..end,
+            &format!("<memory unit='KiB'>{}</memory>", total / 1024),
+        );
+    }
+    if let Some(start) = find_element(&text, "currentMemory") {
+        let end = start
+            + text[start..]
+                .find("</currentMemory>")
+                .ok_or("<currentMemory> has no end")?
+            + "</currentMemory>".len();
+        text.replace_range(
+            start..end,
+            &format!("<currentMemory unit='KiB'>{}</currentMemory>", total / 1024),
+        );
+    }
+    Ok(text)
+}
+
 /// A review answer `vm add` read from the definition, or `None` when only
 /// a person can give it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -936,7 +1040,7 @@ pub fn review_toml(
 /// The VM's settings file.
 pub fn vm_toml(alias: &str, priority: u32, review: &str, suggested: &Suggested) -> String {
     format!(
-        "# Added by `rampire vm add`. Change a value with `rampire set VM KEY=VALUE`.\nalias = \"{alias}\"\npriority = {priority}\nreview = \"{review}\"\nguest_os = \"linux\"\n# The least RAM the VM's system sees, here its boot RAM. The kernel keeps\n# some boot RAM for itself, so RAMpire may add a little to reach this.\nmin_ram = \"{}\"\n# The largest it may grow.\nmax_ram = \"{}\"\n# Spare memory it keeps ready.\nfree_ram = \"{}\"\n",
+        "# Added by `rampire vm add`. Change a value with `rampire set VM KEY=VALUE`.\nalias = \"{alias}\"\npriority = {priority}\nreview = \"{review}\"\nguest_os = \"linux\"\n# The smallest the VM will be: it starts with this.\nmin_ram = \"{}\"\n# The biggest it may grow.\nmax_ram = \"{}\"\n# Technical: the spare memory it keeps ready. Leave it unless asked.\nfree_ram = \"{}\"\n",
         format_byte_size(suggested.min_ram),
         format_byte_size(suggested.max_ram),
         format_byte_size(suggested.free_ram)
@@ -1256,6 +1360,57 @@ mod tests {
             .map(|a| a.question)
             .collect();
         assert!(open.contains(&"no_vfio_nvme") && open.contains(&"balloon_resize_inactive"));
+    }
+
+    #[test]
+    fn the_definition_is_fitted_to_the_minimum_and_maximum() {
+        // MANAGED boots with 1 GiB and has an 8 GiB device. As torrent101
+        // was given on 2026-11-16: 512MB to 3GB. It boots with 512MB and
+        // its device holds the other 2.5GB.
+        let fitted_xml = fit_memory(MANAGED, 512 * MIB, 3 * GIB).unwrap();
+        let after = inspect(&fitted_xml).unwrap();
+        assert_eq!(
+            after.holds(),
+            Some(Fitted {
+                boot: 512 * MIB,
+                device: 2560 * MIB
+            })
+        );
+        assert_eq!(after.memory_bytes, 3 * GIB);
+        assert!(after
+            .current_memory_bytes
+            .is_none_or(|bytes| bytes == 3 * GIB));
+        // Everything else is as it was.
+        assert_eq!(
+            after.device().unwrap().alias,
+            inspect(MANAGED).unwrap().device().unwrap().alias
+        );
+        assert_eq!(
+            fit_memory(&fitted_xml, 512 * MIB, 3 * GIB).unwrap(),
+            fitted_xml
+        );
+        // Bigger than the device was: <maxMemory> grows to hold it.
+        let big = inspect(&fit_memory(MANAGED, 2 * GIB, 24 * GIB).unwrap()).unwrap();
+        assert_eq!(
+            big.holds(),
+            Some(Fitted {
+                boot: 2 * GIB,
+                device: 22 * GIB
+            })
+        );
+        assert_eq!(big.memory_bytes, 24 * GIB);
+        // A maximum that leaves nothing to grow into is said.
+        let error = fit_memory(MANAGED, 2 * GIB, 2 * GIB).unwrap_err();
+        assert!(error.contains("must be more than minimum RAM"), "{error}");
+        assert!(fitted(GIB, GIB / 2, 2 * MIB).is_err());
+        // Sizes are whole blocks.
+        assert_eq!(
+            fitted(GIB + 1, 2 * GIB, 2 * MIB).unwrap(),
+            Fitted {
+                boot: GIB + 2 * MIB,
+                device: GIB - 2 * MIB
+            }
+        );
     }
 
     #[test]

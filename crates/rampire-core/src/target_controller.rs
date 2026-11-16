@@ -195,12 +195,12 @@ impl TargetEstimator {
         let minimum = align_up(self.min_ram.saturating_sub(visible_base), block)?;
         let maximum = self.max_ram.saturating_sub(visible_base) / block * block;
         let maximum = maximum.min(instantaneous.effective_maximum_bytes);
-        if minimum > maximum || self.max_ram < visible_base {
-            self.state.invalidate_history();
-            return Err(TargetEstimatorError::InvalidGeometry(
-                "configured RAM limits cannot be met by this VM's live memory geometry",
-            ));
-        }
+        // Limits the running VM can't meet are met as nearly as it can: a VM
+        // that boots with more than max_ram, as one does until it restarts
+        // onto a definition fitted to new limits, grows no further, and a
+        // minimum it can't reach is held at its maximum. Refusing them
+        // instead stopped the guest service until a person noticed.
+        let minimum = minimum.min(maximum);
         instantaneous.effective_maximum_bytes = maximum;
         // Growth and reclaim both aim half a hysteresis band above demand.
         // Aiming at demand itself leaves the device on the growth threshold,
@@ -609,15 +609,27 @@ mod tests {
             "growth respects maximum total 13"
         );
         assert_eq!(result.effective_maximum_bytes, 5 * GIB);
+        // A maximum below what the VM boots with (8 GiB here) can't be met
+        // until it restarts onto a definition that fits it: it grows no
+        // further, and still works, rather than failing every poll.
         estimator.set_ram_limits(GIB, 4 * GIB).unwrap();
-        assert!(
-            estimator
-                .estimate(
-                    sample(2, 1, memory(4 * GIB, 0, 32 * GIB)),
-                    geometry(4 * GIB)
-                )
-                .is_err(),
-            "maximum below observable non-device memory is impossible"
+        let result = estimator
+            .estimate(sample(2, 1, memory(4 * GIB, 4 * GIB, 0)), geometry(4 * GIB))
+            .expect("limits it can't meet are met as nearly as it can");
+        assert_eq!(result.effective_maximum_bytes, 0);
+        assert!(result.desired_now_bytes == 0 && result.desired_bytes <= 4 * GIB);
+        // A minimum above the maximum it can reach is held at that maximum.
+        let mut estimator = TargetEstimator::new(config()).unwrap();
+        estimator.set_ram_limits(14 * GIB, 14 * GIB).unwrap();
+        let result = estimator
+            .estimate(
+                sample(1, 0, memory(4 * GIB, 0, 32 * GIB)),
+                geometry(4 * GIB),
+            )
+            .unwrap();
+        assert_eq!(
+            (result.desired_bytes, result.effective_maximum_bytes),
+            (6 * GIB, 6 * GIB)
         );
     }
 

@@ -37,7 +37,7 @@ pub enum Linemode {
     /// The guest's memory in use, and its request.
     #[default]
     Guest,
-    /// min_ram, max_ram and free_ram.
+    /// min_ram and max_ram.
     Limits,
     /// The device: requested, plugged and its size.
     Device,
