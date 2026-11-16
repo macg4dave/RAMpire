@@ -331,7 +331,7 @@ fn wait_interruptibly(stop: &AtomicBool, duration: Duration) {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use rampire_core::{
@@ -399,6 +399,8 @@ mod tests {
         device: Device,
         targets: Rc<RefCell<Vec<u64>>>,
         failure: Option<ResizeSinkError>,
+        /// How many settles to come find libvirt unavailable.
+        unavailable_settles: Rc<Cell<u32>>,
     }
 
     impl ResizeSink for Sink {
@@ -420,6 +422,9 @@ mod tests {
                 Some(ResizeSinkError::Rejected(reason)) => {
                     return Err(ResizeSinkError::Rejected(reason.clone()))
                 }
+                Some(ResizeSinkError::Unavailable(reason)) => {
+                    return Err(ResizeSinkError::Unavailable(reason.clone()))
+                }
                 // An unknown outcome that did in fact take effect.
                 Some(ResizeSinkError::CommandUnknown(reason)) => {
                     self.device.0.borrow_mut().live.requested_bytes = target;
@@ -439,6 +444,13 @@ mod tests {
             target: u64,
             _stop: &AtomicBool,
         ) -> Result<(), ResizeSinkError> {
+            let unavailable = self.unavailable_settles.get();
+            if unavailable > 0 {
+                self.unavailable_settles.set(unavailable - 1);
+                return Err(ResizeSinkError::Unavailable(
+                    "read live domain XML: libvirt unavailable: authentication failed: access denied by policy".to_owned(),
+                ));
+            }
             let mut device = self.device.0.borrow_mut();
             device.live.requested_bytes = target;
             self.targets.borrow_mut().push(target);
@@ -588,6 +600,7 @@ mod tests {
         guest: Guest,
         device: Device,
         targets: Rc<RefCell<Vec<u64>>>,
+        unavailable_settles: Rc<Cell<u32>>,
         config: HostConfig,
     }
 
@@ -597,6 +610,7 @@ mod tests {
                 guest: Guest::default(),
                 device: Device::new(current_bytes),
                 targets: Rc::default(),
+                unavailable_settles: Rc::default(),
                 config: config(test, priority),
             }
         }
@@ -612,6 +626,7 @@ mod tests {
                     device: self.device.clone(),
                     targets: Rc::clone(&self.targets),
                     failure,
+                    unavailable_settles: Rc::clone(&self.unavailable_settles),
                 },
                 self.config.clone(),
                 "a".repeat(64),
@@ -835,6 +850,7 @@ mod tests {
                         device: fixture.device.clone(),
                         targets: Rc::clone(&fixture.targets),
                         failure: None,
+                        unavailable_settles: Rc::default(),
                     },
                     observe,
                     "a".repeat(64),
@@ -973,6 +989,42 @@ mod tests {
             fixture.guest.last_result().unwrap().outcome,
             MemoryOutcome::Completed
         );
+        drop(runtime);
+        assert!(!fixture.journal().latched());
+    }
+
+    #[test]
+    fn a_settle_libvirt_refuses_is_tried_again_and_never_latches() {
+        // 16 November: polkit, out of open files, refused the controller's
+        // libvirt connection as it settled a stalled removal. Nothing ran,
+        // yet the VM latched and stopped resizing for hours.
+        let mut fixture = Fixture::new("settle-unavailable", 100, 8 * GIB);
+        fixture.config.removal_settle = Duration::from_millis(20);
+        fixture.device.0.borrow_mut().stall_at = Some(7 * GIB + 512 * MIB);
+        fixture.unavailable_settles.set(3);
+        fixture
+            .guest
+            .send(Some(request(1, MemoryOperation::Remove, GIB)));
+        let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
+        round(&mut runtime);
+        round(&mut runtime);
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
+        thread::sleep(Duration::from_millis(30));
+        // Three settles find libvirt unavailable: the VM keeps its held
+        // removal.
+        for _ in 0..3 {
+            round(&mut runtime);
+        }
+        assert_eq!(fixture.unavailable_settles.get(), 0);
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
+        // libvirt answers again: the settle goes through, which a latched VM
+        // never does, and the guest learns what it returned.
+        round(&mut runtime);
+        round(&mut runtime);
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB, 7 * GIB + 512 * MIB]);
+        let result = fixture.guest.last_result().expect("partial result");
+        assert_eq!(result.outcome, MemoryOutcome::Partial);
+        assert_eq!(result.actual_bytes, 512 * MIB);
         drop(runtime);
         assert!(!fixture.journal().latched());
     }

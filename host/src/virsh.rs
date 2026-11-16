@@ -21,6 +21,45 @@ pub enum VirshError {
     // local socket, so sudo is a valid manual test path; it is not a deployment.
     #[error("non-interactive libvirt management access is unavailable: {0}; configure authorization for the host service account before starting the controller, or run it with sudo for manual testing")]
     Authorization(String),
+    /// libvirt couldn't be reached or refused the connection, so the command
+    /// never reached the VM.
+    #[error("libvirt unavailable: {0}")]
+    Unavailable(String),
+}
+
+impl VirshError {
+    /// Whether the command failed before libvirt acted on it because libvirt
+    /// itself couldn't be asked: it refused the connection (polkit out of
+    /// open files, restarting or reloading its rules), wasn't running, or
+    /// didn't answer. Such a failure says nothing about the VM and passes
+    /// by itself. A command that changes something and timed out is not
+    /// "nothing happened": callers treat its outcome as unknown, whatever
+    /// this says.
+    pub fn is_unavailable(&self) -> bool {
+        match self {
+            Self::Unavailable(_) | Self::Start(_) | Self::Timeout(_) | Self::Authorization(_) => {
+                true
+            }
+            // A `virsh` process gives only its words. These are libvirt's
+            // for a connection it couldn't open or lost.
+            Self::Failed { stderr, .. } => {
+                let stderr = stderr.to_ascii_lowercase();
+                [
+                    "failed to connect to the hypervisor",
+                    "authentication failed",
+                    "access denied by policy",
+                    "not authorized",
+                    "end of file while reading data",
+                    "cannot recv data",
+                    "cannot write data",
+                    "client socket is closed",
+                ]
+                .iter()
+                .any(|marker| stderr.contains(marker))
+            }
+            Self::InvalidUtf8(_) => false,
+        }
+    }
 }
 
 pub trait VirshCommand {
@@ -144,29 +183,16 @@ impl Virsh {
         Self::with_connection(binary, timeout, connection)
     }
 
-    /// Check the local RHEL polkit policy once, at daemon startup, without
-    /// permitting a password dialog, so a missing grant fails with a clear
-    /// message. libvirt authorizes every connection itself; repeating this
-    /// before each command only added polkit load. Remote transports retain
-    /// their own authentication contract.
+    /// Open the libvirt connection the controller keeps, at startup, so a
+    /// missing grant, or polkit refusing every check, fails before anything
+    /// is done. libvirt asks polkit once per connection, never per call: as
+    /// long as this connection lives, nothing the controller does needs
+    /// polkit. It used to run `pkcheck` as well, a second check that only
+    /// added polkit load.
     pub fn require_management_access(&self) -> Result<(), VirshError> {
-        if self.connection != "qemu:///system" {
-            return Ok(());
-        }
-        let mut check = authorization_command().map_err(|error| {
-            VirshError::Authorization(format!("identify controller process: {error}"))
-        })?;
-        let output = bounded_output(&mut check, self.timeout).map_err(|error| {
-            VirshError::Authorization(format!("check polkit authorization: {error}"))
-        })?;
-        if !output.status.success() {
-            return Err(VirshError::Authorization(format!(
-                "pkcheck {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        Ok(())
+        self.run(&["list".to_owned(), "--all".to_owned(), "--name".to_owned()])
+            .map(drop)
+            .map_err(|error| VirshError::Authorization(error.to_string()))
     }
 
     #[cfg(unix)]
@@ -190,14 +216,25 @@ impl Virsh {
     }
 
     fn run_process(&self, arguments: &[String]) -> Result<String, VirshError> {
-        let output =
-            bounded_output(&mut self.command(arguments), self.timeout).map_err(|error| {
-                if error.kind() == io::ErrorKind::TimedOut {
-                    VirshError::Timeout(self.timeout)
-                } else {
-                    VirshError::Start(error)
-                }
-            })?;
+        self.output(&mut self.command(arguments))
+    }
+
+    /// `virsh` with `arguments` and no connection.
+    #[cfg(unix)]
+    fn run_bare(&self, arguments: &[String]) -> Result<String, VirshError> {
+        let mut command = Command::new(&self.binary);
+        command.args(arguments);
+        self.output(&mut command)
+    }
+
+    fn output(&self, command: &mut Command) -> Result<String, VirshError> {
+        let output = bounded_output(command, self.timeout).map_err(|error| {
+            if error.kind() == io::ErrorKind::TimedOut {
+                VirshError::Timeout(self.timeout)
+            } else {
+                VirshError::Start(error)
+            }
+        })?;
         if !output.status.success() {
             return Err(VirshError::Failed {
                 status: output.status.to_string(),
@@ -211,12 +248,15 @@ impl Virsh {
 impl VirshCommand for Virsh {
     fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
         #[cfg(unix)]
-        if let Some(result) = self
-            .session
-            .as_ref()
-            .and_then(|session| session.run(arguments))
-        {
-            return result;
+        if let Some(session) = &self.session {
+            if arguments == ["version"] {
+                // `virsh --version` opens no connection, so asks no polkit.
+                let compiled = self.run_bare(&["--version".to_owned()])?;
+                return session.version(&compiled);
+            }
+            if let Some(result) = session.run(arguments) {
+                return result;
+            }
         }
         self.run_process(arguments)
     }
@@ -227,44 +267,6 @@ fn read_only(arguments: &[String]) -> bool {
         arguments.first().map(String::as_str),
         Some("dumpxml" | "domstate" | "domuuid" | "version")
     )
-}
-
-fn authorization_command() -> io::Result<Command> {
-    let identity = process_identity()?;
-    let mut command = Command::new("pkcheck");
-    // Never add --allow-user-interaction or --enable-internal-agent: this check
-    // must not ask the desktop user to authenticate each connection.
-    command.args([
-        "--action-id",
-        "org.libvirt.unix.manage",
-        "--process",
-        &identity,
-    ]);
-    Ok(command)
-}
-
-#[cfg(target_os = "linux")]
-fn process_identity() -> io::Result<String> {
-    use std::os::unix::fs::MetadataExt;
-
-    let stat = std::fs::read_to_string("/proc/self/stat")?;
-    // comm (field 2) may contain spaces and parentheses. starttime is field 22.
-    let started = stat
-        .rsplit_once(')')
-        .and_then(|(_, fields)| fields.split_whitespace().nth(19))
-        .ok_or_else(|| io::Error::other("/proc/self/stat has no start time"))?
-        .parse::<u64>()
-        .map_err(io::Error::other)?;
-    let uid = std::fs::metadata("/proc/self")?.uid();
-    Ok(format!("{},{started},{uid}", std::process::id()))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn process_identity() -> io::Result<String> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "local system libvirt authorization requires the Linux host",
-    ))
 }
 
 /// Capture at most 4 MiB per stream. The deadline includes descendants holding
@@ -501,30 +503,28 @@ mod tests {
         assert!(!command.get_args().any(|arg| arg == "--readonly"));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn authorization_check_is_non_interactive_and_identifies_the_exact_process() {
-        use std::os::unix::fs::MetadataExt;
-
-        let command = authorization_command().expect("construct local policy check");
-        let args = command.get_args().collect::<Vec<_>>();
-        assert_eq!(command.get_program(), "pkcheck");
-        assert_eq!(args.len(), 4);
-        assert_eq!(args[0], "--action-id");
-        assert_eq!(args[1], "org.libvirt.unix.manage");
-        assert_eq!(args[2], "--process");
-        let identity = args[3].to_str().expect("process identity");
-        let fields = identity.split(',').collect::<Vec<_>>();
-        assert_eq!(fields.len(), 3);
-        assert_eq!(fields[0], std::process::id().to_string());
-        assert!(fields[1].parse::<u64>().expect("process start ticks") > 0);
-        assert_eq!(
-            fields[2],
-            std::fs::metadata("/proc/self")
-                .expect("metadata")
-                .uid()
-                .to_string()
-        );
+    fn only_libvirt_refusing_or_not_answering_is_unavailable() {
+        let failed = |stderr: &str| VirshError::Failed {
+            status: "exit status: 1".to_owned(),
+            stderr: stderr.to_owned(),
+        };
+        for unavailable in [
+            failed("error: failed to connect to the hypervisor\nerror: authentication failed: access denied by policy"),
+            failed("error: authentication failed: polkit: polkit\\56retains_authorization_after_challenge=1\nAuthorization requires authentication but no agent is available."),
+            failed("error: Cannot recv data: Connection reset by peer"),
+            failed("error: End of file while reading data: Input/output error"),
+            VirshError::Timeout(Duration::from_secs(10)),
+            VirshError::Unavailable("connect to libvirt: Not authorized".to_owned()),
+        ] {
+            assert!(unavailable.is_unavailable(), "{unavailable}");
+        }
+        for answered in [
+            failed("error: failed to get domain 'guest'"),
+            failed("error: Requested operation is not valid: domain is not running"),
+        ] {
+            assert!(!answered.is_unavailable(), "{answered}");
+        }
     }
 
     struct RecordingVirsh {

@@ -72,6 +72,9 @@ pub struct VmController<G, S, R> {
     /// until the daemon restarts.
     pub(super) stopped: bool,
     unowned_divergence_reported: bool,
+    /// A settle libvirt couldn't be asked for was reported; it is tried
+    /// again every poll and reported once until one goes through.
+    settle_unavailable_reported: bool,
     state_unavailable_reported: bool,
     guest_unavailable_reported: bool,
     /// Separate from `guest_unavailable_reported`: a successful status write
@@ -105,6 +108,7 @@ impl<G, S, R> VmController<G, S, R> {
             outstanding_growth: None,
             stopped: false,
             unowned_divergence_reported: false,
+            settle_unavailable_reported: false,
             state_unavailable_reported: false,
             guest_unavailable_reported: false,
             status_unpublished_reported: false,
@@ -398,14 +402,17 @@ where
                 if self.guest.read().ok().is_some_and(|envelope| {
                     envelope.native_pressure == Some(MemoryResourceNotificationState::Low)
                 }) {
-                    self.log("event=held_shrink_released reason=guest_low_memory");
+                    // Logged once while a settle waits for libvirt.
+                    if !self.settle_unavailable_reported {
+                        self.log("event=held_shrink_released reason=guest_low_memory");
+                    }
                     true
                 } else {
                     let stalled = self.command_stalled(state)
                         && self.pending_progress.is_some_and(|(_, since)| {
                             since.elapsed() >= self.config.removal_settle
                         });
-                    if stalled {
+                    if stalled && !self.settle_unavailable_reported {
                         self.log("event=held_shrink_released reason=removal_stalled");
                     }
                     stalled
@@ -444,6 +451,8 @@ where
         if stop.load(Ordering::Acquire) {
             return Ok(Step::Wait);
         }
+        // What to go back to if the settle never reaches libvirt.
+        let earlier = (self.control.intent.clone(), self.pending_since);
         let settle = CommandIntent {
             operation_id: self.next_operation_id(),
             started_unix_millis: self.now()?,
@@ -469,6 +478,23 @@ where
         let command = self
             .resize_sink
             .retarget_pending_guarded(state, state.current_bytes, stop);
+        if let Err(ResizeSinkError::Unavailable(reason)) = &command {
+            // Nothing ran: the device still holds the original target, which
+            // the earlier intent owns. Keep it, and settle again next poll.
+            // Latching here stopped a VM for hours over polkit refusing
+            // connections, which says nothing about the VM.
+            (self.control.intent, self.pending_since) = earlier;
+            self.save()?;
+            if !self.settle_unavailable_reported {
+                self.settle_unavailable_reported = true;
+                self.log(&format!(
+                    "event=settle_deferred direction={direction:?} target_bytes={} kept_bytes={} reason={reason}",
+                    state.requested_bytes, state.current_bytes
+                ));
+            }
+            return Ok(Step::Wait);
+        }
+        self.settle_unavailable_reported = false;
         self.log(&format!(
             "event=resize_settled_short operation_id={operation_id} direction={direction:?} target_bytes={} kept_bytes={} command_result={command:?}",
             state.requested_bytes, state.current_bytes
@@ -726,8 +752,9 @@ where
                 self.publish(state, None);
                 Ok(Step::Wait)
             }
-            // Nothing ran: release the intent and refuse the request.
-            Err(ResizeSinkError::Rejected(reason)) => {
+            // Nothing ran: release the intent and refuse the request. The
+            // guest asks again, and libvirt may answer by then.
+            Err(ResizeSinkError::Rejected(reason) | ResizeSinkError::Unavailable(reason)) => {
                 self.control.intent = None;
                 self.outstanding_growth = Some(0);
                 self.record_unexecuted(

@@ -65,7 +65,8 @@ pub fn clear_latch<W: Write>(
     let (config, virsh) = load(target)?;
     let _owner = crate::ownership::DeviceOwner::for_domain(&virsh, &config.vm_name)?;
     attested(&config, &virsh)
-        .compatibility()?
+        .compatibility()
+        .map_err(|error| error.to_string())?
         .validate_for_resize()
         .map_err(|error| error.to_string())?;
     let state_source =

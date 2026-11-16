@@ -17,7 +17,7 @@ use super::runtime_scrub::{
     scrub_allocation_state, scrub_descriptor_numbers, scrub_qemu_argv, scrub_runtime_identity,
 };
 use super::{evidence, read_attestation, sha256_hex, validate_alias, LiveCompatibilityEvidence};
-use crate::compatibility_source::CompatibilitySource;
+use crate::compatibility_source::{CompatibilityError, CompatibilitySource};
 use crate::virsh::VirshCommand;
 
 /// How long evidence fixed for one QEMU process is reused before it is
@@ -67,7 +67,7 @@ fn runtime_domain_id(domain_xml: &str) -> Option<&str> {
 }
 
 impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
-    pub fn collect(&self) -> Result<LiveCompatibilityEvidence, String> {
+    pub fn collect(&self) -> Result<LiveCompatibilityEvidence, CompatibilityError> {
         validate_alias(&self.alias)?;
         let domain_xml = self.run("live domain XML", &["dumpxml", &self.vm_name])?;
         // The device must be there and whole. Its `current` is allocation
@@ -77,7 +77,11 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
         // VM's check, so no apply, add or remove could go through.
         match parse_virtio_mem_xml_for_alias(&domain_xml, &self.alias) {
             Ok(_) | Err(VirtioMemXmlError::MissingField("current")) => {}
-            Err(error) => return Err(format!("validate live domain XML for attestation: {error}")),
+            Err(error) => {
+                return Err(CompatibilityError::Refused(format!(
+                    "validate live domain XML for attestation: {error}"
+                )))
+            }
         }
         let process = self.process_evidence(runtime_domain_id(&domain_xml))?;
         Ok(LiveCompatibilityEvidence {
@@ -98,7 +102,10 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
     /// while that id is unchanged and younger than
     /// `PROCESS_EVIDENCE_MAX_AGE`, otherwise collected again. Without an id
     /// it is always collected.
-    fn process_evidence(&self, domain_id: Option<&str>) -> Result<ProcessEvidence, String> {
+    fn process_evidence(
+        &self,
+        domain_id: Option<&str>,
+    ) -> Result<ProcessEvidence, CompatibilityError> {
         if let (Some(id), Some((cached_id, collected, evidence))) =
             (domain_id, self.process.borrow().as_ref())
         {
@@ -127,7 +134,7 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
         Ok(evidence)
     }
 
-    fn run(&self, description: &str, arguments: &[&str]) -> Result<String, String> {
+    fn run(&self, description: &str, arguments: &[&str]) -> Result<String, CompatibilityError> {
         let output = self
             .command
             .run(
@@ -136,15 +143,24 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
                     .map(|value| (*value).to_owned())
                     .collect::<Vec<_>>(),
             )
-            .map_err(|error| format!("read {description}: {error}"))?;
+            .map_err(|error| {
+                let reason = format!("read {description}: {error}");
+                if error.is_unavailable() {
+                    CompatibilityError::Unavailable(reason)
+                } else {
+                    CompatibilityError::Refused(reason)
+                }
+            })?;
         if output.trim().is_empty() {
-            Err(format!("read {description}: command returned empty output"))
+            Err(CompatibilityError::Refused(format!(
+                "read {description}: command returned empty output"
+            )))
         } else {
             Ok(output)
         }
     }
 
-    fn qmp(&self, execute: &str, arguments: Option<Value>) -> Result<Value, String> {
+    fn qmp(&self, execute: &str, arguments: Option<Value>) -> Result<Value, CompatibilityError> {
         let mut request = json!({"execute": execute});
         if let Some(arguments) = arguments {
             request["arguments"] = arguments;
@@ -155,13 +171,13 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
         )?;
         let response: Value = serde_json::from_str(&response)
             .map_err(|error| format!("parse live QMP evidence: {error}"))?;
-        response
+        Ok(response
             .get("return")
             .cloned()
-            .ok_or_else(|| "live QMP evidence response is missing return".to_owned())
+            .ok_or_else(|| "live QMP evidence response is missing return".to_owned())?)
     }
 
-    fn qom_bool(&self, property: &str) -> Result<bool, String> {
+    fn qom_bool(&self, property: &str) -> Result<bool, CompatibilityError> {
         let path = format!("/machine/peripheral/{}", self.alias);
         let value = self.qmp("qom-get", Some(json!({"path": path, "property": property})))?;
         match value {
@@ -172,9 +188,9 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
             Value::String(value) if matches!(value.as_str(), "off" | "no" | "false" | "0") => {
                 Ok(false)
             }
-            _ => Err(format!(
+            _ => Err(CompatibilityError::Refused(format!(
                 "live QMP property {property} has unsupported value {value}"
-            )),
+            ))),
         }
     }
 }
@@ -202,7 +218,7 @@ impl<C> AttestedCompatibilitySource<C> {
 }
 
 impl<C: VirshCommand> CompatibilitySource for AttestedCompatibilitySource<C> {
-    fn compatibility(&self) -> Result<VirtioMemCompatibility, String> {
+    fn compatibility(&self) -> Result<VirtioMemCompatibility, CompatibilityError> {
         let attestation = read_attestation(&self.path)?;
         let live = self.live.collect()?;
         attestation.validate_live(&live, self.guest_os)?;
@@ -278,7 +294,7 @@ mod tests {
         assert_eq!(without.domain_xml_sha256, with.domain_xml_sha256);
         // Anything else missing is still a broken device.
         let error = evidence("<current unit='KiB'>0</current>", "").unwrap_err();
-        assert!(error.contains("missing requested"), "{error}");
+        assert!(error.to_string().contains("missing requested"), "{error}");
     }
 
     #[test]

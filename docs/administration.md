@@ -518,14 +518,20 @@ request is resumed, not lost. `rampire doctor` says when it isn't running.
 One failure is tried again by itself, every 30 s: libvirt access refused at
 start (exit 75), before anything was done, as when polkit is restarting.
 
-**polkit out of open files.** polkit 125 (RHEL 10) keeps a file open for
-every authorization check it is asked and never closes it. When it reaches
-its limit (1024) it refuses every check, and a controller starting then
-fails with "Not authorized", again every 30 s. A running controller keeps
-its libvirt connection and isn't affected; any restart (`apply`, an
-upgrade, a reboot) is. The checks need not be RAMpire's: on a desktop host,
-GNOME Shell and GNOME Software ask several a minute. `rampire doctor` says
-how full polkit is, as a problem from three quarters; then:
+**polkit out of open files.** polkit 125 (RHEL 10) leaks an open file for
+many of the authorization checks it is asked. On a RHEL 10 host, checks
+that may ask a person for an administrator's password (a desktop's or
+Cockpit's prompts, `pkexec`) leaked about one in two; plain checks, which
+is what libvirt asks for RAMpire's service account, didn't. When polkit
+reaches its limit (1024) it refuses every check, and a controller starting
+then fails with "Not authorized", again every 30 s. A running controller
+isn't affected: everything it asks libvirt goes over one connection, which
+polkit checks once, when it opens. Any restart (`apply`, an upgrade, a
+reboot) needs polkit, and so does reconnecting after libvirt restarts;
+until then a resize is refused and a settle is tried again every poll
+(`settle_deferred` in the journal), and no VM is latched for it.
+`rampire doctor` says how full polkit is, as a problem from three
+quarters; then:
 
 ```bash
 sudo systemctl restart polkit

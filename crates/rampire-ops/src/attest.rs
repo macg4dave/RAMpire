@@ -114,7 +114,7 @@ pub fn keep_current(
         if path.exists() {
             let live = VirshCompatibilityEvidenceSource::new(libvirt.runner(), name, &vm.alias)
                 .collect()
-                .map_err(about)?;
+                .map_err(|error| about(error.into()))?;
             let unchanged = read_attestation(&path)
                 .is_ok_and(|attestation| attestation.validate_live(&live, vm.guest_os).is_ok());
             if unchanged || !still_safe(libvirt, ui, name).map_err(about)? {

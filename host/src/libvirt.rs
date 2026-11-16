@@ -7,13 +7,17 @@
 //! once and serves `dumpxml`, `qemu-agent-command`, `qemu-monitor-command`
 //! and live `update-memory-device` over that connection: with several VMs
 //! growing at once, a `virsh` process (and polkit check) per resize cost
-//! about 230 ms each, one after another. Rare commands (suspend/resume,
-//! version, `domxml-to-native`) stay on `virsh`.
+//! about 230 ms each, one after another. It also serves the reads that
+//! check a VM's recorded setup before each resize (`domuuid`,
+//! `domxml-to-native`, `version`), byte for byte as `virsh` prints them:
+//! run as `virsh`, each was a polkit check, and with polkit out of open
+//! files they were refused and latched the VM (16 November). Rare
+//! commands (suspend/resume) stay on `virsh`.
 //!
 //! libvirt is loaded at runtime with `dlopen`: the host has the runtime
 //! library but not its development headers or unversioned link symlink.
 
-use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CStr, CString};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
@@ -39,6 +43,11 @@ type GetId = unsafe extern "C" fn(Ptr) -> c_uint;
 type AgentCommand = unsafe extern "C" fn(Ptr, *const c_char, c_int, c_uint) -> *mut c_char;
 type MonitorCommand = unsafe extern "C" fn(Ptr, *const c_char, *mut *mut c_char, c_uint) -> c_int;
 type UpdateDeviceFlags = unsafe extern "C" fn(Ptr, *const c_char, c_uint) -> c_int;
+type GetUuidString = unsafe extern "C" fn(Ptr, *mut c_char) -> c_int;
+type GetLibraryVersion = unsafe extern "C" fn(*mut c_ulong, *const c_char, *mut c_ulong) -> c_int;
+type GetType = unsafe extern "C" fn(Ptr) -> *const c_char;
+type GetHypervisorVersion = unsafe extern "C" fn(Ptr, *mut c_ulong) -> c_int;
+type XmlToNative = unsafe extern "C" fn(Ptr, *const c_char, *const c_char, c_uint) -> *mut c_char;
 type LastErrorMessage = unsafe extern "C" fn() -> *const c_char;
 type ResetLastError = unsafe extern "C" fn();
 type ErrorFunc = unsafe extern "C" fn(Ptr, Ptr);
@@ -64,6 +73,11 @@ struct Api {
     agent_command: AgentCommand,
     monitor_command: MonitorCommand,
     update_device_flags: UpdateDeviceFlags,
+    get_uuid_string: GetUuidString,
+    get_library_version: GetLibraryVersion,
+    get_type: GetType,
+    get_hypervisor_version: GetHypervisorVersion,
+    xml_to_native: XmlToNative,
     last_error_message: LastErrorMessage,
     reset_last_error: ResetLastError,
 }
@@ -114,6 +128,23 @@ impl Api {
                 update_device_flags: transmute::<Ptr, UpdateDeviceFlags>(symbol(
                     libvirt,
                     c"virDomainUpdateDeviceFlags",
+                )?),
+                get_uuid_string: transmute::<Ptr, GetUuidString>(symbol(
+                    libvirt,
+                    c"virDomainGetUUIDString",
+                )?),
+                get_library_version: transmute::<Ptr, GetLibraryVersion>(symbol(
+                    libvirt,
+                    c"virGetVersion",
+                )?),
+                get_type: transmute::<Ptr, GetType>(symbol(libvirt, c"virConnectGetType")?),
+                get_hypervisor_version: transmute::<Ptr, GetHypervisorVersion>(symbol(
+                    libvirt,
+                    c"virConnectGetVersion",
+                )?),
+                xml_to_native: transmute::<Ptr, XmlToNative>(symbol(
+                    libvirt,
+                    c"virConnectDomainXMLToNative",
                 )?),
                 last_error_message: transmute::<Ptr, LastErrorMessage>(symbol(
                     libvirt,
@@ -214,9 +245,40 @@ enum Request {
         vm: String,
         xml: String,
     },
+    /// The domain's UUID, as `virsh domuuid` prints it.
+    Uuid {
+        vm: String,
+    },
+    /// The QEMU command line for the domain's live definition, as `virsh
+    /// domxml-to-native qemu-argv --domain` prints it.
+    Native {
+        vm: String,
+    },
+    /// What `virsh version` prints. `compiled` is the version the `virsh`
+    /// binary was built against, which only it knows: `virsh --version`
+    /// gives it without a connection.
+    Version {
+        compiled: String,
+    },
 }
 
-type Job = (Request, Sender<Result<String, String>>);
+/// Why a request failed.
+#[derive(Debug)]
+enum Failure {
+    /// The connection couldn't be opened or was lost: libvirt refused it
+    /// (polkit) or isn't answering. Nothing reached the VM.
+    Unavailable(String),
+    /// libvirt answered with an error.
+    Error(String),
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self::Error(message)
+    }
+}
+
+type Job = (Request, Sender<Result<String, Failure>>);
 
 /// The worker thread owns the connection, so libvirt's thread-local error
 /// messages are always read on the thread that failed.
@@ -232,11 +294,14 @@ struct Worker {
 impl Worker {
     fn serve(mut self, jobs: Receiver<Job>) {
         for (request, reply) in jobs {
-            let result = self.execute(&request);
-            if result.is_err() && !self.connection.is_null() {
+            let mut result = self.execute(&request);
+            if let Err(Failure::Error(message)) = &result {
                 // SAFETY: connection is a live handle owned by this worker.
-                if unsafe { (self.api.connect_is_alive)(self.connection) } != 1 {
+                if !self.connection.is_null()
+                    && unsafe { (self.api.connect_is_alive)(self.connection) } != 1
+                {
                     self.disconnect();
+                    result = Err(Failure::Unavailable(message.clone()));
                 }
             }
             if reply.send(result).is_err() {
@@ -247,12 +312,15 @@ impl Worker {
         self.disconnect();
     }
 
-    fn connect(&mut self) -> Result<Ptr, String> {
+    fn connect(&mut self) -> Result<Ptr, Failure> {
         if self.connection.is_null() {
             // SAFETY: uri is NUL-terminated; a null result reports an error.
             let connection = unsafe { (self.api.connect_open)(self.uri.as_ptr()) };
             if connection.is_null() {
-                return Err(format!("connect to libvirt: {}", self.api.last_error()));
+                return Err(Failure::Unavailable(format!(
+                    "connect to libvirt: {}",
+                    self.api.last_error()
+                )));
             }
             if self.log_connections {
                 eprintln!("rampire: event=libvirt_connected");
@@ -270,35 +338,72 @@ impl Worker {
         }
     }
 
-    fn execute(&mut self, request: &Request) -> Result<String, String> {
+    fn execute(&mut self, request: &Request) -> Result<String, Failure> {
         // SAFETY: resets this thread's error so a stale one is never reported.
         unsafe { (self.api.reset_last_error)() };
         let connection = self.connect()?;
         let vm = match request {
             // Not about one domain: answered without looking one up.
-            Request::List { flags } => return self.list(connection, *flags),
+            Request::List { flags } => return Ok(self.list(connection, *flags)?),
+            Request::Version { compiled } => return Ok(self.version(connection, compiled)?),
             Request::DumpXml { vm, .. }
             | Request::State { vm }
             | Request::Agent { vm, .. }
             | Request::Monitor { vm, .. }
-            | Request::UpdateDevice { vm, .. } => vm,
+            | Request::UpdateDevice { vm, .. }
+            | Request::Uuid { vm }
+            | Request::Native { vm } => vm,
         };
         let name = CString::new(vm.as_str()).map_err(|_| "VM name contains NUL".to_owned())?;
         // SAFETY: connection is live and name is NUL-terminated.
         let domain = unsafe { (self.api.lookup_by_name)(connection, name.as_ptr()) };
         if domain.is_null() {
-            return Err(format!(
+            return Err(Failure::Error(format!(
                 "failed to get domain '{vm}': {}",
                 self.api.last_error()
-            ));
+            )));
         }
-        let result = match request {
-            // SAFETY: domain is live; flags 0 matches `virsh dumpxml`.
-            // SAFETY: domain is live; the flags are 0, or
-            // VIR_DOMAIN_XML_INACTIVE (2) as `virsh dumpxml --inactive` uses.
-            Request::List { .. } => Err("a list is answered without a domain".to_owned()),
+        let result = self.on_domain(connection, domain, request);
+        // SAFETY: domain was returned by lookup and is freed exactly once.
+        unsafe { (self.api.domain_free)(domain) };
+        Ok(result?)
+    }
+
+    /// `request`, for the live `domain` it names.
+    fn on_domain(&self, connection: Ptr, domain: Ptr, request: &Request) -> Result<String, String> {
+        match request {
+            Request::List { .. } | Request::Version { .. } => {
+                Err("answered without a domain".to_owned())
+            }
+            Request::Uuid { .. } => {
+                // VIR_UUID_STRING_BUFLEN: 36 characters and the NUL.
+                let mut uuid = [0 as c_char; 37];
+                // SAFETY: domain is live and uuid has the room libvirt writes.
+                match unsafe { (self.api.get_uuid_string)(domain, uuid.as_mut_ptr()) } {
+                    // SAFETY: on success libvirt wrote a NUL-terminated string.
+                    0 => Ok(format!(
+                        "{}\n\n",
+                        unsafe { CStr::from_ptr(uuid.as_ptr()) }.to_string_lossy()
+                    )),
+                    _ => Err(self.api.last_error()),
+                }
+            }
+            Request::Native { .. } => {
+                // virsh converts the domain's live definition (flags 0) and
+                // prints the result as it is.
+                // SAFETY: domain is live; flags 0 matches `virsh dumpxml`.
+                let xml = self.owned(unsafe { (self.api.get_xml_desc)(domain, 0) })?;
+                let xml = CString::new(xml).map_err(|_| "domain XML contains NUL".to_owned())?;
+                // SAFETY: connection is live; both strings are NUL-terminated
+                // and libvirt returns a malloc'd string or null.
+                self.owned(unsafe {
+                    (self.api.xml_to_native)(connection, c"qemu-argv".as_ptr(), xml.as_ptr(), 0)
+                })
+            }
             // virsh prints the XML and a newline after it: the same bytes,
             // since a setup's record is a hash of them.
+            // SAFETY: domain is live; the flags are 0, or
+            // VIR_DOMAIN_XML_INACTIVE (2) as `virsh dumpxml --inactive` uses.
             Request::DumpXml { inactive, .. } => self
                 .owned(unsafe {
                     (self.api.get_xml_desc)(domain, if *inactive { XML_INACTIVE } else { 0 })
@@ -347,10 +452,29 @@ impl Worker {
                 },
                 Err(_) => Err("device XML contains NUL".to_owned()),
             },
-        };
-        // SAFETY: domain was returned by lookup and is freed exactly once.
-        unsafe { (self.api.domain_free)(domain) };
-        result
+        }
+    }
+
+    /// What `virsh version` prints for this connection, given the version
+    /// `virsh` was built against.
+    fn version(&self, connection: Ptr, compiled: &str) -> Result<String, String> {
+        // SAFETY: connection is live; libvirt returns a static string or null.
+        let kind = unsafe { (self.api.get_type)(connection) };
+        if kind.is_null() {
+            return Err(self.api.last_error());
+        }
+        let (mut library, mut api, mut hypervisor): (c_ulong, c_ulong, c_ulong) = (0, 0, 0);
+        // SAFETY: the pointers are to locals; kind is NUL-terminated.
+        if unsafe { (self.api.get_library_version)(&mut library, kind, &mut api) } != 0 {
+            return Err(self.api.last_error());
+        }
+        // SAFETY: connection is live and the pointer is to a local.
+        if unsafe { (self.api.get_hypervisor_version)(connection, &mut hypervisor) } != 0 {
+            return Err(self.api.last_error());
+        }
+        // SAFETY: kind was checked non-null; libvirt owns it.
+        let kind = unsafe { CStr::from_ptr(kind) }.to_string_lossy();
+        Ok(version_text(compiled, &kind, library, api, hypervisor))
     }
 
     /// The domains' names in `virsh list`'s order: running ones by their
@@ -404,6 +528,36 @@ impl Worker {
             Ok(take_string(output))
         }
     }
+}
+
+/// `virsh version`'s text, from libvirt's numbers: major * 1,000,000 +
+/// minor * 1,000 + release. A hypervisor version of 0 is one libvirt
+/// couldn't learn, which virsh says in place of it.
+fn version_text(
+    compiled: &str,
+    kind: &str,
+    library: c_ulong,
+    api: c_ulong,
+    hypervisor: c_ulong,
+) -> String {
+    let dotted = |version: c_ulong| {
+        format!(
+            "{}.{}.{}",
+            version / 1_000_000,
+            version / 1_000 % 1_000,
+            version % 1_000
+        )
+    };
+    let running = if hypervisor == 0 {
+        format!("Cannot extract running {kind} hypervisor version")
+    } else {
+        format!("Running hypervisor: {kind} {}", dotted(hypervisor))
+    };
+    format!(
+        "Compiled against library: libvirt {compiled}\nUsing library: libvirt {}\nUsing API: {kind} {}\n{running}\n\n",
+        dotted(library),
+        dotted(api)
+    )
 }
 
 /// `virConnectListAllDomains`'s VIR_CONNECT_LIST_DOMAINS_SHUTOFF.
@@ -511,6 +665,14 @@ impl LibvirtSession {
                 }
             }
             [operation, vm] if operation == "domstate" => Request::State { vm: vm.clone() },
+            [operation, vm] if operation == "domuuid" => Request::Uuid { vm: vm.clone() },
+            [operation, format, flag, vm]
+                if operation == "domxml-to-native"
+                    && format == "qemu-argv"
+                    && flag == "--domain" =>
+            {
+                Request::Native { vm: vm.clone() }
+            }
             [operation, all, name] if operation == "list" && all == "--all" && name == "--name" => {
                 Request::List { flags: 0 }
             }
@@ -556,6 +718,14 @@ impl LibvirtSession {
         Some(self.call(request))
     }
 
+    /// What `virsh version` prints, over this connection. `compiled` is
+    /// what `virsh --version` printed: the one number only `virsh` knows.
+    pub fn version(&self, compiled: &str) -> Result<String, VirshError> {
+        self.call(Request::Version {
+            compiled: compiled.trim().to_owned(),
+        })
+    }
+
     fn call(&self, request: Request) -> Result<String, VirshError> {
         let mut jobs = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
         if jobs.is_none() {
@@ -574,19 +744,21 @@ impl LibvirtSession {
             Err(RecvTimeoutError::Disconnected)
         };
         match result {
-            Ok(result) => result.map_err(|stderr| VirshError::Failed {
-                status: "libvirt error".to_owned(),
-                stderr: format!("error: {stderr}"),
+            Ok(result) => result.map_err(|failure| match failure {
+                Failure::Unavailable(message) => VirshError::Unavailable(message),
+                Failure::Error(message) => VirshError::Failed {
+                    status: "libvirt error".to_owned(),
+                    stderr: format!("error: {message}"),
+                },
             }),
             Err(error) => {
                 // Abandon the worker; a stuck call cannot block later ones.
                 *jobs = None;
                 Err(match error {
                     RecvTimeoutError::Timeout => VirshError::Timeout(self.timeout),
-                    RecvTimeoutError::Disconnected => VirshError::Failed {
-                        status: "libvirt session ended".to_owned(),
-                        stderr: String::new(),
-                    },
+                    RecvTimeoutError::Disconnected => {
+                        VirshError::Unavailable("the libvirt session ended".to_owned())
+                    }
                 })
             }
         }
@@ -637,9 +809,9 @@ mod tests {
             ]),
             arguments(&["suspend", "guest"]),
             arguments(&["resume", "guest"]),
+            // Served by `Virsh`, which knows the binary's own version.
             arguments(&["version"]),
-            arguments(&["domuuid", "guest"]),
-            arguments(&["domxml-to-native", "qemu-argv", "--domain", "guest"]),
+            arguments(&["domxml-to-native", "native-format", "--domain", "guest"]),
             arguments(&["dumpxml", "guest", "--security-info"]),
             arguments(&["domstate", "guest", "--reason"]),
         ] {
@@ -658,6 +830,9 @@ mod tests {
             arguments(&["domstate", "guest"]),
             arguments(&["list", "--all", "--name"]),
             arguments(&["list", "--state-shutoff", "--name"]),
+            // The reads that check a VM's recorded setup before a resize.
+            arguments(&["domuuid", "guest"]),
+            arguments(&["domxml-to-native", "qemu-argv", "--domain", "guest"]),
         ] {
             assert!(session.run(&served).is_some(), "{served:?}");
         }
@@ -703,10 +878,84 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(Some(live), virsh(&["dumpxml", "test"]));
+            let uuid = session
+                .run(&arguments(&["domuuid", "test"]))
+                .unwrap()
+                .unwrap();
+            assert_eq!(Some(uuid), virsh(&["domuuid", "test"]));
+            let compiled = virsh(&["--version"]).expect("virsh --version");
+            assert_eq!(
+                Some(session.version(&compiled).unwrap()),
+                virsh(&["version"])
+            );
         }
         assert_eq!(state_name(1), "running");
         assert_eq!(state_name(5), "shut off");
         assert_eq!(state_name(99), "no state");
+    }
+
+    /// On a real QEMU VM, which the test driver can't stand in for, as root
+    /// (docs/testing.md has the command). Reads only.
+    #[test]
+    #[ignore = "reads a running QEMU VM named by RAMPIRE_SESSION_VM, as root"]
+    fn reads_a_real_vm_as_virsh_does() {
+        use crate::attestation::VirshCompatibilityEvidenceSource;
+        use crate::virsh::{Virsh, VirshCommand};
+        let vm = std::env::var("RAMPIRE_SESSION_VM").expect("RAMPIRE_SESSION_VM");
+        let alias = std::env::var("RAMPIRE_SESSION_ALIAS").expect("RAMPIRE_SESSION_ALIAS");
+        let timeout = Duration::from_secs(30);
+        let session = Virsh::persistent_with_connection("virsh", timeout, "qemu:///system");
+        let process = Virsh::with_connection("virsh", timeout, "qemu:///system");
+        // Byte for byte where the bytes are stable.
+        for args in [
+            vec!["dumpxml", vm.as_str()],
+            vec!["domuuid", vm.as_str()],
+            vec!["version"],
+        ] {
+            let args = arguments(&args);
+            assert_eq!(
+                session.run(&args).unwrap(),
+                process.run(&args).unwrap(),
+                "{args:?}"
+            );
+        }
+        // The QEMU command line names descriptors that differ every call,
+        // `virsh` against `virsh` too: what counts is the setup's evidence,
+        // which leaves them out.
+        let evidence = |command: Virsh| {
+            VirshCompatibilityEvidenceSource::new(command, vm.as_str(), alias.as_str())
+                .collect()
+                .expect("evidence")
+        };
+        assert_eq!(evidence(session), evidence(process));
+    }
+
+    #[test]
+    fn version_text_is_what_virsh_prints() {
+        assert_eq!(
+            version_text("11.10.0", "QEMU", 11_010_000, 11_010_000, 10_001_000),
+            "Compiled against library: libvirt 11.10.0\nUsing library: libvirt 11.10.0\nUsing API: QEMU 11.10.0\nRunning hypervisor: QEMU 10.1.0\n\n"
+        );
+        assert!(version_text("11.10.0", "QEMU", 11_010_000, 11_010_000, 0)
+            .contains("\nCannot extract running QEMU hypervisor version\n"));
+    }
+
+    #[test]
+    fn a_connection_libvirt_refuses_is_unavailable() {
+        // Nothing listens at this socket: the connection itself fails, as
+        // when polkit refuses it, and nothing reached a VM.
+        let session = LibvirtSession::new(
+            "qemu+unix:///system?socket=/nonexistent/rampire-test-sock",
+            Duration::from_secs(5),
+        );
+        match session.run(&arguments(&["dumpxml", "guest"])) {
+            Some(Err(error)) => assert!(error.is_unavailable(), "{error}"),
+            // A host without the library: nothing to show.
+            other => assert!(
+                !std::path::Path::new("/usr/lib64/libvirt.so.0").exists(),
+                "{other:?}"
+            ),
+        }
     }
 
     const DEVICE: &str = "    <memory model='virtio-mem'>

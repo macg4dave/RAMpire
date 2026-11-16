@@ -1,17 +1,24 @@
 //! Carrying out one resize: the checked `virsh update-memory-device`
 //! command for a VM's virtio-mem device.
 
-use rampire_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemState};
+use rampire_core::{
+    bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemCompatibility, VirtioMemState,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
-use crate::compatibility_source::CompatibilitySource;
+use crate::compatibility_source::{CompatibilityError, CompatibilitySource};
 use crate::virsh::VirshCommand;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ResizeSinkError {
     #[error("resize rejected before command execution: {0}")]
     Rejected(String),
+    /// libvirt couldn't be asked for the VM's state before the command, so
+    /// the command never ran: nothing about the VM is wrong, and asking
+    /// again later may succeed.
+    #[error("resize not attempted, libvirt unavailable: {0}")]
+    Unavailable(String),
     #[error("resize command outcome is unknown: {0}")]
     CommandUnknown(String),
 }
@@ -76,14 +83,12 @@ impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, 
         stop: &AtomicBool,
         authorize: &dyn Fn() -> Result<(), String>,
     ) -> Result<(), ResizeSinkError> {
-        let prepared = self
-            .prepare(target, |state| {
-                if *state != expected || state.requested_bytes != state.current_bytes {
-                    return Err("live device state changed since the resize decision".to_owned());
-                }
-                Ok(())
-            })
-            .map_err(ResizeSinkError::Rejected)?;
+        let prepared = self.prepare(target, |state| {
+            if *state != expected || state.requested_bytes != state.current_bytes {
+                return Err("live device state changed since the resize decision".to_owned());
+            }
+            Ok(())
+        })?;
         authorize().map_err(ResizeSinkError::Rejected)?;
         self.apply_unless_stopped(prepared, stop)
     }
@@ -94,16 +99,12 @@ impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, 
         target: u64,
         stop: &AtomicBool,
     ) -> Result<(), ResizeSinkError> {
-        let prepared = self
-            .prepare(target, |state| {
-                if *state != expected || state.requested_bytes == state.current_bytes {
-                    return Err(
-                        "live pending resize changed since the retarget decision".to_owned()
-                    );
-                }
-                Ok(())
-            })
-            .map_err(ResizeSinkError::Rejected)?;
+        let prepared = self.prepare(target, |state| {
+            if *state != expected || state.requested_bytes == state.current_bytes {
+                return Err("live pending resize changed since the retarget decision".to_owned());
+            }
+            Ok(())
+        })?;
         self.apply_unless_stopped(prepared, stop)
     }
 }
@@ -135,13 +136,38 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
         &self,
         target_bytes: u64,
         precondition: impl FnOnce(&VirtioMemState) -> Result<(), String>,
-    ) -> Result<PreparedResize, String> {
-        let compatibility = self.compatibility_source.compatibility()?;
+    ) -> Result<PreparedResize, ResizeSinkError> {
+        let compatibility =
+            self.compatibility_source
+                .compatibility()
+                .map_err(|error| match error {
+                    CompatibilityError::Unavailable(reason) => ResizeSinkError::Unavailable(reason),
+                    CompatibilityError::Refused(reason) => ResizeSinkError::Rejected(reason),
+                })?;
         let snapshot = self
             .command
             .run(&["dumpxml".to_owned(), self.vm_name.clone()])
-            .map_err(|error| error.to_string())?;
-        let snapshot = parse_virtio_mem_xml_for_alias(&snapshot, &self.alias)
+            .map_err(|error| {
+                let reason = format!("read live domain XML: {error}");
+                if error.is_unavailable() {
+                    ResizeSinkError::Unavailable(reason)
+                } else {
+                    ResizeSinkError::Rejected(reason)
+                }
+            })?;
+        self.prepare_from(&snapshot, compatibility, target_bytes, precondition)
+            .map_err(ResizeSinkError::Rejected)
+    }
+
+    /// The command for `target_bytes`, from the live XML just read.
+    fn prepare_from(
+        &self,
+        snapshot: &str,
+        compatibility: VirtioMemCompatibility,
+        target_bytes: u64,
+        precondition: impl FnOnce(&VirtioMemState) -> Result<(), String>,
+    ) -> Result<PreparedResize, String> {
+        let snapshot = parse_virtio_mem_xml_for_alias(snapshot, &self.alias)
             .map_err(|error| error.to_string())?;
         snapshot
             .compatibility
@@ -181,8 +207,10 @@ mod tests {
     struct DriftedAttestation;
 
     impl CompatibilitySource for DriftedAttestation {
-        fn compatibility(&self) -> Result<VirtioMemCompatibility, String> {
-            Err("live compatibility evidence drifted: domain_xml".to_owned())
+        fn compatibility(&self) -> Result<VirtioMemCompatibility, CompatibilityError> {
+            Err("live compatibility evidence drifted: domain_xml"
+                .to_owned()
+                .into())
         }
     }
 
@@ -277,7 +305,7 @@ mod tests {
     fn final_guard_rejects_drift_and_cancellation_during_compatibility() {
         struct Cancelling<'a>(&'a AtomicBool);
         impl CompatibilitySource for Cancelling<'_> {
-            fn compatibility(&self) -> Result<VirtioMemCompatibility, String> {
+            fn compatibility(&self) -> Result<VirtioMemCompatibility, CompatibilityError> {
                 self.0.store(true, Ordering::Release);
                 Ok(VirtioMemCompatibility::confirmed())
             }
@@ -459,6 +487,55 @@ mod tests {
         assert!(
             matches!(error, ResizeSinkError::Rejected(message) if message.contains("drifted: domain_xml"))
         );
+        assert_eq!(calls.take(), Vec::<Vec<String>>::new());
+    }
+
+    #[test]
+    fn libvirt_refusing_the_reads_is_unavailable_not_rejected() {
+        // polkit refusing the connection says nothing about the VM: the
+        // controller tries again rather than latching it.
+        struct Refused;
+        impl VirshCommand for Refused {
+            fn run(&self, _arguments: &[String]) -> Result<String, VirshError> {
+                Err(VirshError::Failed {
+                    status: "exit status: 1".to_owned(),
+                    stderr: "error: failed to connect to the hypervisor\nerror: authentication failed: access denied by policy".to_owned(),
+                })
+            }
+        }
+        let sink = VirshResizeSink::new(
+            Refused,
+            "guest",
+            "memory0",
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
+        assert!(matches!(
+            resize_to_6_mib(&sink),
+            Err(ResizeSinkError::Unavailable(reason)) if reason.contains("access denied by policy")
+        ));
+        // The same from the setup check that runs first.
+        struct Unreachable;
+        impl CompatibilitySource for Unreachable {
+            fn compatibility(&self) -> Result<VirtioMemCompatibility, CompatibilityError> {
+                Err(CompatibilityError::Unavailable(
+                    "read live domain XML: libvirt unavailable".to_owned(),
+                ))
+            }
+        }
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sink = VirshResizeSink::new(
+            Fake {
+                xml: CONVERGED_XML,
+                calls: Rc::clone(&calls),
+            },
+            "guest",
+            "memory0",
+            Unreachable,
+        );
+        assert!(matches!(
+            resize_to_6_mib(&sink),
+            Err(ResizeSinkError::Unavailable(_))
+        ));
         assert_eq!(calls.take(), Vec::<Vec<String>>::new());
     }
 }

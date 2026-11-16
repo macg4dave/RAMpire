@@ -80,8 +80,10 @@ pub fn run(config_path: &Path) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // Timeouts and the connection are global settings, shared by every VM.
-    // Per-poll commands share one libvirt connection: one polkit check
-    // instead of several a second.
+    // Everything the controller asks libvirt goes over one connection, and
+    // libvirt asks polkit only when a connection opens: once it is open,
+    // polkit refusing checks (out of open files, restarting) can't stop the
+    // controller. Only the event subscription is a `virsh` process of its own.
     let virsh = Virsh::persistent_with_connection(
         settings.virsh_binary.clone(),
         settings.command_timeout,
@@ -204,14 +206,12 @@ fn vm_controller(
             virsh.clone(),
             config.vm_name.clone(),
             config.alias.clone(),
-            // Evidence is hashed byte-for-byte, so collect it exactly as the
-            // attestation was made: through `virsh`, not the shared session.
+            // Over the shared connection too, which reads the evidence byte
+            // for byte as `virsh` prints it (`vm add` records it the same
+            // way). Run as `virsh`, each read before a resize was a polkit
+            // check, and polkit refusing one latched the VM.
             AttestedCompatibilitySource::new(
-                Virsh::with_connection(
-                    config.virsh_binary.clone(),
-                    config.command_timeout,
-                    config.libvirt_uri.clone(),
-                ),
+                virsh.clone(),
                 config.vm_name.clone(),
                 config.alias.clone(),
                 config.guest_os,

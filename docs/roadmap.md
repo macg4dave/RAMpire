@@ -74,11 +74,12 @@ Not scheduled. Each needs an owner decision or an outside fix first.
   refuses it. The guest service would need to run as a Home Assistant
   add-on (a container with the host's `/proc` and the control channel),
   published where Home Assistant finds add-ons.
-- **polkit 125's descriptor leak.** polkit on RHEL 10 keeps a file open
-  for every authorization check and fails every check once it has 1024;
-  on a desktop host GNOME Shell and GNOME Software alone fill it in hours.
-  RAMpire can't fix it: `rampire doctor` now warns, and restarting polkit
-  clears it ([administration](administration.md#recovering)). Done looks
+- **polkit 125's descriptor leak.** polkit on RHEL 10 leaks a file for
+  many authorization checks (those that may ask for a password, from a
+  desktop, Cockpit or `pkexec`) and fails every check once it has 1024.
+  RAMpire can't fix polkit: a running controller no longer needs it,
+  `rampire doctor` warns, and restarting polkit clears it
+  ([administration](administration.md#recovering)). Done looks
   like: the leak reported to Red Hat, and a polkit update that fixes it.
 - **SSH logins on the command line.** The TUI no longer asks for or takes
   an SSH login for a guest. `vm add --guest-login`, `vm upgrade

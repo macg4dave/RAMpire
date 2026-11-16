@@ -11,15 +11,28 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 
 ## Unreleased
 
+- The controller no longer needs polkit once it has started. Before
+  each resize it re-checked the VM's recorded setup with `virsh`, a new
+  libvirt connection and polkit check each time; with polkit out of
+  open files, the check settling a stalled removal was refused and the
+  VM latched, and stopped resizing until a person recovered it. Every
+  read now goes over the controller's one connection, which polkit
+  checks once, when it opens.
+- A resize or settle that finds libvirt unavailable (it refused the
+  connection or didn't answer) no longer latches the VM: nothing ran,
+  so a settle is tried again every poll, logged once as
+  `settle_deferred`, and a request is refused for the guest to ask
+  again. A VM that changed since it was checked is still refused as
+  before.
 - `rampire status`, `vm list`, the doctor and `vm add` give a VM's sizes
   as the whole VM, as its minimum and maximum are: "1.5 GiB of at most
   3.0 GiB", where they said what its memory device alone held ("1.0 GiB
   of at most 2.5 GiB" for the same VM).
 - `rampire doctor` says how full polkit's table of open files is, and
-  from three quarters full says to restart polkit. polkit 125 keeps a
-  file open for every check it is asked; when it has none left it
-  refuses every check, and a controller starting then failed with only
-  "Not authorized", which now points at it.
+  from three quarters full says to restart polkit. polkit 125 leaks an
+  open file for many of the checks it is asked; when it has none left
+  it refuses every check, and a controller starting then failed with
+  only "Not authorized", which now points at it.
 - After the host restarts, `apply` no longer fails every VM with
   "virtio-mem XML is missing current". libvirt shows a device's current
   size only once QEMU has reported it, which can take a while after a VM

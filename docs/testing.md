@@ -50,6 +50,17 @@ descriptors: RAMpire asking polkit for every read once ran it out of
 them, and it then refused the controller (`ls` reads polkitd's
 descriptors).
 
+The controller reads a VM's evidence over its one libvirt connection,
+and that evidence must be what `virsh` reads, or every recorded setup
+would look changed. libvirt's test driver can't produce a QEMU command
+line, so one test compares the two on a real running VM, reading only:
+
+```bash
+cargo test -p rampire-host --lib --no-run   # names the test binary
+sudo env RAMPIRE_SESSION_VM=VM RAMPIRE_SESSION_ALIAS=ALIAS \
+  target/debug/deps/rampire_host-HASH --ignored reads_a_real_vm_as_virsh_does
+```
+
 Each command and the TUI run in tmux, at 150x45, and are read off the
 screen as a person sees them. On every read the screen is checked for
 what must never be on it: a row written over the TUI, `libvirt:`
