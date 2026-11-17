@@ -32,6 +32,11 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   every resize once it starts, and a controller that is waiting to start
   again because it couldn't read the old records is upgraded too: such
   a controller kept every VM at its minimum RAM.
+- The TUI's VM list no longer makes a VM look capped at its minimum. Its
+  guest column says the most the VM may grow to (`42% of 1.00, max
+  4.00`) where the limits column doesn't fit, and PLUGGED is now ADDED,
+  `+0.12G`: the RAM added on top of boot RAM, which read as the VM's
+  size, below its minimum.
 - `rampire status` and the VM list say a managed VM that is shut off is
   "resized once it runs", instead of "its status can't be read
   (virtio-mem XML is missing current)".

@@ -182,7 +182,8 @@ fn vm_list(
         + 2
         // A mark's room, while any VM is marked.
         + if app.list.marks.is_empty() { 0 } else { 2 };
-    let mut header = vec!["VM", "STATE", "PRI", "PLUGGED"];
+    // ADDED: what the device adds to the boot RAM, not the VM's size.
+    let mut header = vec!["VM", "STATE", "PRI", "ADDED"];
     let mut widths = vec![
         Constraint::Length(name_width),
         Constraint::Length(14),
@@ -202,11 +203,14 @@ fn vm_list(
     let spare = area.width.saturating_sub(
         fixed + 4 /* borders, padding */ + 2 /* marker */ + 6 /* gaps */ + 8, /* note: "blocked", "update" */
     );
-    let gauge = spare.saturating_sub(13).clamp(4, 60) as usize;
+    // Without the limits column the guest's cell also says the maximum.
+    let shows_max = !(guest_mode && wide);
+    let text = if shows_max { 23 } else { 13 };
+    let gauge = spare.saturating_sub(text).clamp(4, 60) as usize;
     match mode {
         Linemode::Guest => {
             header.extend(["GUEST", "NOTE"]);
-            widths.extend([Constraint::Length(gauge as u16 + 13), Constraint::Fill(1)]);
+            widths.extend([Constraint::Length(gauge as u16 + text), Constraint::Fill(1)]);
         }
         Linemode::Limits => {
             header.extend(["MIN", "MAX"]);
@@ -261,7 +265,7 @@ fn vm_list(
                     cells.push(Cell::from(Span::styled(
                         sample.device.map_or_else(
                             || "-".to_owned(),
-                            |device| crate::top::short_gib(device.current_bytes),
+                            |device| crate::tui::pool::added(device.current_bytes),
                         ),
                         theme.value(),
                     )));
@@ -279,6 +283,7 @@ fn vm_list(
                                 sample.guest.as_ref(),
                                 pool.now_unix_millis,
                                 gauge,
+                                shows_max.then_some(vm.max_ram),
                             );
                             cells.push(Cell::from(guest));
                             // A pending request, or a stale publication; else an

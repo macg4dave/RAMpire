@@ -281,9 +281,10 @@ Its first screen is the dashboard. How to read it:
   its own colour, and the rest of the bar is free memory. Below the bar
   is how much is in use, how much is free, and how much memory the host
   has left.
-- **VMs**: one line per VM, showing its priority, its current size,
-  whether it is growing or shrinking, how much of its memory is in use,
-  and any request it is waiting on. A VM marked **stale** hasn't reported
+- **VMs**: one line per VM, showing its priority, the RAM added on top
+  of its boot RAM (ADDED, `+0.12G`), whether it is growing or shrinking,
+  how much of the RAM it has now is in use and the most it may grow to
+  (`42% of 1.00, max 4.00`), and any request it is waiting on. A VM marked **stale** hasn't reported
   in for over 30 seconds.
 - **Pool history**: a chart of the pool's use over the last few
   minutes, on a scale in GiB. The line turns amber, then red, as the pool

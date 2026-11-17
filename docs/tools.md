@@ -43,10 +43,13 @@ A live view of every VM in the configuration on one screen, read-only like
   session.
 - **VMs**: one row per VM, in host-list order, showing:
   - priority
-  - plugged size
+  - ADDED: what the device adds to the boot RAM (`+0.12G`), not the VM's
+    size
   - whether the device is steady, growing or shrinking, and by how much
   - `min_ram`–`max_ram` (on terminals at least 110 columns wide)
-  - how much of the guest's RAM is in use
+  - how much of the RAM the guest has now is in use, and, where the
+    limits column doesn't fit, the most it may grow to (`42% of 1.00,
+    max 4.00`)
   - the guest's pending request
 
   A publication older than 30 s is marked stale.

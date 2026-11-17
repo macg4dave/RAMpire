@@ -234,7 +234,8 @@ fn vm_table(
         .unwrap_or(0)
         .clamp(10, 31) as u16
         + 2;
-    let mut header = vec!["VM", "PRI", "PLUGGED", "DEVICE"];
+    // ADDED: what the device adds to the boot RAM, not the VM's size.
+    let mut header = vec!["VM", "PRI", "ADDED", "DEVICE"];
     let mut widths = vec![
         Constraint::Length(name_width),
         Constraint::Length(4),
@@ -246,7 +247,11 @@ fn vm_table(
         widths.push(Constraint::Length(13));
     }
     header.extend(["GUEST IN USE", "REQUEST"]);
-    widths.extend([Constraint::Length(18), Constraint::Min(6)]);
+    // Without the limits column the guest's cell says the maximum.
+    widths.extend([
+        Constraint::Length(if wide { 18 } else { 28 }),
+        Constraint::Min(6),
+    ]);
 
     let rows: Vec<Row> = snapshot
         .command
@@ -264,7 +269,7 @@ fn vm_table(
                 Cell::from(Span::styled(
                     sample
                         .device
-                        .map_or_else(|| "-".to_owned(), |device| short_gib(device.current_bytes)),
+                        .map_or_else(|| "-".to_owned(), |device| added(device.current_bytes)),
                     theme.value(),
                 )),
                 Cell::from(device_state(theme, sample.device)),
@@ -275,8 +280,12 @@ fn vm_table(
                     theme.dim(),
                 )));
             }
-            let (guest, request) =
-                guest_cells(theme, sample.guest.as_ref(), snapshot.now_unix_millis);
+            let (guest, request) = guest_cells(
+                theme,
+                sample.guest.as_ref(),
+                snapshot.now_unix_millis,
+                (!wide).then_some(vm.max_ram),
+            );
             cells.push(Cell::from(guest));
             cells.push(Cell::from(request));
             Row::new(cells)
@@ -307,21 +316,31 @@ fn vm_table(
     }
 }
 
+/// What a VM's device adds to its boot RAM, as a column shows it: "+0.12G".
+/// Shown bare it read as the VM's size, below its minimum.
+pub(crate) fn added(bytes: u64) -> String {
+    format!("+{}", short_gib(bytes))
+}
+
 /// The guest's in-use meter and its pending request.
 pub(crate) fn guest_cells<'a>(
     theme: &Theme,
     guest: Option<&RawTelemetryEnvelope>,
     now_unix_millis: u64,
+    max_ram: Option<u64>,
 ) -> (Line<'a>, Line<'a>) {
-    guest_cells_sized(theme, guest, now_unix_millis, 4)
+    guest_cells_sized(theme, guest, now_unix_millis, 4, max_ram)
 }
 
 /// The guest's in-use gauge `gauge` cells wide, and its pending request.
+/// The gauge is of the RAM the guest has now; with `max_ram` it also says
+/// the most it may grow to, since "of 1.00" alone read as its maximum.
 pub(crate) fn guest_cells_sized<'a>(
     theme: &Theme,
     guest: Option<&RawTelemetryEnvelope>,
     now_unix_millis: u64,
     gauge: usize,
+    max_ram: Option<u64>,
 ) -> (Line<'a>, Line<'a>) {
     let Some(guest) = guest else {
         return (
@@ -335,9 +354,10 @@ pub(crate) fn guest_cells_sized<'a>(
     let mut meter = widgets::bar(theme, fraction, gauge, tone::load(fraction));
     meter.push(Span::styled(
         format!(
-            " {:3.0}% of {}",
+            " {:3.0}% of {}{}",
             fraction * 100.0,
-            short_gib(memory.physical_total_bytes)
+            short_gib(memory.physical_total_bytes),
+            max_ram.map_or_else(String::new, |max| format!(", max {}", short_gib(max)))
         ),
         theme.tone(tone::load(fraction)),
     ));
