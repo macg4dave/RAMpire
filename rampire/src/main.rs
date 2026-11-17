@@ -189,6 +189,11 @@ enum Command {
         /// failure, for configuration management.
         #[arg(long, help_heading = SCRIPTS)]
         detailed_exitcode: bool,
+        /// Bring each running VM's recorded setup up to date and apply only
+        /// that, leaving the rest of the draft for a later apply. The
+        /// package runs it on upgrade.
+        #[arg(long, help_heading = SCRIPTS)]
+        records_only: bool,
     },
     /// Go back to the applied copy before the current one, through the same
     /// checks as `apply`.
@@ -467,9 +472,15 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
         Command::Check => reporting::check(cli),
         Command::Doctor { vm } => reporting::doctor(cli, vm.as_deref()),
         Command::Diff => apply::diff(&context, ui).map(|()| ExitCode::SUCCESS),
-        Command::Apply { detailed_exitcode } => {
-            apply::apply(&context, ui).map(|outcome| changed_code(outcome, *detailed_exitcode))
+        Command::Apply {
+            detailed_exitcode,
+            records_only,
+        } => if *records_only {
+            apply::apply_records(&context, ui)
+        } else {
+            apply::apply(&context, ui)
         }
+        .map(|outcome| changed_code(outcome, *detailed_exitcode)),
         Command::Rollback => apply::rollback(&context, ui).map(ended),
         Command::Set {
             target,

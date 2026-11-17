@@ -94,7 +94,7 @@ The exit code is 0 when `passed` is true and 1 otherwise.
 | File | `schema` | Version | Written by |
 |---|---|---|---|
 | `/var/lib/rampire/evidence/ID-apply.json`, `ID-rollback.json` | `rampire.apply-evidence` | 1 | `apply`, `rollback` |
-| `attestations/VM.attestation.json` | `rampire.attestation` | 1 | `apply` |
+| `attestations/VM.attestation.json` | `rampire.attestation` | 2 | `apply` |
 | `/var/lib/rampire/state/VM-requests.json` | `rampire.checkpoint` | 1 | the controller |
 
 `rampire.apply-evidence` records the `action`, `unix_millis`, the `build`

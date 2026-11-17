@@ -50,10 +50,10 @@ descriptors: RAMpire asking polkit for every read once ran it out of
 them, and it then refused the controller (`ls` reads polkitd's
 descriptors).
 
-The controller reads a VM's evidence over its one libvirt connection,
-and that evidence must be what `virsh` reads, or every recorded setup
-would look changed. libvirt's test driver can't produce a QEMU command
-line, so one test compares the two on a real running VM, reading only:
+The controller reads a VM's RAM over its one libvirt connection, and
+what it reads must be what `virsh` reads, or every recorded setup would
+look changed. libvirt's test driver can't run QEMU, so one test compares
+the two on a real running VM, reading only:
 
 ```bash
 cargo test -p rampire-host --lib --no-run   # names the test binary

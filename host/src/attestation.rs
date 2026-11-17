@@ -1,6 +1,7 @@
-//! A VM's recorded setup: the review it was checked against and the
-//! fingerprint of how it runs, which every resize compares with the live
-//! VM before it goes ahead.
+//! A VM's recorded setup: the review it was checked against and its RAM
+//! as it runs (its definition's memory and QEMU's virtio-mem options),
+//! which every resize compares with the live VM before it goes ahead.
+//! Nothing else about the VM is RAMpire's business.
 
 use std::path::Path;
 
@@ -10,14 +11,15 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 mod live_evidence;
-mod runtime_scrub;
+mod memory_setup;
 
 pub use live_evidence::{AttestedCompatibilitySource, VirshCompatibilityEvidenceSource};
+pub use memory_setup::MemorySetup;
 
-/// The attestation's version. It names the reviewed guest operating
-/// system. Versions restarted at 1 when documents began naming their
-/// schema (docs/names.md).
-pub const COMPATIBILITY_ATTESTATION_VERSION: u32 = 1;
+/// The attestation's version. Version 2 records the VM's RAM; version 1
+/// fingerprinted its whole definition, QEMU's command line and the libvirt
+/// and QEMU versions, and is recorded again by `apply`.
+pub const COMPATIBILITY_ATTESTATION_VERSION: u32 = 2;
 
 rampire_core::schema_name! {
     /// The `schema` of a VM's compatibility attestation.
@@ -128,15 +130,14 @@ impl CompatibilityReview {
     }
 }
 
+/// A VM's RAM as it runs: what its record holds and every resize
+/// compares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveCompatibilityEvidence {
     pub vm_name: String,
     pub device_alias: String,
-    pub domain_xml_sha256: String,
-    pub qemu_argv_sha256: String,
-    pub libvirt_version_sha256: String,
-    pub qemu_version: Value,
+    pub memory: MemorySetup,
     pub dynamic_memslots: bool,
     pub unplugged_inaccessible: bool,
 }
@@ -147,36 +148,8 @@ impl LiveCompatibilityEvidence {
             return Err("compatibility evidence VM name must be non-empty".to_owned());
         }
         validate_alias(&self.device_alias)?;
-        for (name, value) in [
-            ("domain_xml_sha256", &self.domain_xml_sha256),
-            ("qemu_argv_sha256", &self.qemu_argv_sha256),
-            ("libvirt_version_sha256", &self.libvirt_version_sha256),
-        ] {
-            if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(format!("compatibility evidence {name} must be SHA-256 hex"));
-            }
-        }
-        let qemu = self
-            .qemu_version
-            .get("qemu")
-            .and_then(Value::as_object)
-            .ok_or_else(|| {
-                "compatibility evidence qemu_version.qemu must be an object".to_owned()
-            })?;
-        for component in ["major", "minor", "micro"] {
-            if qemu.get(component).and_then(Value::as_u64).is_none() {
-                return Err(format!(
-                    "compatibility evidence qemu_version.qemu.{component} must be an unsigned integer"
-                ));
-            }
-        }
-        if self
-            .qemu_version
-            .get("package")
-            .and_then(Value::as_str)
-            .is_none()
-        {
-            return Err("compatibility evidence qemu_version.package must be a string".to_owned());
+        if self.memory.device_size_bytes == 0 {
+            return Err("compatibility evidence has an empty virtio-mem device".to_owned());
         }
         if !self.dynamic_memslots {
             return Err("compatibility evidence does not enable dynamic_memslots".to_owned());
@@ -217,6 +190,17 @@ impl CompatibilityAttestation {
     }
 
     pub fn parse(json: &str) -> Result<Self, String> {
+        // An earlier version's record doesn't parse as this one: say so.
+        let version = serde_json::from_str::<Value>(json)
+            .ok()
+            .and_then(|value| value.get("version").and_then(Value::as_u64));
+        if let Some(version) =
+            version.filter(|&v| v != u64::from(COMPATIBILITY_ATTESTATION_VERSION))
+        {
+            return Err(format!(
+                "its setup was recorded by another RAMpire (version {version}); rampire apply records it again"
+            ));
+        }
         let document: Self = serde_json::from_str(json)
             .map_err(|error| format!("parse compatibility attestation: {error}"))?;
         document.validate_integrity()?;
@@ -257,65 +241,28 @@ impl CompatibilityAttestation {
                 self.review.guest_os
             ));
         }
-        // Each field with its attested and live values, so a drift report
-        // identifies what changed.
-        let comparisons = [
-            (
-                "vm_name",
-                self.evidence.vm_name.clone(),
-                live.vm_name.clone(),
-            ),
-            (
-                "device_alias",
-                self.evidence.device_alias.clone(),
-                live.device_alias.clone(),
-            ),
-            (
-                "domain_xml",
-                self.evidence.domain_xml_sha256.clone(),
-                live.domain_xml_sha256.clone(),
-            ),
-            (
-                "qemu_argv",
-                self.evidence.qemu_argv_sha256.clone(),
-                live.qemu_argv_sha256.clone(),
-            ),
-            (
-                "libvirt_version",
-                self.evidence.libvirt_version_sha256.clone(),
-                live.libvirt_version_sha256.clone(),
-            ),
-            (
-                "qemu_version",
-                self.evidence.qemu_version.to_string(),
-                live.qemu_version.to_string(),
-            ),
-            (
-                "dynamic_memslots",
-                self.evidence.dynamic_memslots.to_string(),
-                live.dynamic_memslots.to_string(),
-            ),
-            (
-                "unplugged_inaccessible",
-                self.evidence.unplugged_inaccessible.to_string(),
-                live.unplugged_inaccessible.to_string(),
-            ),
-        ];
-        if let Some((field, attested, observed)) = comparisons
-            .iter()
-            .find(|(_, attested, observed)| attested != observed)
+        let recorded = &self.evidence;
+        let what = if recorded.vm_name != live.vm_name {
+            Some(format!(
+                "its name went from {} to {}",
+                recorded.vm_name, live.vm_name
+            ))
+        } else if recorded.device_alias != live.device_alias {
+            Some(format!(
+                "its virtio-mem device went from {} to {}",
+                recorded.device_alias, live.device_alias
+            ))
+        } else if (recorded.dynamic_memslots, recorded.unplugged_inaccessible)
+            != (live.dynamic_memslots, live.unplugged_inaccessible)
         {
-            // What changed, as a person would say it; a digest says nothing.
-            let what = match *field {
-                "domain_xml" => "its definition changed".to_owned(),
-                "qemu_argv" => "QEMU's command line changed".to_owned(),
-                "libvirt_version" => "libvirt was upgraded".to_owned(),
-                "qemu_version" => format!("QEMU went from {attested} to {observed}"),
-                _ => format!("{field} changed from {attested} to {observed}"),
-            };
-            return Err(format!("{what} since {CHECKED}"));
+            Some("QEMU's virtio-mem options changed".to_owned())
+        } else {
+            recorded.memory.changed(&live.memory)
+        };
+        match what {
+            Some(what) => Err(format!("{what} since {CHECKED}")),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     fn expected_fingerprint(&self) -> Result<String, String> {
@@ -450,13 +397,29 @@ guest_driver_version = { value = "linux 6.12", source = "confirmed" }
         LiveCompatibilityEvidence {
             vm_name: "guest".to_owned(),
             device_alias: "memory0".to_owned(),
-            domain_xml_sha256: "a".repeat(64),
-            qemu_argv_sha256: "b".repeat(64),
-            libvirt_version_sha256: "c".repeat(64),
-            qemu_version: json!({"qemu":{"major":9,"minor":2,"micro":0},"package":"qemu-9.2"}),
+            memory: MemorySetup {
+                max_memory_bytes: Some(9 << 30),
+                max_memory_slots: Some(1),
+                numa_cells_bytes: vec![1 << 30],
+                device_size_bytes: 8 << 30,
+                device_block_bytes: 2 << 20,
+                device_node: Some(0),
+                other_memory_devices: Vec::new(),
+                balloon: Some("none".to_owned()),
+                memory_backing: None,
+            },
             dynamic_memslots: true,
             unplugged_inaccessible: true,
         }
+    }
+
+    #[test]
+    fn a_setup_recorded_by_an_earlier_rampire_is_recorded_again() {
+        // Version 1 fingerprinted the whole definition. It is refused, as
+        // apply's re-recording needs, with what to do.
+        let earlier = r#"{"schema":"rampire.attestation","version":1,"evidence":{"vm_name":"guest","device_alias":"memory0","domain_xml_sha256":"aa"},"review":{},"fingerprint_sha256":"bb"}"#;
+        let error = CompatibilityAttestation::parse(earlier).unwrap_err();
+        assert!(error.contains("rampire apply records it again"), "{error}");
     }
 
     #[test]
@@ -475,26 +438,35 @@ guest_driver_version = { value = "linux 6.12", source = "confirmed" }
         changed.device_alias = "other".to_owned();
         changes.push(changed);
         let mut changed = live();
-        changed.domain_xml_sha256 = "d".repeat(64);
+        changed.memory.max_memory_bytes = Some(16 << 30);
         changes.push(changed);
         let mut changed = live();
-        changed.qemu_argv_sha256 = "e".repeat(64);
+        changed.memory.numa_cells_bytes = vec![2 << 30];
         changes.push(changed);
         let mut changed = live();
-        changed.libvirt_version_sha256 = "f".repeat(64);
-        changes.push(changed);
-        let mut changed = live();
-        changed.qemu_version = json!({"qemu":{"major":10,"minor":0,"micro":0},"package":"qemu-10"});
-        changes.push(changed);
-        let mut changed = live();
-        changed.dynamic_memslots = false;
-        changes.push(changed);
-        let mut changed = live();
-        changed.unplugged_inaccessible = false;
+        changed.memory.balloon = Some("virtio".to_owned());
         changes.push(changed);
         for changed in changes {
-            assert!(document.validate_live(&changed, GuestOs::Windows).is_err());
+            let error = document
+                .validate_live(&changed, GuestOs::Windows)
+                .unwrap_err();
+            assert!(error.ends_with(CHECKED), "{error}");
         }
+        let mut changed = live();
+        changed.memory.max_memory_bytes = Some(16 << 30);
+        assert_eq!(
+            document
+                .validate_live(&changed, GuestOs::Windows)
+                .unwrap_err(),
+            format!("its maximum memory went from 9GB to 16GB since {CHECKED}")
+        );
+        // QEMU's options switched off are refused as they are read.
+        let mut changed = live();
+        changed.dynamic_memslots = false;
+        assert!(document.validate_live(&changed, GuestOs::Windows).is_err());
+        let mut changed = live();
+        changed.unplugged_inaccessible = false;
+        assert!(document.validate_live(&changed, GuestOs::Windows).is_err());
 
         assert!(document.validate_live(&live(), GuestOs::Linux).is_err());
 

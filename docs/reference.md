@@ -200,7 +200,7 @@ logged as `event=operator_change action=tui_failed`.
 | Command | What it does |
 |---|---|
 | `rampire diff` | Shows the draft against the applied copy |
-| `rampire apply [--detailed-exitcode]` | Copies the draft, checks the copy while the controller runs, shows the difference, asks, then makes it current and reloads or restarts the controller. A controller that isn't running is started, and enabled at boot, when the configuration manages VMs, even with nothing new to apply. A failing draft changes nothing. A draft fails only for a problem with a VM it changes (a new VM, or one whose settings or recorded setup differ); another VM's problem is said, that VM isn't resized until it is fixed, and the rest is applied |
+| `rampire apply [--detailed-exitcode] [--records-only]` | Copies the draft, checks the copy while the controller runs, shows the difference, asks, then makes it current and reloads or restarts the controller. A controller that isn't running is started, and enabled at boot, when the configuration manages VMs, even with nothing new to apply. A failing draft changes nothing. A draft fails only for a problem with a VM it changes (a new VM, or one whose settings or recorded setup differ); another VM's problem is said, that VM isn't resized until it is fixed, and the rest is applied. `--records-only` brings each running VM's recorded setup up to date and applies only that, leaving the rest of the draft; the package runs it on upgrade |
 | `rampire rollback` | Returns to the applied copy before the current one, through the same checks |
 | `rampire set TARGET KEY=VALUE... [--no-apply]` | Changes settings in a VM's file, or in `global.toml` with `global`, keeping comments, then applies. The controller takes a change at once. When a new `min_ram` or `max_ram` doesn't fit the VM's definition (it starts with other than `min_ram`, or its device can't reach `max_ram`), the definition is fitted to them as `vm add` does, which takes a restart: asked whether now, or at the VM's next start. Until then the guest keeps within them as nearly as it can. For a running VM whose guest service runs another build than the host's, it also upgrades the guest service, logged in to it as `vm upgrade` does; one it can't log in to is left for `vm upgrade` |
 
@@ -237,7 +237,7 @@ logged as `event=operator_change action=tui_failed`.
 | `/etc/rampire/global.toml` | Settings for the whole host |
 | `/etc/rampire/vms.d/VM.toml` | One VM; the file's name is the VM's |
 | `/etc/rampire/reviews/PROFILE.toml` | A review profile |
-| `/etc/rampire/attestations/VM.attestation.json` | How a VM was set up when `apply` last checked it |
+| `/etc/rampire/attestations/VM.attestation.json` | A VM's RAM as it ran when `apply` last checked it |
 | `/var/lib/rampire/applied/ID/`, `current` | Applied copies, and the one the controller runs |
 | `/var/lib/rampire/evidence/` | What each apply and rollback did |
 | `/var/lib/rampire/state/` | Each VM's durable request state |

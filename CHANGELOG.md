@@ -9,6 +9,27 @@ A change someone using RAMpire would notice gets a line under
 turns that section into the release's entry, and the entry becomes the
 release's notes on GitHub ([releasing](docs/releasing.md)).
 
+## Unreleased
+
+- Raising a VM's minimum RAM, in `vm add`, `rampire set` or the TUI, no
+  longer fails with libvirt's "maximum memory size must be equal or
+  greater than the actual memory size". `<maxMemory>` was grown to hold
+  the old boot RAM and the new device, not the new boot RAM.
+- A VM's recorded setup is now its RAM and nothing else: `<maxMemory>`,
+  its NUMA cells, the virtio-mem device, other memory devices, the
+  balloon, `<memoryBacking>` and QEMU's two virtio-mem options. It used
+  to fingerprint the whole definition, QEMU's command line and the
+  libvirt and QEMU versions, so a VM restarted outside RAMpire (by a
+  backup script, or `virsh`) on a libvirt network was refused every
+  resize until a person ran `rampire apply`: libvirt gives its network
+  port a new id on every start. A restart, a new disk or a libvirt
+  upgrade no longer stops a VM being resized, and a change to its RAM
+  says what changed ("its maximum memory went from 16GB to 8GB").
+- Upgrading the host package records each running VM's setup again in
+  the new form, with the new `rampire apply --records-only`, which
+  applies only the records and leaves the rest of the draft for a later
+  `apply`.
+
 ## 0.6.1 (2026-11-17)
 
 - A VM gives back all the memory it no longer needs again. A removal

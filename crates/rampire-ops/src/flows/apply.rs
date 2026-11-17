@@ -26,8 +26,8 @@ fn show_difference(ui: &mut dyn Ui, from: Option<&Path>, to: &Path) -> Result<bo
             empty.path()
         }
     };
-    // A VM's recorded setup is a machine record of hashes: a person can't
-    // check it line by line, so it is named rather than shown.
+    // A VM's recorded setup is a machine record, written by apply and not
+    // by a person, so it is named rather than shown.
     let output = std::process::Command::new("diff")
         .arg("-ruN")
         .arg(format!("--exclude=*{ATTESTATION_SUFFIX}"))
@@ -191,10 +191,42 @@ pub fn apply_agreed(context: &Context, ui: &mut dyn Ui) -> Result<Outcome, Strin
     apply_asking(context, ui, false)
 }
 
+/// `apply --records-only`: bring each running VM's recorded setup up to
+/// date, as `apply` does, and apply only that, on the copy the controller
+/// runs: whatever else the draft holds stays for `rampire apply`. A
+/// package upgrade runs it, so records an earlier RAMpire wrote are
+/// written again in this one's form, and no VM stops being resized.
+pub fn apply_records(context: &Context, ui: &mut dyn Ui) -> Result<Outcome, String> {
+    let root = applied_root();
+    if crate::applied::current(root)?.is_none() {
+        let nothing = "nothing has been applied yet, so there are no records to bring up to date";
+        ui.say(nothing);
+        return Ok(Outcome::AlreadySo(nothing.to_owned()));
+    }
+    let staged = crate::applied::staging(root)?;
+    let result = stage_and_apply(context, ui, root, &staged, Stage::RecordsOnly);
+    if staged.exists() {
+        let _ = std::fs::remove_dir_all(&staged);
+    }
+    result
+}
+
+/// What `apply` puts in the copy it checks and installs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// The draft, after showing the difference and asking.
+    Asking,
+    /// The draft, already agreed to.
+    Agreed,
+    /// The copy the controller runs, with the draft's recorded setups.
+    RecordsOnly,
+}
+
 fn apply_asking(context: &Context, ui: &mut dyn Ui, ask: bool) -> Result<Outcome, String> {
     let root = applied_root();
     let staged = crate::applied::staging(root)?;
-    let result = stage_and_apply(context, ui, root, &staged, ask);
+    let stage = if ask { Stage::Asking } else { Stage::Agreed };
+    let result = stage_and_apply(context, ui, root, &staged, stage);
     if staged.exists() {
         let _ = std::fs::remove_dir_all(&staged);
     }
@@ -206,7 +238,7 @@ fn stage_and_apply(
     ui: &mut dyn Ui,
     root: &Path,
     staged: &Path,
-    ask: bool,
+    stage: Stage,
 ) -> Result<Outcome, String> {
     let draft = context.draft();
     // Each running VM's recorded setup is brought up to date first, so
@@ -214,10 +246,16 @@ fn stage_and_apply(
     for vm in crate::attest::keep_current(&draft, &context.libvirt()?, ui)? {
         crate::audit::record(context, "vm_recorded", Some(&vm), &[]);
     }
-    crate::applied::snapshot(&draft, staged)?;
+    let current = crate::applied::current(root)?;
+    match (stage, &current) {
+        (Stage::RecordsOnly, Some(current)) => {
+            crate::applied::snapshot(current, staged)?;
+            take_records(&draft, staged)?;
+        }
+        _ => crate::applied::snapshot(&draft, staged)?,
+    }
     // Check the copy, so what is checked is exactly what is applied.
     let report = crate::check::run(staged)?;
-    let current = crate::applied::current(root)?;
     if !passes_for_its_changes(ui, &report, current.as_deref(), staged) {
         return Err("the draft did not pass its checks; nothing changed".to_owned());
     }
@@ -240,7 +278,7 @@ fn stage_and_apply(
     let unit = controller_unit();
     // The unit runs the default configuration: only that one starts it.
     let refresh = Refresh::plan(&unit, current.as_deref(), staged, context.config.is_none());
-    if ask {
+    if stage == Stage::Asking {
         show_difference(ui, current.as_deref(), staged)?;
         if !ui.confirm(&format!("Apply this{}?", refresh.question(&unit)))? {
             ui.say("nothing changed");
@@ -275,6 +313,27 @@ fn stage_and_apply(
         },
     )?;
     Ok(Outcome::Done)
+}
+
+/// Each VM's recorded setup in `staged` replaced by the draft's, for the
+/// VMs `staged` manages.
+fn take_records(draft: &Path, staged: &Path) -> Result<(), String> {
+    use rampire_host::config::ATTESTATION_DIRECTORY;
+    let records = staged.join(ATTESTATION_DIRECTORY);
+    let Ok(entries) = std::fs::read_dir(&records) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read {}: {error}", records.display()))?;
+        let from = draft.join(ATTESTATION_DIRECTORY).join(entry.file_name());
+        if from.is_file() {
+            let bytes = std::fs::read(&from)
+                .map_err(|error| format!("read {}: {error}", from.display()))?;
+            std::fs::write(entry.path(), bytes)
+                .map_err(|error| format!("write {}: {error}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// `rampire rollback`: back to the applied copy before the current one.
@@ -511,6 +570,32 @@ pub fn controller_active(unit: &str) -> bool {
 mod tests {
     use super::*;
     use crate::ui::{Said, Transcript};
+
+    #[test]
+    fn records_only_takes_the_drafts_records_and_nothing_else() {
+        // The package upgrade's apply: the applied copy, with the records
+        // the draft holds for the VMs it manages. A VM only in the draft,
+        // and the draft's other changes, wait for rampire apply.
+        use rampire_host::config::ATTESTATION_DIRECTORY;
+        let draft = TempDir::new("test-records-draft").unwrap();
+        let staged = TempDir::new("test-records-staged").unwrap();
+        let write = |root: &Path, name: &str, text: &str| {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        let record = |vm: &str| format!("{ATTESTATION_DIRECTORY}/{vm}{ATTESTATION_SUFFIX}");
+        write(draft.path(), &record("web"), "web now");
+        write(draft.path(), &record("new"), "new");
+        write(draft.path(), "global.toml", "changed");
+        write(staged.path(), &record("web"), "web before");
+        write(staged.path(), "global.toml", "applied");
+        take_records(draft.path(), staged.path()).unwrap();
+        let read = |name: &str| std::fs::read_to_string(staged.path().join(name)).ok();
+        assert_eq!(read(&record("web")).as_deref(), Some("web now"));
+        assert_eq!(read(&record("new")), None);
+        assert_eq!(read("global.toml").as_deref(), Some("applied"));
+    }
 
     #[test]
     fn a_problem_holds_back_only_the_vm_that_has_it() {

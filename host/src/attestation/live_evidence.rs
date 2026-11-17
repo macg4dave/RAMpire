@@ -1,6 +1,6 @@
-//! The live side of attestation: the evidence a running VM shows (its
-//! domain definition, QEMU process and device properties, read through
-//! virsh and QMP), and the compatibility source that holds it against the
+//! The live side of attestation: a running VM's RAM (its definition's
+//! memory, read through virsh, and its virtio-mem device's options, read
+//! through QMP), and the compatibility source that holds it against the
 //! VM's attestation file.
 
 use std::cell::RefCell;
@@ -13,25 +13,18 @@ use rampire_core::{
 };
 use serde_json::{json, Value};
 
-use super::runtime_scrub::{
-    scrub_allocation_state, scrub_descriptor_numbers, scrub_qemu_argv, scrub_runtime_identity,
-};
-use super::{evidence, read_attestation, sha256_hex, validate_alias, LiveCompatibilityEvidence};
+use super::{evidence, read_attestation, validate_alias, LiveCompatibilityEvidence, MemorySetup};
 use crate::compatibility_source::{CompatibilityError, CompatibilitySource};
 use crate::virsh::VirshCommand;
 
-/// How long evidence fixed for one QEMU process is reused before it is
-/// collected again. The QEMU arguments, QEMU version and device properties
-/// cannot change while that process runs; the libvirt version changes only
-/// with an upgrade. The domain XML is read and checked on every collection.
+/// How long the device's options, fixed while one QEMU process runs, are
+/// reused before they are read again. The domain XML is read and checked
+/// on every collection.
 const PROCESS_EVIDENCE_MAX_AGE: Duration = Duration::from_secs(300);
 
-/// Evidence that is fixed while one QEMU process runs.
+/// The virtio-mem device's options, fixed while one QEMU process runs.
 #[derive(Debug, Clone)]
 struct ProcessEvidence {
-    qemu_argv_sha256: String,
-    libvirt_version_sha256: String,
-    qemu_version: Value,
     dynamic_memslots: bool,
     unplugged_inaccessible: bool,
 }
@@ -41,8 +34,8 @@ pub struct VirshCompatibilityEvidenceSource<C> {
     vm_name: String,
     alias: String,
     /// The process evidence last collected, with the runtime domain id it
-    /// belongs to and when. Collecting it takes five `virsh` commands; a
-    /// resize is checked against it many times a minute.
+    /// belongs to and when. Collecting it takes two QMP commands; a resize
+    /// is checked against it many times a minute.
     process: RefCell<Option<(String, Instant, ProcessEvidence)>>,
 }
 
@@ -83,16 +76,14 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
                 )))
             }
         }
+        let memory = MemorySetup::read(&domain_xml, &self.alias).map_err(|error| {
+            CompatibilityError::Refused(format!("read the live domain's RAM: {error}"))
+        })?;
         let process = self.process_evidence(runtime_domain_id(&domain_xml))?;
         Ok(LiveCompatibilityEvidence {
             vm_name: self.vm_name.clone(),
             device_alias: self.alias.clone(),
-            domain_xml_sha256: sha256_hex(
-                scrub_runtime_identity(&scrub_allocation_state(&domain_xml)).as_bytes(),
-            ),
-            qemu_argv_sha256: process.qemu_argv_sha256,
-            libvirt_version_sha256: process.libvirt_version_sha256,
-            qemu_version: process.qemu_version,
+            memory,
             dynamic_memslots: process.dynamic_memslots,
             unplugged_inaccessible: process.unplugged_inaccessible,
         })
@@ -113,19 +104,7 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
                 return Ok(evidence.clone());
             }
         }
-        let qemu_argv = self.run(
-            "live QEMU argv",
-            &["domxml-to-native", "qemu-argv", "--domain", &self.vm_name],
-        )?;
-        let libvirt_version = self.run("libvirt version", &["version"])?;
         let evidence = ProcessEvidence {
-            qemu_argv_sha256: sha256_hex(
-                scrub_descriptor_numbers(&scrub_qemu_argv(&qemu_argv))
-                    .trim()
-                    .as_bytes(),
-            ),
-            libvirt_version_sha256: sha256_hex(libvirt_version.trim().as_bytes()),
-            qemu_version: self.qmp("query-version", None)?,
             dynamic_memslots: self.qom_bool("dynamic-memslots")?,
             unplugged_inaccessible: self.qom_bool("unplugged-inaccessible")?,
         };
@@ -259,18 +238,35 @@ mod tests {
         }
     }
 
+    const QMP_ON: [&str; 2] = [r#"{"return":true}"#, r#"{"return":"on"}"#];
+
+    fn domain(id: u32, requested: &str, current: &str) -> String {
+        format!("<domain type='kvm' id='{id}'><maxMemory slots='1' unit='KiB'>9437184</maxMemory><cpu><numa><cell id='0' cpus='0' memory='1048576' unit='KiB'/></numa></cpu><devices><memory model='virtio-mem'><target><size unit='GiB'>8</size><node>0</node><block unit='MiB'>2</block>{requested}{current}</target><alias name='memory0'/></memory></devices></domain>")
+    }
+
+    fn responses(xml: String) -> Vec<String> {
+        let mut all = vec![xml];
+        all.extend(QMP_ON.map(str::to_owned));
+        all
+    }
+
     #[test]
-    fn collector_hashes_full_configuration_and_parses_qmp_booleans() {
-        let source = VirshCompatibilityEvidenceSource::new(FakeVirsh::new([
-            "<domain><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>1</requested><current unit='GiB'>1</current></target><alias name='memory0'/></memory></domain>".to_owned(),
-            "qemu-system -machine q35 -object memory-backend-file,id=mem0".to_owned(),
-            "Compiled against library: libvirt 11.0.0".to_owned(),
-            r#"{"return":{"qemu":{"major":9,"minor":2,"micro":0},"package":"qemu-9.2"}}"#.to_owned(),
-            r#"{"return":true}"#.to_owned(), r#"{"return":"on"}"#.to_owned(),
-        ]), "guest", "memory0");
+    fn collector_reads_the_ram_and_parses_qmp_booleans() {
+        let requested = "<requested unit='GiB'>1</requested>";
+        let source = VirshCompatibilityEvidenceSource::new(
+            FakeVirsh::new(responses(domain(7, requested, ""))),
+            "guest",
+            "memory0",
+        );
         let evidence = source.collect().expect("complete evidence");
         assert!(evidence.dynamic_memslots && evidence.unplugged_inaccessible);
-        assert_eq!(evidence.domain_xml_sha256.len(), 64);
+        assert_eq!(evidence.memory.device_size_bytes, 8 << 30);
+        assert_eq!(evidence.memory.numa_cells_bytes, vec![1 << 30]);
+        assert_eq!(evidence.memory.max_memory_bytes, Some(9 << 30));
+        assert!(
+            source.collect().is_err(),
+            "fixture exhausted: only the XML and two QMP reads were asked"
+        );
     }
 
     #[test]
@@ -279,19 +275,18 @@ mod tests {
         // libvirt had no <current> for their devices yet, and every apply
         // on the host failed until it did.
         let evidence = |current: &str, requested: &str| {
-            VirshCompatibilityEvidenceSource::new(FakeVirsh::new([
-                format!("<domain><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block>{requested}{current}</target><alias name='memory0'/></memory></domain>"),
-                "qemu-system -machine q35".to_owned(),
-                "Compiled against library: libvirt 11.0.0".to_owned(),
-                r#"{"return":{"qemu":{"major":9,"minor":2,"micro":0},"package":"qemu-9.2"}}"#.to_owned(),
-                r#"{"return":true}"#.to_owned(), r#"{"return":true}"#.to_owned(),
-            ]), "guest", "memory0").collect()
+            VirshCompatibilityEvidenceSource::new(
+                FakeVirsh::new(responses(domain(7, requested, current))),
+                "guest",
+                "memory0",
+            )
+            .collect()
         };
         let requested = "<requested unit='KiB'>0</requested>";
         let without = evidence("", requested).expect("no current yet is whole");
         let with = evidence("<current unit='KiB'>0</current>", requested).unwrap();
-        // The same fingerprint: current is left out of it either way.
-        assert_eq!(without.domain_xml_sha256, with.domain_xml_sha256);
+        // The same: the device's size now isn't part of its setup.
+        assert_eq!(without, with);
         // Anything else missing is still a broken device.
         let error = evidence("<current unit='KiB'>0</current>", "").unwrap_err();
         assert!(error.to_string().contains("missing requested"), "{error}");
@@ -299,33 +294,18 @@ mod tests {
 
     #[test]
     fn process_evidence_is_reused_until_the_domain_restarts() {
-        let xml = |id: u32, requested: u32| {
-            format!("<domain type='kvm' id='{id}'><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>{requested}</requested><current unit='GiB'>{requested}</current></target><alias name='memory0'/></memory></domain>")
-        };
-        let process = |argv: &str| {
-            [
-                argv.to_owned(),
-                "Compiled against library: libvirt 11.0.0".to_owned(),
-                r#"{"return":{"qemu":{"major":9,"minor":2,"micro":0},"package":"qemu-9.2"}}"#
-                    .to_owned(),
-                r#"{"return":true}"#.to_owned(),
-                r#"{"return":true}"#.to_owned(),
-            ]
-        };
+        let requested = |gib: u32| format!("<requested unit='GiB'>{gib}</requested>");
         // Same QEMU process: only the XML is read again. A restart (new id)
-        // collects everything again. The fixture runs out if more is asked.
-        let mut responses = vec![xml(7, 1)];
-        responses.extend(process("qemu-system -machine q35"));
-        responses.push(xml(7, 2));
-        responses.push(xml(8, 1));
-        responses.extend(process("qemu-system -machine q35 -m 2G"));
-        let source =
-            VirshCompatibilityEvidenceSource::new(FakeVirsh::new(responses), "guest", "memory0");
+        // reads the options again. The fixture runs out if more is asked.
+        let mut all = responses(domain(7, &requested(1), ""));
+        all.push(domain(7, &requested(2), ""));
+        all.extend(responses(domain(8, &requested(1), "")));
+        let source = VirshCompatibilityEvidenceSource::new(FakeVirsh::new(all), "guest", "memory0");
         let first = source.collect().expect("first");
         let same = source.collect().expect("same process");
-        assert_eq!(first.qemu_argv_sha256, same.qemu_argv_sha256);
         let restarted = source.collect().expect("restarted");
-        assert_ne!(first.qemu_argv_sha256, restarted.qemu_argv_sha256);
+        assert_eq!(first, same);
+        assert_eq!(first, restarted);
         assert!(
             source.collect().is_err(),
             "fixture exhausted: nothing extra was run"

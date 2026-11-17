@@ -919,9 +919,7 @@ mod tests {
                 "{args:?}"
             );
         }
-        // The QEMU command line names descriptors that differ every call,
-        // `virsh` against `virsh` too: what counts is the setup's evidence,
-        // which leaves them out.
+        // And the VM's RAM as its recorded setup reads it.
         let evidence = |command: Virsh| {
             VirshCompatibilityEvidenceSource::new(command, vm.as_str(), alias.as_str())
                 .collect()

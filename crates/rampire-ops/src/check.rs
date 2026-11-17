@@ -246,10 +246,10 @@ error: Domain not found: no domain with matching name 'gone'"
         let live = LiveCompatibilityEvidence {
             vm_name: config.vm_name.clone(),
             device_alias: config.alias.clone(),
-            domain_xml_sha256: "a".repeat(64),
-            qemu_argv_sha256: "b".repeat(64),
-            libvirt_version_sha256: "c".repeat(64),
-            qemu_version: serde_json::json!({"qemu": {"major": 9, "minor": 2, "micro": 0}, "package": "qemu-9.2"}),
+            memory: rampire_host::attestation::MemorySetup {
+                device_size_bytes: 8 << 30,
+                ..Default::default()
+            },
             dynamic_memslots: true,
             unplugged_inaccessible: true,
         };

@@ -294,14 +294,19 @@ The steps below are what it writes, for doing them by hand or in a fleet.
    `min_ram`, and the device's size `max_ram` less that: `vm add` and
    `set` keep them so.
 
-   `apply` records how the VM is set up: hashes of its live domain XML,
-   QEMU's arguments and versions, and the device options, bound to the
-   review. Every resize checks them again and refuses on any difference.
-   The domain XML is read for every resize; what cannot change while QEMU
-   runs is collected again when the domain restarts and at least every
-   five minutes.
+   `apply` records the VM's RAM as it runs, bound to the review: from its
+   live definition, `<maxMemory>`, its NUMA cells, the virtio-mem device's
+   size, block size and node, any other memory devices, the balloon and
+   `<memoryBacking>`; from QEMU, the device's `dynamic-memslots` and
+   `unplugged-inaccessible`. Nothing else about the VM is recorded, so a
+   restart, a new disk or a new network doesn't matter. Every resize
+   checks the RAM again and refuses on any difference, saying what
+   changed. The definition is read for every resize; QEMU's options are
+   read again when the domain restarts and at least every five minutes.
+   Upgrading the package records each running VM again (`apply
+   --records-only`).
 
-   When a VM changes (libvirt or QEMU upgraded, its definition edited),
+   When a VM's RAM changes (its definition edited, QEMU's options),
    the next `apply` reads its definition again for every review answer
    taken from it, and records the new setup if they still hold. A change
    it can't read is asked; one that makes the VM unsafe to resize is

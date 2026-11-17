@@ -28,6 +28,10 @@ pub struct Inspection {
     pub numa_cells: usize,
     /// `maxMemory`'s slots, when set.
     pub max_memory_slots: Option<u32>,
+    /// `maxMemory`'s size, when set: libvirt refuses a definition whose
+    /// NUMA cells and memory devices come to more.
+    pub max_memory_bytes: Option<u64>,
+    max_memory_unit: Option<String>,
     /// Other memory devices (DIMMs and the like) that use slots too.
     pub other_memory_devices: usize,
     pub devices: Vec<Device>,
@@ -278,6 +282,10 @@ pub fn inspect(xml: &str) -> Result<Inspection, String> {
                     let raw = text.decode().map_err(|error| error.to_string())?;
                     let unit = inspection.memory_unit.take();
                     inspection.memory_bytes = libvirt_bytes(raw.trim(), unit.as_deref())?;
+                } else if at(&[b"domain", b"maxMemory"]) {
+                    let raw = text.decode().map_err(|error| error.to_string())?;
+                    let unit = inspection.max_memory_unit.take();
+                    inspection.max_memory_bytes = Some(libvirt_bytes(raw.trim(), unit.as_deref())?);
                 } else if at(&[b"domain", b"currentMemory"]) {
                     let raw = text.decode().map_err(|error| error.to_string())?;
                     let unit = inspection.current_memory_unit.take();
@@ -332,6 +340,7 @@ fn look(
         (b"maxMemory", Some(b"domain")) => {
             inspection.max_memory_slots =
                 attribute(element, b"slots")?.and_then(|slots| slots.parse().ok());
+            inspection.max_memory_unit = attribute(element, b"unit")?;
         }
         (b"cell", Some(b"numa")) => {
             inspection.numa_cells += 1;
@@ -699,31 +708,7 @@ pub fn grow_device(xml: &str, size: u64) -> Result<String, String> {
         &device[close..]
     );
     text.replace_range(start..end, &grown);
-    if let Some(start) = find_element(&text, "maxMemory") {
-        let tag_end = start + text[start..].find('>').ok_or("<maxMemory> has no end")?;
-        let end = start
-            + text[start..]
-                .find("</maxMemory>")
-                .ok_or("<maxMemory> has no end")?
-            + "</maxMemory>".len();
-        let tag = &text[start..tag_end];
-        let quoted = |key: &str| {
-            let at = tag.find(&format!("{key}='"))? + key.len() + 2;
-            Some(tag[at..at + tag[at..].find('\'')?].to_owned())
-        };
-        let value = text[tag_end + 1..end - "</maxMemory>".len()].trim();
-        let current = libvirt_bytes(value, quoted("unit").as_deref())?;
-        if current < total {
-            let slots = quoted("slots").unwrap_or_else(|| "1".to_owned());
-            text.replace_range(
-                start..end,
-                &format!(
-                    "<maxMemory slots='{slots}' unit='KiB'>{}</maxMemory>",
-                    total / 1024
-                ),
-            );
-        }
-    }
+    raise_max_memory(&mut text, total)?;
     if let Some(start) = find_element(&text, "memory") {
         let end = start
             + text[start..]
@@ -736,6 +721,38 @@ pub fn grow_device(xml: &str, size: u64) -> Result<String, String> {
         );
     }
     Ok(text)
+}
+
+/// `<maxMemory>` raised to `total` when it holds less: libvirt refuses a
+/// definition whose memory comes to more than its `<maxMemory>`.
+fn raise_max_memory(text: &mut String, total: u64) -> Result<(), String> {
+    let Some(start) = find_element(text, "maxMemory") else {
+        return Ok(());
+    };
+    let tag_end = start + text[start..].find('>').ok_or("<maxMemory> has no end")?;
+    let end = start
+        + text[start..]
+            .find("</maxMemory>")
+            .ok_or("<maxMemory> has no end")?
+        + "</maxMemory>".len();
+    let tag = &text[start..tag_end];
+    let quoted = |key: &str| {
+        let at = tag.find(&format!("{key}='"))? + key.len() + 2;
+        Some(tag[at..at + tag[at..].find('\'')?].to_owned())
+    };
+    let value = text[tag_end + 1..end - "</maxMemory>".len()].trim();
+    let current = libvirt_bytes(value, quoted("unit").as_deref())?;
+    if current < total {
+        let slots = quoted("slots").unwrap_or_else(|| "1".to_owned());
+        text.replace_range(
+            start..end,
+            &format!(
+                "<maxMemory slots='{slots}' unit='KiB'>{}</maxMemory>",
+                total / 1024
+            ),
+        );
+    }
+    Ok(())
 }
 
 /// `<maxMemory>`, on its own line before the domain's `<memory>`.
@@ -893,10 +910,16 @@ pub fn fit_memory(xml: &str, min_ram: u64, max_ram: u64) -> Result<String, Strin
         tag.replace_range(at..end, &value);
     }
     text.replace_range(cell..cell_end, &tag);
-    // The device, and the totals that hold it: <memory> as boot RAM and
-    // the device, <maxMemory> at least that.
+    // The device, and the totals that hold it: <memory> as boot RAM, the
+    // device and any other memory devices, <maxMemory> at least that.
+    // grow_device counts the boot RAM as it was, so a bigger minimum is
+    // held here: libvirt refuses a <maxMemory> below it.
+    let others = inspection
+        .memory_bytes
+        .saturating_sub(inspection.boot_bytes + device.size_bytes);
     let mut text = grow_device(&text, fit.device)?;
-    let total = fit.boot + fit.device;
+    let total = fit.boot + fit.device + others;
+    raise_max_memory(&mut text, total)?;
     if let Some(start) = find_element(&text, "memory") {
         let end = start
             + text[start..]
@@ -1409,6 +1432,12 @@ mod tests {
             })
         );
         assert_eq!(big.memory_bytes, 24 * GIB);
+        assert!(big.max_memory_bytes >= Some(24 * GIB), "{big:?}");
+        // A bigger minimum alone: as safe_vm's on snow101, which libvirt
+        // refused when <maxMemory> held the old boot RAM and the device.
+        let raised = inspect(&fit_memory(MANAGED, 4 * GIB, 12 * GIB).unwrap()).unwrap();
+        assert_eq!(raised.memory_bytes, 12 * GIB);
+        assert_eq!(raised.max_memory_bytes, Some(12 * GIB));
         // A maximum that leaves nothing to grow into is said.
         let error = fit_memory(MANAGED, 2 * GIB, 2 * GIB).unwrap_err();
         assert!(error.contains("must be more than minimum RAM"), "{error}");
