@@ -170,8 +170,8 @@ mod tests {
             .unwrap();
         assert!(status.success());
         drop((checkpoint, device));
-        assert!(CheckpointOwner::acquire(&path).is_ok());
-        assert!(DeviceOwner::acquire(&vm).is_ok());
+        eventually_free(|| CheckpointOwner::acquire(&path).is_ok());
+        eventually_free(|| DeviceOwner::acquire(&vm).is_ok());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -182,6 +182,17 @@ mod tests {
         let first = DeviceOwner::acquire(&vm).unwrap();
         assert!(DeviceOwner::acquire(&vm).is_err());
         drop(first);
-        assert!(DeviceOwner::acquire(&vm).is_ok());
+        eventually_free(|| DeviceOwner::acquire(&vm).is_ok());
+    }
+
+    /// Another test in this process starting a child holds a copy of every
+    /// descriptor from its fork until its exec closes them, a lock or a
+    /// socket included: what was released is free once that has passed.
+    fn eventually_free(acquired: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !acquired() {
+            assert!(std::time::Instant::now() < deadline, "still owned");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
