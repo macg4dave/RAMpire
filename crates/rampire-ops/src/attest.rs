@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use rampire_core::settings::{self, VmSettings, VMS_DIRECTORY};
 use rampire_host::attestation::{
-    read_attestation, read_review, CompatibilityAttestation, VirshCompatibilityEvidenceSource,
+    read_attestation, read_review, CompatibilityAttestation, LiveCompatibilityEvidence,
+    MemorySetup, VirshCompatibilityEvidenceSource,
 };
 use rampire_host::config::{attestation_path, ATTESTATION_DIRECTORY};
 use rampire_host::virsh::{Virsh, VirshCommand};
@@ -58,6 +59,45 @@ pub fn vm_settings(directory: &Path, vm: &str) -> Result<VmSettings, String> {
 /// Attest the running VM `vm` from its review profile. Returns where the
 /// attestation was written.
 pub fn attest(directory: &Path, vm: &str, libvirt: &Libvirt) -> Result<PathBuf, String> {
+    let (settings, review) = settings_and_review(directory, vm)?;
+    let state = libvirt.state(vm)?;
+    if state != "running" {
+        return Err(format!("{vm} is {state}: a VM is attested while it runs"));
+    }
+    let live =
+        VirshCompatibilityEvidenceSource::new(libvirt.runner(), vm, &settings.alias).collect()?;
+    write_attestation(directory, vm, CompatibilityAttestation::new(live, review)?)
+}
+
+/// Record a VM that isn't running from the definition it starts with:
+/// only for one whose record an earlier RAMpire wrote, so a VM shut off
+/// during an upgrade isn't refused every resize once it starts. QEMU's
+/// two virtio-mem options can't be read without the VM; they are recorded
+/// as on, which every record needs, and every resize holds them against
+/// the running VM, so a VM that runs without them is still refused.
+fn attest_definition(directory: &Path, vm: &str, xml: &str) -> Result<PathBuf, String> {
+    let (settings, review) = settings_and_review(directory, vm)?;
+    let memory = MemorySetup::read(xml, &settings.alias)
+        .map_err(|error| format!("read {vm}'s definition: {error}"))?;
+    let evidence = LiveCompatibilityEvidence {
+        vm_name: vm.to_owned(),
+        device_alias: settings.alias.clone(),
+        memory,
+        dynamic_memslots: true,
+        unplugged_inaccessible: true,
+    };
+    write_attestation(
+        directory,
+        vm,
+        CompatibilityAttestation::new(evidence, review)?,
+    )
+}
+
+/// The VM's settings and the review profile they name, for its record.
+fn settings_and_review(
+    directory: &Path,
+    vm: &str,
+) -> Result<(VmSettings, rampire_host::attestation::CompatibilityReview), String> {
     let settings = vm_settings(directory, vm)?;
     let profile = settings.review.as_deref().ok_or_else(|| {
         format!("{vm} names no review profile: add review = \"PROFILE\" to its file")
@@ -73,17 +113,23 @@ pub fn attest(directory: &Path, vm: &str, libvirt: &Libvirt) -> Result<PathBuf, 
             review.guest_os, settings.guest_os
         ));
     }
-    let state = libvirt.state(vm)?;
-    if state != "running" {
-        return Err(format!("{vm} is {state}: a VM is attested while it runs"));
-    }
-    let live =
-        VirshCompatibilityEvidenceSource::new(libvirt.runner(), vm, &settings.alias).collect()?;
-    let document = CompatibilityAttestation::new(live, review)?;
+    Ok((settings, review))
+}
+
+fn write_attestation(
+    directory: &Path,
+    vm: &str,
+    document: CompatibilityAttestation,
+) -> Result<PathBuf, String> {
     let path = attestation_path(directory, vm);
     write_atomically(
         &path,
-        format!("{}\n", document.to_pretty_json()?).as_bytes(),
+        format!(
+            "{}
+",
+            document.to_pretty_json()?
+        )
+        .as_bytes(),
     )?;
     Ok(path)
 }
@@ -91,7 +137,9 @@ pub fn attest(directory: &Path, vm: &str, libvirt: &Libvirt) -> Result<PathBuf, 
 /// Keep the record of how each VM is set up current, so no person has to:
 /// a running VM that names a review profile is recorded when it has no
 /// record yet, or when it changed since (libvirt upgraded, its definition
-/// edited) and what its review read from the definition still holds.
+/// edited) and what its review read from the definition still holds. A
+/// VM that isn't running is recorded only when an earlier RAMpire wrote
+/// its record, from the definition it will start with.
 /// When a change makes it unsafe to resize, that is said and its old
 /// record kept, so `check` and the controller refuse it. Returns the VMs
 /// recorded.
@@ -104,12 +152,21 @@ pub fn keep_current(
     let mut recorded = Vec::new();
     for vm in vms {
         let name = vm.vm_name.as_str();
-        if vm.review.is_none() || libvirt.state(name).ok().as_deref() != Some("running") {
+        if vm.review.is_none() {
             continue;
         }
+        let running = match libvirt.state(name) {
+            Ok(state) => state == "running",
+            Err(_) => continue,
+        };
         // One VM that can't be recorded keeps its old record, which
         // `check` then judges; it doesn't stop the others being recorded.
-        match keep_one_current(directory, libvirt, ui, &vm) {
+        let kept = if running {
+            keep_one_current(directory, libvirt, ui, &vm)
+        } else {
+            keep_one_shut_off(directory, libvirt, ui, &vm)
+        };
+        match kept {
             Ok(true) => recorded.push(vm.vm_name),
             Ok(false) => {}
             Err(error) => ui.say(&format!(
@@ -143,12 +200,41 @@ fn keep_one_current(
     Ok(true)
 }
 
+/// Record a VM that isn't running when an earlier RAMpire wrote its
+/// record, from its definition. Returns whether it was recorded.
+fn keep_one_shut_off(
+    directory: &Path,
+    libvirt: &Libvirt,
+    ui: &mut dyn Ui,
+    vm: &VmSettings,
+) -> Result<bool, String> {
+    let name = vm.vm_name.as_str();
+    let path = attestation_path(directory, name);
+    let earlier = std::fs::read_to_string(&path)
+        .ok()
+        .is_some_and(|json| CompatibilityAttestation::other_version(&json).is_some());
+    if !earlier {
+        return Ok(false);
+    }
+    let xml = libvirt.virsh(&["dumpxml", "--inactive", name])?;
+    if !definition_safe(&xml, ui, name)? {
+        return Ok(false);
+    }
+    attest_definition(directory, name, &xml)?;
+    Ok(true)
+}
+
 /// Whether a VM that changed can still be resized: its definition is
 /// read again for what the review answered from it. What it can't show
 /// is asked; the review's question about the guest's programs is not,
 /// since a change to the setup doesn't change them.
 fn still_safe(libvirt: &Libvirt, ui: &mut dyn Ui, vm: &str) -> Result<bool, String> {
-    let inspection = crate::vm::inspect(&libvirt.virsh(&["dumpxml", vm])?)?;
+    definition_safe(&libvirt.virsh(&["dumpxml", vm])?, ui, vm)
+}
+
+/// [`still_safe`] for the definition in `xml`.
+fn definition_safe(xml: &str, ui: &mut dyn Ui, vm: &str) -> Result<bool, String> {
+    let inspection = crate::vm::inspect(xml)?;
     if let Some((problem, fix)) = inspection.problems().into_iter().next() {
         ui.say(&format!("{vm} changed and can't be resized: {problem}"));
         ui.say(&format!("  fix: {fix}"));
@@ -258,6 +344,83 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         assert!(error.contains("review profile"), "{error}");
         assert_eq!(recorded, Ok(vec![]), "nothing to record without a profile");
+    }
+
+    /// A definition with RAMpire's device, as `virsh dumpxml --inactive`
+    /// shows it (`live` false) or libvirt shows it running.
+    fn definition(live: bool) -> String {
+        let (id, current) = if live {
+            (
+                " id='7'",
+                "<current unit='KiB'>0</current><address base='0x100000000'/>",
+            )
+        } else {
+            ("", "")
+        };
+        format!(
+            "<domain type='kvm'{id}><name>web</name>
+  <maxMemory slots='1' unit='KiB'>4194304</maxMemory>
+  <memory unit='KiB'>4194304</memory>
+  <currentMemory unit='KiB'>4194304</currentMemory>
+  <cpu><numa><cell id='0' cpus='0-1' memory='524288' unit='KiB'/></numa></cpu>
+  <devices>
+    <memballoon model='none'/>
+    <memory model='virtio-mem'>
+      <target><size unit='KiB'>3670016</size><node>0</node><block unit='KiB'>2048</block><requested unit='KiB'>0</requested>{current}</target>
+      <alias name='m'/>
+    </memory>
+  </devices>
+</domain>"
+        )
+    }
+
+    #[test]
+    fn a_shut_off_vm_is_recorded_from_the_definition_it_starts_with() {
+        let root = configuration(Some("linux-standard"));
+        std::fs::create_dir_all(root.join(REVIEW_DIRECTORY)).unwrap();
+        std::fs::write(
+            root.join(REVIEW_DIRECTORY).join("linux-standard.toml"),
+            r#"version = 1
+guest_os = "linux"
+workload_reviewed = { value = true, source = "confirmed" }
+no_vdpa = { value = true, source = "detected" }
+no_rdma_migration = { value = true, source = "confirmed" }
+no_vfio_nvme = { value = true, source = "detected" }
+no_mlock = { value = true, source = "detected" }
+no_secure_virtualization = { value = true, source = "detected" }
+no_unsupported_vhost_user = { value = true, source = "detected" }
+balloon_resize_inactive = { value = true, source = "detected" }
+memory_slot_budget = { value = 1, source = "confirmed" }
+vfio_mapping_budget = { value = 1, source = "confirmed" }
+guest_driver_version = { value = "linux 6.12", source = "confirmed" }
+"#,
+        )
+        .unwrap();
+        let path = attest_definition(&root, "web", &definition(false));
+        let recorded = path.as_ref().map(|path| read_attestation(path));
+        std::fs::remove_dir_all(&root).unwrap();
+        let recorded = recorded.unwrap().unwrap();
+        // Once it starts, the running VM matches the record: its current
+        // size and the device's address aren't part of it.
+        let live = LiveCompatibilityEvidence {
+            vm_name: "web".to_owned(),
+            device_alias: "m".to_owned(),
+            memory: MemorySetup::read(&definition(true), "m").unwrap(),
+            dynamic_memslots: true,
+            unplugged_inaccessible: true,
+        };
+        assert_eq!(
+            recorded.validate_live(&live, settings::GuestOs::Linux),
+            Ok(())
+        );
+        // A VM that runs without QEMU's options is still refused.
+        let without = LiveCompatibilityEvidence {
+            unplugged_inaccessible: false,
+            ..live
+        };
+        assert!(recorded
+            .validate_live(&without, settings::GuestOs::Linux)
+            .is_err());
     }
 
     #[test]

@@ -56,10 +56,15 @@ pub(crate) fn status(cli: &Cli, vm: Option<&str>) -> Result<ExitCode, String> {
         controller.unit, controller.active_state, controller.sub_state, controller.unit_file_state
     );
     for vm in &unavailable {
-        println!(
-            "{}: {}, so its status can't be read ({})",
-            vm.vm_name, vm.state, vm.reason
-        );
+        // A VM that isn't running has no live status, which is no problem.
+        if vm.state != "running" && vm.state != "unknown" {
+            println!("{}: {}: resized once it runs", vm.vm_name, vm.state);
+        } else {
+            println!(
+                "{}: {}, so its status can't be read ({})",
+                vm.vm_name, vm.state, vm.reason
+            );
+        }
     }
     if vms.is_empty() && unavailable.is_empty() {
         println!("RAMpire manages no VMs yet. Add one with: rampire vm add VM");

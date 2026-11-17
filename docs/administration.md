@@ -303,8 +303,12 @@ The steps below are what it writes, for doing them by hand or in a fleet.
    checks the RAM again and refuses on any difference, saying what
    changed. The definition is read for every resize; QEMU's options are
    read again when the domain restarts and at least every five minutes.
-   Upgrading the package records each running VM again (`apply
-   --records-only`).
+   Upgrading the package records each VM again (`apply
+   --records-only`) on a host whose controller is enabled, even one
+   waiting to start again. A VM that is shut off is recorded from the
+   definition it starts with, when an earlier RAMpire wrote its record;
+   QEMU's two options are recorded as on, which every record needs, and
+   its first resize checks them against the running VM.
 
    When a VM's RAM changes (its definition edited, QEMU's options),
    the next `apply` reads its definition again for every review answer

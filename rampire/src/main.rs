@@ -189,9 +189,10 @@ enum Command {
         /// failure, for configuration management.
         #[arg(long, help_heading = SCRIPTS)]
         detailed_exitcode: bool,
-        /// Bring each running VM's recorded setup up to date and apply only
-        /// that, leaving the rest of the draft for a later apply. The
-        /// package runs it on upgrade.
+        /// Bring each running VM's recorded setup up to date, and a shut-off
+        /// VM's that an earlier RAMpire recorded, and apply only that,
+        /// leaving the rest of the draft for a later apply. The package
+        /// runs it on upgrade.
         #[arg(long, help_heading = SCRIPTS)]
         records_only: bool,
     },

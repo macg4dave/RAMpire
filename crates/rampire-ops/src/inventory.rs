@@ -475,6 +475,10 @@ fn managed_status(context: &Context, vm: &mut ListedVm, state: &str) {
             };
             vm.status = Some(status);
         }
+        // A VM that isn't running has no live status to read, which is
+        // no problem: the reason (its device shows no current size yet)
+        // only confused.
+        Err(_) if state != "running" => vm.detail = format!("{state}: resized once it runs"),
         Err(reason) => vm.detail = format!("{state}, so its status can't be read ({reason})"),
     }
 }

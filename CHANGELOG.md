@@ -25,10 +25,16 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
   port a new id on every start. A restart, a new disk or a libvirt
   upgrade no longer stops a VM being resized, and a change to its RAM
   says what changed ("its maximum memory went from 16GB to 8GB").
-- Upgrading the host package records each running VM's setup again in
-  the new form, with the new `rampire apply --records-only`, which
-  applies only the records and leaves the rest of the draft for a later
-  `apply`.
+- Upgrading the host package records each VM's setup again in the new
+  form, with the new `rampire apply --records-only`, which applies only
+  the records and leaves the rest of the draft for a later `apply`. A VM
+  that is shut off is recorded from its definition, so it isn't refused
+  every resize once it starts, and a controller that is waiting to start
+  again because it couldn't read the old records is upgraded too: such
+  a controller kept every VM at its minimum RAM.
+- `rampire status` and the VM list say a managed VM that is shut off is
+  "resized once it runs", instead of "its status can't be read
+  (virtio-mem XML is missing current)".
 
 ## 0.6.1 (2026-11-17)
 

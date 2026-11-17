@@ -189,14 +189,18 @@ impl CompatibilityAttestation {
         Ok(document)
     }
 
+    /// The version of the record in `json` when another RAMpire wrote it,
+    /// in a form this one can't read.
+    pub fn other_version(json: &str) -> Option<u64> {
+        serde_json::from_str::<Value>(json)
+            .ok()
+            .and_then(|value| value.get("version").and_then(Value::as_u64))
+            .filter(|&v| v != u64::from(COMPATIBILITY_ATTESTATION_VERSION))
+    }
+
     pub fn parse(json: &str) -> Result<Self, String> {
         // An earlier version's record doesn't parse as this one: say so.
-        let version = serde_json::from_str::<Value>(json)
-            .ok()
-            .and_then(|value| value.get("version").and_then(Value::as_u64));
-        if let Some(version) =
-            version.filter(|&v| v != u64::from(COMPATIBILITY_ATTESTATION_VERSION))
-        {
+        if let Some(version) = Self::other_version(json) {
             return Err(format!(
                 "its setup was recorded by another RAMpire (version {version}); rampire apply records it again"
             ));
