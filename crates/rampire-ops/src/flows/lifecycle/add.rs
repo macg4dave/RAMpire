@@ -140,7 +140,7 @@ pub fn vm_add(context: &Context, ui: &mut dyn Ui, options: &AddOptions) -> Resul
         None => inspection.clone(),
     };
 
-    // `apply` checks every VM: one that fails would stop it at the end.
+    // Other VMs' problems are said first; they don't stop the add.
     other_vms_pass(context, &libvirt, ui, name)?;
 
     // rampire-guest installs as a package, or as the static binary with its
@@ -509,9 +509,9 @@ fn chosen_settings(
     Ok(chosen)
 }
 
-/// Fail, saying why, when a VM other than `name` would fail `apply`'s
-/// checks. Their recorded setups are brought up to date first, as
-/// `apply` does.
+/// Bring the other VMs' recorded setups up to date first, as `apply`
+/// does, and say which of them have a problem. They don't stop the add:
+/// `apply` leaves such a VM unresized and applies the rest.
 fn other_vms_pass(
     context: &Context,
     libvirt: &crate::attest::Libvirt,
@@ -526,13 +526,11 @@ fn other_vms_pass(
     report
         .vms
         .retain(|vm| vm.vm_name != name && vm.problem.is_some());
-    if report.vms.is_empty() {
-        return Ok(());
+    if !report.vms.is_empty() {
+        ui.say(crate::check::text(&report, true).trim_end());
+        ui.say("these aren't resized until they are fixed; they don't stop this add");
     }
-    ui.say(crate::check::text(&report, true).trim_end());
-    Err(format!(
-        "applying checks every VM, so fix these first; nothing was asked or added for {name}"
-    ))
+    Ok(())
 }
 
 /// Ask for the kernel release until the answer is one; an empty answer

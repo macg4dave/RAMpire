@@ -11,6 +11,26 @@ release's notes on GitHub ([releasing](docs/releasing.md)).
 
 ## Unreleased
 
+- A VM gives back all the memory it no longer needs again. A removal
+  was let go the moment the guest reported low memory, but taking
+  memory out of a guest moves its pages, which stalls it briefly and
+  reads as low memory: a VM handing back 770 MiB kept 768 MiB of it,
+  and then grew in small steps. A removal still moving is now left to
+  finish; one that has stopped is let go as before.
+- One VM failing no longer stops the controller for every VM. When a
+  VM's own bookkeeping failed (its state file couldn't be written, or
+  its request journal refused a result), the controller exited, and as
+  it isn't restarted by itself, no VM was resized until a person
+  restarted it. That VM now stops alone, as a VM that fails a resize
+  does, and isn't charged for the resize it couldn't record.
+- One VM with a problem no longer holds back changes to the others.
+  `apply`, `rollback`, `set`, `vm add` and `vm remove` refused every
+  change while any managed VM failed its checks (its definition edited
+  by hand, its domain gone, or reading it failing). They now fail only
+  for a problem with a VM they change; another VM's problem is said,
+  that VM isn't resized until it is fixed, and the rest goes ahead. A
+  VM whose setup can't be recorded no longer stops the others being
+  recorded.
 - A VM the controller can't read no longer holds back the VMs that
   work. Just after the host or a VM starts, before libvirt shows its
   device's size, or while reading it fails, it was charged the whole

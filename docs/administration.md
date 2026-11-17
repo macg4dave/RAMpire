@@ -128,7 +128,11 @@ loads. `--no-apply` changes the draft only.
 copies the draft and checks the copy like `rampire check` while the
 controller keeps running, shows the difference and asks. Only then does
 it keep the copy under `/var/lib/rampire/applied/`, point `current` at it
-and restart the controller. A draft that fails changes nothing.
+and restart the controller. A draft that fails changes nothing. It
+fails only for a problem with a VM it changes (a new VM, or one whose
+settings or recorded setup differ): another VM's problem is said, that
+VM isn't resized until it is fixed, and the rest is applied, so one
+broken VM never holds back a change to another.
 `--detailed-exitcode` exits 0 when nothing changed, 2 when something
 changed, 1 on failure and 3 when the answer was No. `rollback` returns to the copy before the
 current one, through the same checks. Each change is recorded under `/var/lib/rampire/evidence/`; the

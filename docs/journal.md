@@ -39,7 +39,7 @@ A request is described by `session_id`, `sequence`, `operation` (`Add` or
 | `control_health` | `direction`, the request, `requested_bytes`, `current_bytes`, `remaining_to_device_target_bytes`, `pending_age_ms`, `idle_ms`, `idle_timeout_remaining_ms`, `floor_bytes` | A resize's progress |
 | `resize_settled_short` | `operation_id`, `direction`, `target_bytes`, `kept_bytes`, `command_result` | A removal stopped moving and was settled at what the guest kept |
 | `settle_deferred` | `direction`, `target_bytes`, `kept_bytes`, `reason` | Settling a removal found libvirt unavailable (it refused the connection, as when polkit is out of open files, or didn't answer). Nothing ran; it is tried again every poll and logged once until it goes through |
-| `held_shrink_released` | `reason` (`guest_low_memory` or `removal_stalled`) | A held removal is let go |
+| `held_shrink_released` | `reason` (`guest_low_memory` or `removal_stalled`) | A held removal is let go: it stopped moving while the guest reported low memory, or for the removal settle time. A removal still moving is left to finish |
 | `request_completed` | `operation_id`, the request, `outcome`, `actual_bytes`, sometimes `reason` | A request's result |
 | `ownership_conflict` | `requested_bytes`, `current_bytes`, `reason` | The device changed in a way the controller didn't do |
 

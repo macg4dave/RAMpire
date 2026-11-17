@@ -429,16 +429,22 @@ where
         let settle = match direction {
             CommandDirection::Grow => false,
             CommandDirection::Shrink if can_settle => {
-                if self.guest.read().ok().is_some_and(|envelope| {
-                    envelope.native_pressure == Some(MemoryResourceNotificationState::Low)
-                }) {
+                // A removal still moving is left to finish: unplugging moves
+                // the guest's pages, which stalls it briefly and reads as
+                // Low, and the removal frees the request slot by itself.
+                let stopped = self.command_stalled(state);
+                if stopped
+                    && self.guest.read().ok().is_some_and(|envelope| {
+                        envelope.native_pressure == Some(MemoryResourceNotificationState::Low)
+                    })
+                {
                     // Logged once while a settle waits for libvirt.
                     if !self.settle_unavailable_reported {
                         self.log("event=held_shrink_released reason=guest_low_memory");
                     }
                     true
                 } else {
-                    let stalled = self.command_stalled(state)
+                    let stalled = stopped
                         && self.pending_progress.is_some_and(|(_, since)| {
                             since.elapsed() >= self.config.removal_settle
                         });
@@ -718,7 +724,12 @@ where
                 .map_err(HostRuntimeError::Controller)?;
         }
         self.control.intent = Some(intent.clone());
-        self.save()?;
+        if let Err(error) = self.save() {
+            // Not recorded, so the command never runs: the VM is charged
+            // for nothing it planned.
+            self.control.intent = None;
+            return Err(error);
+        }
         Ok(intent)
     }
 

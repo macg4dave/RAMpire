@@ -107,24 +107,40 @@ pub fn keep_current(
         if vm.review.is_none() || libvirt.state(name).ok().as_deref() != Some("running") {
             continue;
         }
-        // Whichever VM it is about: this runs while another is added.
-        let about =
-            |error: String| format!("{name}: {error}; rampire doctor {name} says what to do");
-        let path = attestation_path(directory, name);
-        if path.exists() {
-            let live = VirshCompatibilityEvidenceSource::new(libvirt.runner(), name, &vm.alias)
-                .collect()
-                .map_err(|error| about(error.into()))?;
-            let unchanged = read_attestation(&path)
-                .is_ok_and(|attestation| attestation.validate_live(&live, vm.guest_os).is_ok());
-            if unchanged || !still_safe(libvirt, ui, name).map_err(about)? {
-                continue;
-            }
+        // One VM that can't be recorded keeps its old record, which
+        // `check` then judges; it doesn't stop the others being recorded.
+        match keep_one_current(directory, libvirt, ui, &vm) {
+            Ok(true) => recorded.push(vm.vm_name),
+            Ok(false) => {}
+            Err(error) => ui.say(&format!(
+                "{name}: {error}; rampire doctor {name} says what to do"
+            )),
         }
-        attest(directory, name, libvirt).map_err(about)?;
-        recorded.push(vm.vm_name);
     }
     Ok(recorded)
+}
+
+/// Record one running VM's setup if it has none or changed safely.
+/// Returns whether it was recorded.
+fn keep_one_current(
+    directory: &Path,
+    libvirt: &Libvirt,
+    ui: &mut dyn Ui,
+    vm: &VmSettings,
+) -> Result<bool, String> {
+    let name = vm.vm_name.as_str();
+    let path = attestation_path(directory, name);
+    if path.exists() {
+        let live =
+            VirshCompatibilityEvidenceSource::new(libvirt.runner(), name, &vm.alias).collect()?;
+        let unchanged = read_attestation(&path)
+            .is_ok_and(|attestation| attestation.validate_live(&live, vm.guest_os).is_ok());
+        if unchanged || !still_safe(libvirt, ui, name)? {
+            return Ok(false);
+        }
+    }
+    attest(directory, name, libvirt)?;
+    Ok(true)
 }
 
 /// Whether a VM that changed can still be resized: its definition is

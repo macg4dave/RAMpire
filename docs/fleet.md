@@ -57,7 +57,9 @@ rampire apply --yes --detailed-exitcode         # 0 unchanged, 2 changed, 1 fail
 ```
 
 A draft that fails its checks changes nothing: the controller keeps
-running its last applied copy, through restarts and reboots. A change to
+running its last applied copy, through restarts and reboots. It fails
+only for a problem with a VM it changes; another VM's problem is said,
+that VM isn't resized until it is fixed, and the rest is applied. A change to
 priorities, limits or the pool reloads the controller; adding or removing
 a VM restarts it. Each apply is recorded under
 `/var/lib/rampire/evidence/`.

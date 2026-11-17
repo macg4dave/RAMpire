@@ -12,6 +12,7 @@ use super::controller::{controller_unit, systemctl};
 use super::Outcome;
 use crate::context::{applied_root, Context, TempDir, RUNNING_COPY, SERVICE_ACCOUNT};
 use crate::process;
+use crate::reports::{CheckReport, CheckedVm};
 use crate::ui::Ui;
 
 /// Show the difference between two configuration directories, `None` being
@@ -64,6 +65,62 @@ fn show_difference(ui: &mut dyn Ui, from: Option<&Path>, to: &Path) -> Result<bo
 }
 
 const ATTESTATION_SUFFIX: &str = ".attestation.json";
+
+/// Whether a configuration may replace `from`, the one the controller runs:
+/// it fails only for a problem with a VM it changes (one that is new, or
+/// whose settings or recorded setup differ). Any other VM's problem is
+/// said, and the rest is applied: the controller leaves such a VM alone,
+/// unresized until it is fixed, so it never holds back another VM.
+fn passes_for_its_changes(
+    ui: &mut dyn Ui,
+    report: &CheckReport,
+    from: Option<&Path>,
+    to: &Path,
+) -> bool {
+    let (blocking, others): (Vec<_>, Vec<_>) = report
+        .vms
+        .iter()
+        .filter(|vm| vm.problem.is_some())
+        .cloned()
+        .partition(|vm| changes(&vm.vm_name, from, to));
+    let subset = |vms: Vec<CheckedVm>| CheckReport {
+        passed: vms.is_empty(),
+        vms,
+        ..report.clone()
+    };
+    if !others.is_empty() {
+        let names: Vec<_> = others.iter().map(|vm| vm.vm_name.clone()).collect();
+        ui.say(crate::check::text(&subset(others), true).trim_end());
+        ui.say(&format!(
+            "{} isn't resized until that is fixed; the rest goes ahead",
+            names.join(", ")
+        ));
+    }
+    if blocking.is_empty() {
+        return true;
+    }
+    ui.say(crate::check::text(&subset(blocking), true).trim_end());
+    false
+}
+
+/// Whether `to` changes the VM: it is new, or its settings or recorded
+/// setup differ from `from`'s.
+fn changes(vm: &str, from: Option<&Path>, to: &Path) -> bool {
+    let Some(from) = from else {
+        return true;
+    };
+    let Ok(file) = rampire_core::settings::vm_filename(vm) else {
+        return true;
+    };
+    let files = |root: &Path| {
+        [
+            root.join(rampire_core::settings::VMS_DIRECTORY).join(&file),
+            rampire_host::config::attestation_path(root, vm),
+        ]
+        .map(|path| std::fs::read(path).ok())
+    };
+    files(from) != files(to)
+}
 
 /// Each VM whose attestation differs between two configuration
 /// directories, with what changed: new, changed or removed.
@@ -160,11 +217,10 @@ fn stage_and_apply(
     crate::applied::snapshot(&draft, staged)?;
     // Check the copy, so what is checked is exactly what is applied.
     let report = crate::check::run(staged)?;
-    if !report.passed {
-        ui.say(crate::check::text(&report, true).trim_end());
+    let current = crate::applied::current(root)?;
+    if !passes_for_its_changes(ui, &report, current.as_deref(), staged) {
         return Err("the draft did not pass its checks; nothing changed".to_owned());
     }
-    let current = crate::applied::current(root)?;
     if let Some(current) = &current {
         if crate::applied::same(current, staged)? {
             // Nothing new, but a controller that stopped still has to run it.
@@ -235,8 +291,7 @@ pub fn rollback(context: &Context, ui: &mut dyn Ui) -> Result<Outcome, String> {
         .map(|index| copies[index].clone())
         .ok_or("there is no earlier applied copy")?;
     let report = crate::check::run(&previous)?;
-    if !report.passed {
-        ui.say(crate::check::text(&report, true).trim_end());
+    if !passes_for_its_changes(ui, &report, Some(&current), &previous) {
         return Err(format!(
             "{} no longer passes its checks; nothing changed",
             previous.display()
@@ -456,6 +511,61 @@ pub fn controller_active(unit: &str) -> bool {
 mod tests {
     use super::*;
     use crate::ui::{Said, Transcript};
+
+    #[test]
+    fn a_problem_holds_back_only_the_vm_that_has_it() {
+        let from = TempDir::new("test-apply-from").unwrap();
+        let to = TempDir::new("test-apply-to").unwrap();
+        let write = |root: &Path, vm: &str, text: &str| {
+            let directory = root.join(rampire_core::settings::VMS_DIRECTORY);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(format!("{vm}.toml")), text).unwrap();
+        };
+        write(from.path(), "broken", "priority = 100\n");
+        write(to.path(), "broken", "priority = 100\n");
+        write(from.path(), "web", "priority = 100\n");
+        write(to.path(), "web", "priority = 200\n");
+        let checked = |vm: &str, problem: Option<&str>| CheckedVm {
+            vm_name: vm.to_owned(),
+            problem: problem.map(str::to_owned),
+        };
+        let report = |vms| CheckReport {
+            schema: crate::reports::CheckSchema,
+            version: crate::reports::REPORT_VERSION,
+            passed: false,
+            vms,
+        };
+        // A VM that isn't changed and fails doesn't stop a change to
+        // another; it is named.
+        let mut ui = Transcript::default();
+        let other = report(vec![
+            checked("broken", Some("libvirt has no domain broken")),
+            checked("web", None),
+        ]);
+        assert!(passes_for_its_changes(
+            &mut ui,
+            &other,
+            Some(from.path()),
+            to.path()
+        ));
+        let said = format!("{:?}", ui.said);
+        assert!(
+            said.contains("broken isn't resized until that is fixed"),
+            "{said}"
+        );
+        // A problem with the VM being changed stops it.
+        let mut ui = Transcript::default();
+        let own = report(vec![checked("web", Some("live compatibility: changed"))]);
+        assert!(!passes_for_its_changes(
+            &mut ui,
+            &own,
+            Some(from.path()),
+            to.path()
+        ));
+        // The first apply changes every VM.
+        let mut ui = Transcript::default();
+        assert!(!passes_for_its_changes(&mut ui, &other, None, to.path()));
+    }
 
     #[test]
     fn attestations_are_named_as_new_changed_or_removed_not_shown() {

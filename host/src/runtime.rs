@@ -244,10 +244,12 @@ where
             if stop.load(Ordering::Acquire) {
                 return Ok(Step::Wait);
             }
+            // A VM whose own step fails (its checkpoint can't be written,
+            // its journal refuses a result) stops; the others go on.
             let seen = if vm.stopped {
                 vm.observe_stopped()
             } else {
-                vm.observe(stop)?
+                vm.observe(stop).unwrap_or_else(Observed::Stop)
             };
             match seen {
                 Observed::Stop(error) => {
@@ -286,9 +288,12 @@ where
             };
             let ceiling = ceilings.as_ref().map(|ceilings| ceilings[index]);
             let vm = &mut self.vms[index];
-            if let Step::Stop(error) = vm.act(ready, ceiling, &self.host_memory, &mut host, stop)? {
-                vm.stop(&error);
-                last_stop = Some(error);
+            match vm.act(ready, ceiling, &self.host_memory, &mut host, stop) {
+                Ok(Step::Wait) => {}
+                Ok(Step::Stop(error)) | Err(error) => {
+                    vm.stop(&error);
+                    last_stop = Some(error);
+                }
             }
         }
         match last_stop {
@@ -362,6 +367,8 @@ mod tests {
         off: bool,
         /// The VM has started and its current size isn't shown yet.
         starting: bool,
+        /// A shrink returns at most this much each time it is read.
+        shrink_step: Option<u64>,
     }
 
     /// A device that converges toward `requested` whenever it is read.
@@ -381,6 +388,7 @@ mod tests {
                 grow_stall_at: None,
                 off: false,
                 starting: false,
+                shrink_step: None,
             })))
         }
 
@@ -401,7 +409,10 @@ mod tests {
                     .min(device.grow_stall_at.unwrap_or(u64::MAX))
                     .max(device.live.current_bytes)
             } else {
-                requested.max(device.stall_at.unwrap_or(0))
+                let step = device
+                    .shrink_step
+                    .map_or(0, |step| device.live.current_bytes - step);
+                requested.max(device.stall_at.unwrap_or(0)).max(step)
             };
             Ok(device.live)
         }
@@ -905,6 +916,40 @@ mod tests {
     }
 
     #[test]
+    fn a_vm_whose_checkpoint_cant_be_written_stops_alone() {
+        let broken = Fixture::new("checkpoint-broken", 200, 4 * GIB);
+        let working = Fixture::new("checkpoint-working", 100, 4 * GIB);
+        let mut runtime = runtime(
+            vec![broken.controller(None), working.controller(None)],
+            64 * GIB,
+            Some(10 * GIB),
+        );
+        // A directory where its checkpoint goes: nothing, root included,
+        // can replace it.
+        let path = std::path::Path::new(&broken.config.policy_state_path);
+        let _ = std::fs::remove_file(path);
+        std::fs::create_dir(path).unwrap();
+        for fixture in [&broken, &working] {
+            fixture
+                .guest
+                .send(Some(request(1, MemoryOperation::Add, GIB)));
+        }
+        // The broken VM is served first, fails and stops; the other is
+        // still served, this round and the next.
+        let first = runtime.round(&AtomicBool::new(false));
+        working
+            .guest
+            .send(Some(request(2, MemoryOperation::Add, GIB)));
+        let second = runtime.round(&AtomicBool::new(false));
+        std::fs::remove_dir(path).unwrap();
+        assert!(matches!(first, Ok(Step::Wait)));
+        assert!(matches!(second, Ok(Step::Wait)));
+        assert!(broken.targets.borrow().is_empty());
+        assert!(runtime.vms[0].stopped);
+        assert_eq!(*working.targets.borrow(), [5 * GIB, 6 * GIB]);
+    }
+
+    #[test]
     fn equal_priorities_are_granted_first_come_first_served() {
         let listed_first = Fixture::new("fcfs-first", 100, 4 * GIB);
         let asked_first = Fixture::new("fcfs-second", 100, 4 * GIB);
@@ -1135,8 +1180,10 @@ mod tests {
         round(&mut runtime);
         assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
 
-        // Windows runs short: settle at what it reached, report partial.
+        // Windows runs short while the removal has stopped moving (for a
+        // poll interval): settle at what it reached, report partial.
         fixture.guest.signal(MemoryResourceNotificationState::Low);
+        std::thread::sleep(Duration::from_millis(2));
         round(&mut runtime);
         round(&mut runtime);
         assert_eq!(*fixture.targets.borrow(), [7 * GIB, 7 * GIB + 512 * MIB]);
@@ -1145,6 +1192,28 @@ mod tests {
         assert_eq!(result.actual_bytes, 512 * MIB);
         drop(runtime);
         assert!(!fixture.journal().latched());
+    }
+
+    #[test]
+    fn a_removal_still_moving_is_not_released_for_low_memory() {
+        // Unplugging moves the guest's pages, which can stall it briefly:
+        // Low while the removal moves is that, not a shortage.
+        let fixture = Fixture::new("low-moving", 100, 8 * GIB);
+        fixture.device.0.borrow_mut().shrink_step = Some(256 * MIB);
+        fixture.guest.signal(MemoryResourceNotificationState::High);
+        fixture
+            .guest
+            .send(Some(request(1, MemoryOperation::Remove, GIB)));
+        let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
+        round(&mut runtime);
+        fixture.guest.signal(MemoryResourceNotificationState::Low);
+        for _ in 0..6 {
+            round(&mut runtime);
+        }
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
+        let result = fixture.guest.last_result().expect("result");
+        assert_eq!(result.outcome, MemoryOutcome::Completed);
+        assert_eq!(result.actual_bytes, GIB);
     }
 
     #[test]
