@@ -9,7 +9,7 @@ A change someone using RAMpire would notice gets a line under
 turns that section into the release's entry, and the entry becomes the
 release's notes on GitHub ([releasing](docs/releasing.md)).
 
-## Unreleased
+## 0.6.1 (2026-11-17)
 
 - A VM gives back all the memory it no longer needs again. A removal
   was let go the moment the guest reported low memory, but taking

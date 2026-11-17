@@ -1,6 +1,6 @@
 [package]
 name = "rampire-guest"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 authors = ["macg4dave"]
 license = "GPL-3.0-or-later"
