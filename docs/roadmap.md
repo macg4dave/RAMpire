@@ -23,6 +23,24 @@ Work that is done goes in the [changelog](../CHANGELOG.md), not here.
   opens a terminal, that `pkexec` keeps the terminal's colours (`TERM`),
   and that the polkit prompt shows.
 
+## Memory
+
+- **Startup RAM.** A VM starts with its `min_ram` and grows as programs
+  touch memory. A service that sizes itself from the RAM it sees when it
+  starts (a database reading `MemTotal` to set its caches and buffers, a
+  JVM choosing its heap) sizes itself to `min_ram`, even when it needs
+  much more for its first few minutes and little after that. Raising
+  `min_ram` fixes the startup but keeps the VM large for good. Known: a
+  single allocation larger than the guest's RAM at that moment is refused
+  before the guest can ask for more
+  ([administration](administration.md#linux-guests)), and a guest reboot
+  keeps the device's live size. Done looks like: an optional setting per
+  VM (in its file, `vm add` and `set`, and the TUI's settings) for the
+  RAM it has as it starts and how long it keeps it; the device is filled
+  to that size when the VM starts, so its services see it, then the
+  controller takes memory back towards `min_ram` as use falls, as it
+  does now. Not the same as boot RAM, the RAM in the VM's definition.
+
 ## Testing
 
 - **The simulated host.** Whole workflows (a `vm add` with its
@@ -63,18 +81,4 @@ Not scheduled. Each needs an owner decision or an outside fix first.
   refuses it. The guest service would need to run as a Home Assistant
   add-on (a container with the host's `/proc` and the control channel),
   published where Home Assistant finds add-ons.
-- **polkit 125's descriptor leak.** polkit on RHEL 10 leaks a file for
-  many authorization checks (those that may ask for a password, from a
-  desktop, Cockpit or `pkexec`) and fails every check once it has 1024.
-  RAMpire can't fix polkit: a running controller no longer needs it,
-  `rampire doctor` warns, and restarting polkit clears it
-  ([administration](administration.md#recovering)). Done looks
-  like: the leak reported to Red Hat, and a polkit update that fixes it.
-- **SSH logins on the command line.** The TUI no longer asks for or takes
-  an SSH login for a guest. `vm add --guest-login`, `vm upgrade
-  --guest-login` and the upgrade command's prompt for one remain, for
-  scripts and guests whose agent can't run commands. Needs an owner
-  decision: keep them, or take them out too.
-- **Images in the TUI.** Real pictures through the Kitty graphics
-  protocol and Sixel (for example the mascot in the header), where the
-  terminal supports them, falling back to the icons.
+- 
